@@ -1,0 +1,9 @@
+{
+  "httpMethod": "GET",
+  "queryStringParameters": {
+    "direction": "out",
+    "gb": "100",
+    "region": "us-east-1"
+  },
+  "body": null
+}
