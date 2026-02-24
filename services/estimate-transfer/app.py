@@ -212,7 +212,7 @@ def estimate_data_transfer_cost(
                     "serviceCode": "AmazonEC2",
                     "usageType": usage_type,
                     "operation": "",
-                    "key": "data-transfer-gb",
+                    "key": "dtxfer01",
                     "usageAccountId": str(resolved_account_id),
                     "amount": float(data_gb),
                     "group": "mnemospark",
