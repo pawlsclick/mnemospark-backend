@@ -96,7 +96,7 @@ class ParseInputTests(unittest.TestCase):
 
         self.assertEqual(parsed["direction"], "out")
         self.assertEqual(parsed["gb"], 2.0)
-        self.assertEqual(parsed["region"], "[REDACTED]")
+        self.assertEqual(parsed["region"], app.DEFAULT_REGION)
         self.assertEqual(parsed["rateType"], "BEFORE_DISCOUNTS")
 
     def test_parse_input_applies_defaults(self):
@@ -104,7 +104,7 @@ class ParseInputTests(unittest.TestCase):
 
         self.assertEqual(parsed["direction"], "in")
         self.assertEqual(parsed["gb"], 100.0)
-        self.assertEqual(parsed["region"], "[REDACTED]")
+        self.assertEqual(parsed["region"], app.DEFAULT_REGION)
         self.assertEqual(parsed["rateType"], "BEFORE_DISCOUNTS")
 
     def test_parse_input_rejects_invalid_direction(self):
@@ -141,7 +141,7 @@ class EstimateCostTests(unittest.TestCase):
         result = app.estimate_data_transfer_cost(
             data_gb=100,
             direction="out",
-            region="[REDACTED]",
+            region=app.DEFAULT_REGION,
             rate_type="BEFORE_DISCOUNTS",
             pricing_client=fake_pricing,
             sts_client=fake_sts,
@@ -196,7 +196,7 @@ class LambdaHandlerTests(unittest.TestCase):
             "queryStringParameters": {
                 "direction": "out",
                 "gb": "10",
-                "region": "[REDACTED]",
+                "region": app.DEFAULT_REGION,
                 "rateType": "BEFORE_DISCOUNTS",
             }
         }
@@ -211,7 +211,7 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertEqual(body["currency"], "USD")
         self.assertEqual(body["dataGb"], 10.0)
         self.assertEqual(body["direction"], "out")
-        self.assertEqual(body["region"], "[REDACTED]")
+        self.assertEqual(body["region"], app.DEFAULT_REGION)
         self.assertEqual(body["rateType"], "BEFORE_DISCOUNTS")
 
     def test_lambda_handler_bad_request(self):

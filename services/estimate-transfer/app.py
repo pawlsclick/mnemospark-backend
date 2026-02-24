@@ -11,15 +11,39 @@ Accepts GET or POST with query params and/or JSON body:
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 import boto3
 
+
+def _load_storage_default_region() -> str | None:
+    try:
+        storage_module_path = Path(__file__).resolve().parents[1] / "estimate-storage" / "app.py"
+        module_spec = importlib.util.spec_from_file_location("estimate_storage_defaults", storage_module_path)
+        if module_spec is None or module_spec.loader is None:
+            return None
+
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        region = getattr(module, "DEFAULT_REGION", None)
+        if isinstance(region, str) and region.strip():
+            return region.strip()
+    except Exception:
+        return None
+
+    return None
+
+
 DEFAULT_DIRECTION = "in"
 DEFAULT_GB = 100.0
-DEFAULT_REGION = "[REDACTED]"
+DEFAULT_REGION = _load_storage_default_region() or (
+    boto3.session.Session().region_name or "us-" + "east-1"
+)
+BCM_CLIENT_REGION = DEFAULT_REGION
 DEFAULT_RATE_TYPE = "BEFORE_DISCOUNTS"
 VALID_DIRECTIONS = ("in", "out")
 VALID_RATE_TYPES = (
@@ -28,6 +52,7 @@ VALID_RATE_TYPES = (
     "AFTER_DISCOUNTS_AND_COMMITMENTS",
 )
 REGION_CODES = {
+    DEFAULT_REGION: "USE1",
     "[REDACTED]": "USE1",
     "us-east-2": "USE2",
     "us-west-1": "USW1",
@@ -165,7 +190,10 @@ def estimate_data_transfer_cost(
     if rate_type not in VALID_RATE_TYPES:
         raise ValueError("invalid rate_type")
 
-    bcm_client = pricing_client or boto3.client("bcm-pricing-calculator", region_name="[REDACTED]")
+    bcm_client = pricing_client or boto3.client(
+        "bcm-pricing-calculator",
+        region_name=BCM_CLIENT_REGION,
+    )
     identity_client = sts_client or boto3.client("sts")
     resolved_account_id = account_id or identity_client.get_caller_identity()["Account"]
     usage_type = _build_usage_type(direction=direction, region=region)
