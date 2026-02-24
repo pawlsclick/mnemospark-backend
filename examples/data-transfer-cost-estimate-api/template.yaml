@@ -1,0 +1,74 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Data transfer cost estimate REST API (Lambda + API Gateway)
+
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+    Description: API Gateway stage name
+
+Resources:
+  DataTransferCostEstimateApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: data-transfer-cost-estimate-api
+      StageName: !Ref StageName
+      Auth:
+        ApiKeyRequired: true
+        UsagePlan:
+          CreateUsagePlan: PER_API
+          UsagePlanName: !Sub "${AWS::StackName}-usage-plan"
+          Description: Usage plan for data transfer cost estimate API
+          Throttle:
+            RateLimit: 10
+            BurstLimit: 20
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+        AllowOrigin: "'*'"
+
+  DataTransferCostEstimateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      Runtime: python3.13
+      CodeUri: .
+      MemorySize: 256
+      Timeout: 60
+      Events:
+        GetEstimate:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DataTransferCostEstimateApi
+            Path: /estimate
+            Method: GET
+        PostEstimate:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DataTransferCostEstimateApi
+            Path: /estimate
+            Method: POST
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - bcm-pricing-calculator:CreateWorkloadEstimate
+                - bcm-pricing-calculator:GetWorkloadEstimate
+                - bcm-pricing-calculator:DeleteWorkloadEstimate
+                - bcm-pricing-calculator:CreateWorkloadEstimateUsage
+              Resource: "*"
+            - Effect: Allow
+              Action: sts:GetCallerIdentity
+              Resource: "*"
+
+Outputs:
+  ApiUrl:
+    Description: REST API endpoint URL (add /estimate?direction=in&gb=100)
+    Value: !Sub "https://${DataTransferCostEstimateApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/estimate"
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiUrl"
+  FunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt DataTransferCostEstimateFunction.Arn

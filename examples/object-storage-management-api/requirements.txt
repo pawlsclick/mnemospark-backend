@@ -1,0 +1,2 @@
+# Lambda runtime includes boto3. cryptography required for AES-GCM envelope encryption.
+cryptography
