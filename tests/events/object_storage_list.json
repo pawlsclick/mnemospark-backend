@@ -1,0 +1,5 @@
+{
+  "httpMethod": "POST",
+  "queryStringParameters": null,
+  "body": "{\"command\": \"list\", \"wallet_address\": \"0x47D2DEb0815879b2b6b1588A44e3332b5cb60A6c\", \"location\": \"us-east-1\"}"
+}
