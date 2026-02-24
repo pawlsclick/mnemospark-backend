@@ -33,11 +33,16 @@ class EstimateTransferIntegrationTests(unittest.TestCase):
             result = app.estimate_data_transfer_cost(
                 data_gb=1,
                 direction="out",
-                region="[REDACTED]",
+                region=app.DEFAULT_REGION,
                 rate_type="BEFORE_DISCOUNTS",
             )
         except botocore.exceptions.NoCredentialsError:
             self.skipTest("AWS credentials not configured; skipping BCM integration test.")
+        except botocore.exceptions.ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code")
+            if error_code in {"InvalidClientTokenId", "UnrecognizedClientException"}:
+                self.skipTest(f"AWS credentials are invalid for BCM integration: {error_code}")
+            raise
 
         self.assertEqual(result["status"], "VALID")
         self.assertIn("totalCost", result)
