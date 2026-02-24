@@ -1,0 +1,80 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  mnemospark-backend API (initial route: /estimate/storage).
+  Resources are tagged with Project: mnemospark.
+
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+    Description: API Gateway stage name
+
+Resources:
+  MnemosparkBackendApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: mnemospark-backend-api
+      StageName: !Ref StageName
+      Tags:
+        Project: mnemospark
+      Auth:
+        ApiKeyRequired: true
+        UsagePlan:
+          CreateUsagePlan: PER_API
+          UsagePlanName: !Sub "${AWS::StackName}-usage-plan"
+          Description: Usage plan for mnemospark backend API
+          Throttle:
+            RateLimit: 10
+            BurstLimit: 20
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+        AllowOrigin: "'*'"
+
+  EstimateStorageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Tags:
+        Project: mnemospark
+      Handler: app.lambda_handler
+      Runtime: python3.13
+      CodeUri: services/estimate-storage
+      MemorySize: 256
+      Timeout: 60
+      Events:
+        EstimateStorageGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /estimate/storage
+            Method: GET
+        EstimateStoragePost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /estimate/storage
+            Method: POST
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - bcm-pricing-calculator:CreateWorkloadEstimate
+                - bcm-pricing-calculator:GetWorkloadEstimate
+                - bcm-pricing-calculator:DeleteWorkloadEstimate
+                - bcm-pricing-calculator:CreateWorkloadEstimateUsage
+              Resource: "*"
+            - Effect: Allow
+              Action: sts:GetCallerIdentity
+              Resource: "*"
+
+Outputs:
+  ApiUrl:
+    Description: REST API endpoint URL for storage estimate route
+    Value: !Sub "https://${MnemosparkBackendApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/estimate/storage"
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiUrl"
+  EstimateStorageFunctionArn:
+    Description: Lambda function ARN for POST /estimate/storage
+    Value: !GetAtt EstimateStorageFunction.Arn
