@@ -2,3 +2,4 @@
 .aws-sam/
 __pycache__/
 .pytest_cache/
+env.json
