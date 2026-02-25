@@ -12,7 +12,7 @@ Parameters:
     Description: API Gateway stage name
   PriceStorageMarkupPercent:
     Type: String
-    Default: "0"
+    Default: "10"
     Description: Percent markup added to (storage + transfer) quote, e.g. 15 = 15%
   PriceStorageQuoteTtlSeconds:
     Type: String
