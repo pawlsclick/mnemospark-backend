@@ -42,10 +42,9 @@ QUOTES_TABLE_ENV = "QUOTES_TABLE_NAME"
 UPLOAD_TRANSACTION_LOG_TABLE_ENV = "UPLOAD_TRANSACTION_LOG_TABLE_NAME"
 UPLOAD_IDEMPOTENCY_TABLE_ENV = "UPLOAD_IDEMPOTENCY_TABLE_NAME"
 
+# Headers are normalized to lowercase by _normalize_headers, so keep only unique keys here.
 PAYMENT_SIGNATURE_HEADER_NAMES = (
-    "PAYMENT-SIGNATURE",
     "payment-signature",
-    "X-PAYMENT",
     "x-payment",
 )
 PAYMENT_REQUIRED_RESPONSE_HEADERS = ("PAYMENT-REQUIRED", "x-payment-required")
