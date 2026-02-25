@@ -583,6 +583,17 @@ Resources:
     Properties:
       Handler: app.lambda_handler
       CodeUri: services/storage-download
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:HeadBucket
+                - s3:HeadObject
+                - s3:GetObject
+              Resource:
+                - !Sub "arn:aws:s3:::mnemospark-*"
+                - !Sub "arn:aws:s3:::mnemospark-*/*"
       Events:
         StorageDownloadGet:
           Type: Api
