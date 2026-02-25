@@ -824,30 +824,44 @@ def _fetch_existing_idempotency(
     request_hash: str,
     now: int,
 ) -> dict[str, Any] | None:
-    response = idempotency_table.get_item(
-        Key={"idempotency_key": idempotency_key},
-        ConsistentRead=True,
-    )
-    item = response.get("Item")
-    if not item:
-        return None
+    for _ in range(3):
+        response = idempotency_table.get_item(
+            Key={"idempotency_key": idempotency_key},
+            ConsistentRead=True,
+        )
+        item = response.get("Item")
+        if not item:
+            return None
 
-    expires_at = _coerce_int(item.get("expires_at"), "idempotency.expires_at")
-    if expires_at <= now:
-        idempotency_table.delete_item(Key={"idempotency_key": idempotency_key})
-        return None
+        expires_at = _coerce_int(item.get("expires_at"), "idempotency.expires_at")
+        if expires_at <= now:
+            try:
+                idempotency_table.delete_item(
+                    Key={"idempotency_key": idempotency_key},
+                    ConditionExpression="expires_at <= :now",
+                    ExpressionAttributeValues={":now": now},
+                )
+                return None
+            except ClientError as exc:
+                error_code = exc.response.get("Error", {}).get("Code")
+                if error_code != "ConditionalCheckFailedException":
+                    raise
+                # Another writer updated this key between get_item and delete_item.
+                continue
 
-    stored_hash = str(item.get("request_hash") or "")
-    if stored_hash and stored_hash != request_hash:
-        raise ConflictError("Idempotency-Key cannot be reused with a different request payload")
+        stored_hash = str(item.get("request_hash") or "")
+        if stored_hash and stored_hash != request_hash:
+            raise ConflictError("Idempotency-Key cannot be reused with a different request payload")
 
-    status = str(item.get("status") or "").lower()
-    if status == "completed":
-        return item
-    if status == "in_progress":
-        raise ConflictError("Upload is already in progress for this Idempotency-Key")
+        status = str(item.get("status") or "").lower()
+        if status == "completed":
+            return item
+        if status == "in_progress":
+            raise ConflictError("Upload is already in progress for this Idempotency-Key")
 
-    raise ConflictError("Idempotency-Key is in an unknown state")
+        raise ConflictError("Idempotency-Key is in an unknown state")
+
+    raise ConflictError("Idempotency-Key state changed concurrently; please retry")
 
 
 def _claim_idempotency_lock(
