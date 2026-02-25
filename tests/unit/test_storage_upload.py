@@ -1,0 +1,394 @@
+import base64
+import copy
+import importlib.util
+import json
+import os
+import sys
+import time
+from decimal import Decimal
+from pathlib import Path
+import unittest
+from unittest import mock
+
+from botocore.exceptions import ClientError
+
+
+def load_app_module():
+    module_path = Path(__file__).resolve().parents[2] / "services" / "storage-upload" / "app.py"
+    module_name = "storage_upload_app"
+    module_spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if module_spec is None or module_spec.loader is None:
+        raise RuntimeError("Unable to load storage upload module")
+    module = importlib.util.module_from_spec(module_spec)
+    sys.modules[module_name] = module
+    module_spec.loader.exec_module(module)
+    return module
+
+
+app = load_app_module()
+
+
+class FakeDynamoTable:
+    def __init__(self, key_fields):
+        self.key_fields = list(key_fields)
+        self.items = {}
+        self.put_history = []
+
+    def _key_tuple(self, key):
+        return tuple((field, key[field]) for field in self.key_fields)
+
+    def get_item(self, Key, ConsistentRead=False):
+        del ConsistentRead
+        item = self.items.get(self._key_tuple(Key))
+        if item is None:
+            return {}
+        return {"Item": copy.deepcopy(item)}
+
+    def put_item(self, Item, ConditionExpression=None):
+        key = self._key_tuple(Item)
+        if ConditionExpression == "attribute_not_exists(idempotency_key)" and key in self.items:
+            raise ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "duplicate key"}},
+                "PutItem",
+            )
+        self.items[key] = copy.deepcopy(Item)
+        self.put_history.append(copy.deepcopy(Item))
+        return {}
+
+    def delete_item(self, Key):
+        self.items.pop(self._key_tuple(Key), None)
+        return {}
+
+
+class FakeDynamoResource:
+    def __init__(self, tables_by_name):
+        self.tables_by_name = tables_by_name
+
+    def Table(self, name):
+        return self.tables_by_name[name]
+
+
+class FakeS3Client:
+    def __init__(self):
+        self.buckets = set()
+        self.created_buckets = []
+        self.put_calls = []
+
+    def head_bucket(self, Bucket):
+        if Bucket not in self.buckets:
+            raise ClientError(
+                {"Error": {"Code": "404", "Message": "not found"}},
+                "HeadBucket",
+            )
+        return {}
+
+    def create_bucket(self, Bucket, CreateBucketConfiguration=None):
+        self.buckets.add(Bucket)
+        self.created_buckets.append(
+            {"Bucket": Bucket, "CreateBucketConfiguration": CreateBucketConfiguration}
+        )
+        return {}
+
+    def put_object(self, Bucket, Key, Body, Metadata):
+        if Bucket not in self.buckets:
+            raise ClientError(
+                {"Error": {"Code": "NoSuchBucket", "Message": "bucket does not exist"}},
+                "PutObject",
+            )
+        self.put_calls.append(
+            {
+                "Bucket": Bucket,
+                "Key": Key,
+                "Body": Body,
+                "Metadata": Metadata,
+            }
+        )
+        return {}
+
+
+class StorageUploadLambdaTests(unittest.TestCase):
+    def setUp(self):
+        self.wallet_address = "0x1111111111111111111111111111111111111111"
+        self.quote_id = "quote-123"
+        self.object_id = "backup.tar.gz"
+        self.object_hash = "f00dbeef"
+        self.now = int(time.time())
+
+        self.quotes_table = FakeDynamoTable(["quote_id"])
+        self.quotes_table.put_item(
+            Item={
+                "quote_id": self.quote_id,
+                "expires_at": self.now + 3600,
+                "storage_price": Decimal("1.25"),
+                "addr": self.wallet_address,
+                "object_id": self.object_id,
+                "object_id_hash": self.object_hash,
+                "provider": "aws",
+                "location": "[REDACTED]",
+            }
+        )
+        self.transaction_log_table = FakeDynamoTable(["quote_id", "trans_id"])
+        self.idempotency_table = FakeDynamoTable(["idempotency_key"])
+        self.s3_client = FakeS3Client()
+
+        self.dynamodb_resource = FakeDynamoResource(
+            {
+                "quotes-table": self.quotes_table,
+                "txn-table": self.transaction_log_table,
+                "idem-table": self.idempotency_table,
+            }
+        )
+
+        self.env_patch = mock.patch.dict(
+            os.environ,
+            {
+                "QUOTES_TABLE_NAME": "quotes-table",
+                "UPLOAD_TRANSACTION_LOG_TABLE_NAME": "txn-table",
+                "UPLOAD_IDEMPOTENCY_TABLE_NAME": "idem-table",
+                "MNEMOSPARK_RECIPIENT_WALLET": "0x47D241ae97fE37186AC59894290CA1c54c060A6c",
+                "MNEMOSPARK_PAYMENT_NETWORK": "eip155:8453",
+                "MNEMOSPARK_PAYMENT_ASSET": "0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+                "MNEMOSPARK_PAYMENT_SETTLEMENT_MODE": "mock",
+            },
+            clear=False,
+        )
+        self.env_patch.start()
+
+        self.resource_patch = mock.patch.object(app.boto3, "resource", return_value=self.dynamodb_resource)
+        self.resource_patch.start()
+        self.client_patch = mock.patch.object(app.boto3, "client", side_effect=self._mock_boto_client)
+        self.client_patch.start()
+
+    def tearDown(self):
+        self.client_patch.stop()
+        self.resource_patch.stop()
+        self.env_patch.stop()
+
+    def _mock_boto_client(self, service_name, **kwargs):
+        del kwargs
+        if service_name == "s3":
+            return self.s3_client
+        raise AssertionError(f"Unexpected boto3 client service: {service_name}")
+
+    def _make_event(self, headers=None, **body_updates):
+        body = {
+            "quote_id": self.quote_id,
+            "wallet_address": self.wallet_address,
+            "object_id": self.object_id,
+            "object_id_hash": self.object_hash,
+            "ciphertext": base64.b64encode(b"encrypted-content").decode("ascii"),
+            "wrapped_dek": base64.b64encode(b"wrapped-key").decode("ascii"),
+        }
+        body.update(body_updates)
+        event_headers = {"x-api-key": "dummy"}
+        if headers:
+            event_headers.update(headers)
+        return {"body": json.dumps(body), "headers": event_headers}
+
+    def test_missing_payment_header_returns_402_with_payment_required_headers(self):
+        event = self._make_event()
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 402)
+        self.assertIn("PAYMENT-REQUIRED", response["headers"])
+        self.assertIn("x-payment-required", response["headers"])
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "payment_required")
+        self.assertIn("message", body)
+
+    def test_missing_quote_returns_404(self):
+        self.quotes_table.items.clear()
+        event = self._make_event(headers={"PAYMENT-SIGNATURE": "mock"})
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 404)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "quote_not_found")
+
+    def test_expired_quote_returns_404(self):
+        expired_item = self.quotes_table.items[(("quote_id", self.quote_id),)]
+        expired_item["expires_at"] = int(time.time()) - 1
+        event = self._make_event(headers={"PAYMENT-SIGNATURE": "mock"})
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 404)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "quote_not_found")
+
+    def test_object_hash_mismatch_returns_400(self):
+        event = self._make_event(headers={"PAYMENT-SIGNATURE": "mock"}, object_id_hash="bad-hash")
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 400)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "Bad request")
+        self.assertIn("object_id_hash", body["message"])
+
+    def test_idempotency_in_progress_returns_409(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-123"},
+        )
+        request_hash = app._request_fingerprint(app.parse_input(event))
+        self.idempotency_table.put_item(
+            Item={
+                "idempotency_key": "idem-123",
+                "status": "in_progress",
+                "request_hash": request_hash,
+                "expires_at": int(time.time()) + 3600,
+            }
+        )
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 409)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "conflict")
+
+    def test_success_upload_writes_s3_and_transaction_log_and_idempotency(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-456"},
+        )
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xabc123",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 200)
+        body = json.loads(response["body"])
+        self.assertEqual(body["quote_id"], self.quote_id)
+        self.assertEqual(body["trans_id"], "0xabc123")
+        self.assertEqual(body["provider"], "aws")
+        self.assertEqual(body["location"], "[REDACTED]")
+        self.assertIn("PAYMENT-RESPONSE", response["headers"])
+        self.assertIn("x-payment-response", response["headers"])
+
+        self.assertEqual(len(self.s3_client.put_calls), 1)
+        put_call = self.s3_client.put_calls[0]
+        self.assertEqual(put_call["Key"], self.object_id)
+        self.assertEqual(put_call["Metadata"]["wrapped-dek"], base64.b64encode(b"wrapped-key").decode("ascii"))
+
+        self.assertEqual(len(self.transaction_log_table.items), 1)
+        log_item = next(iter(self.transaction_log_table.items.values()))
+        self.assertEqual(log_item["quote_id"], self.quote_id)
+        self.assertEqual(log_item["trans_id"], "0xabc123")
+        self.assertEqual(log_item["object_id"], self.object_id)
+        self.assertEqual(log_item["object_key"], self.object_id)
+
+        idem_item = self.idempotency_table.items[(("idempotency_key", "idem-456"),)]
+        self.assertEqual(idem_item["status"], "completed")
+        self.assertIn("response_body", idem_item)
+
+        # Duplicate with same key should return cached success response.
+        with mock.patch.object(app, "verify_and_settle_payment", side_effect=AssertionError("must not be called")):
+            duplicate_response = app.lambda_handler(event, None)
+        self.assertEqual(duplicate_response["statusCode"], 200)
+        self.assertEqual(json.loads(duplicate_response["body"]), body)
+
+    def test_legacy_x_payment_header_is_accepted(self):
+        event = self._make_event(headers={"x-payment": "legacy-signed-payload"})
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xlegacy",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result) as verify_mock:
+            response = app.lambda_handler(event, None)
+        self.assertEqual(response["statusCode"], 200)
+        call_kwargs = verify_mock.call_args.kwargs
+        self.assertEqual(call_kwargs["payment_header"], "legacy-signed-payload")
+
+
+class Eip712VerificationTests(unittest.TestCase):
+    def test_verify_and_settle_payment_valid_signature_mock_settlement(self):
+        try:
+            from eth_account import Account
+            from eth_account.messages import encode_typed_data
+        except ImportError:
+            self.skipTest("eth-account is not installed in this environment")
+
+        account = Account.create()
+        wallet_address = app._normalize_address(account.address, "wallet_address")
+        recipient_wallet = app._normalize_address(
+            "0x47D241ae97fE37186AC59894290CA1c54c060A6c",
+            "recipient",
+        )
+        asset = app._normalize_address(
+            "0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            "asset",
+        )
+        network = "eip155:8453"
+        now = int(time.time())
+        authorization = {
+            "from": wallet_address,
+            "to": recipient_wallet,
+            "value": 2_000_000,
+            "validAfter": now - 30,
+            "validBefore": now + 300,
+            "nonce": "0x" + "ab" * 32,
+            "network": network,
+            "asset": asset,
+            "name": "USD Coin",
+            "version": "2",
+        }
+
+        signable = encode_typed_data(
+            domain_data={
+                "name": "USD Coin",
+                "version": "2",
+                "chainId": 8453,
+                "verifyingContract": asset,
+            },
+            message_types=app.TRANSFER_WITH_AUTH_TYPES,
+            message_data={
+                "from": authorization["from"],
+                "to": authorization["to"],
+                "value": authorization["value"],
+                "validAfter": authorization["validAfter"],
+                "validBefore": authorization["validBefore"],
+                "nonce": authorization["nonce"],
+            },
+        )
+        signature = Account.sign_message(signable, private_key=account.key).signature.hex()
+        if not signature.startswith("0x"):
+            signature = f"0x{signature}"
+
+        payload = {
+            "payload": {
+                "signature": signature,
+                "authorization": authorization,
+            }
+        }
+        payment_header = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+        requirements = {
+            "network": network,
+            "asset": asset,
+            "payTo": recipient_wallet,
+            "amount": "2000000",
+        }
+
+        with mock.patch.dict(os.environ, {"MNEMOSPARK_PAYMENT_SETTLEMENT_MODE": "mock"}, clear=False):
+            result = app.verify_and_settle_payment(
+                payment_header=payment_header,
+                wallet_address=wallet_address,
+                quote_id="quote-verify",
+                expected_amount=2_000_000,
+                expected_recipient=recipient_wallet,
+                expected_network=network,
+                expected_asset=asset,
+                requirements=requirements,
+            )
+
+        self.assertTrue(result.trans_id.startswith("0x"))
+        self.assertEqual(result.network, network)
+        self.assertEqual(result.asset, asset)
+        self.assertEqual(result.amount, 2_000_000)
