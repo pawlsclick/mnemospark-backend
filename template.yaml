@@ -551,7 +551,7 @@ Outputs:
     Description: REST API endpoint URL for transfer estimate route
     Value: !Sub "https://${MnemosparkBackendApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/estimate/transfer"
     Export:
-      Name: !Sub "${AWS::StackName}-ApiBaseUrl"
+      Name: !Sub "${AWS::StackName}-TransferApiUrl"
   EstimateStorageFunctionArn:
     Description: Lambda function ARN for /estimate/storage
     Value: !GetAtt EstimateStorageFunction.Arn
