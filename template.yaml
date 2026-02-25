@@ -10,6 +10,10 @@ Parameters:
     Type: String
     Default: prod
     Description: API Gateway stage name
+  ObservabilityLogRetentionDays:
+    Type: Number
+    Default: 30
+    Description: Retention in days for API Gateway and Lambda log groups
   PriceStorageMarkupPercent:
     Type: String
     Default: "10"
@@ -130,8 +134,42 @@ Resources:
         - Key: Project
           Value: mnemospark
 
+  ApiGatewayAccessLogsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${AWS::StackName}-${StageName}-access"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  ApiGatewayCloudWatchLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchLogsRole.Arn
+
   MnemosparkBackendApi:
     Type: AWS::Serverless::Api
+    DependsOn:
+      - ApiGatewayAccount
+      - ApiGatewayAccessLogsLogGroup
     Properties:
       Name: mnemospark-backend-api
       StageName: !Ref StageName
@@ -160,6 +198,13 @@ Resources:
           HttpMethod: "*"
           ThrottlingRateLimit: 10
           ThrottlingBurstLimit: 20
+          MetricsEnabled: true
+          LoggingLevel: INFO
+          DataTraceEnabled: false
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiGatewayAccessLogsLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.resourcePath","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationError":"$context.integrationErrorMessage"}
       Cors:
         AllowMethods: "'GET,POST,DELETE,OPTIONS'"
         AllowHeaders: "'Content-Type,x-api-key,Idempotency-Key,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,x-payment,x-payment-required,x-payment-response'"
@@ -527,6 +572,224 @@ Resources:
                   Required: true
                   Caching: false
 
+  EstimateStorageFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${EstimateStorageFunction}"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  EstimateTransferFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${EstimateTransferFunction}"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  PriceStorageFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${PriceStorageFunction}"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  StorageUploadFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StorageUploadFunction}"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  StorageLsFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StorageLsFunction}"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  StorageDownloadFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StorageDownloadFunction}"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  StorageDeleteFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StorageDeleteFunction}"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  ApiGateway4xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-${StageName}-api-4xx-errors"
+      AlarmDescription: Alert when API Gateway 4XX errors rise above threshold.
+      Namespace: AWS/ApiGateway
+      MetricName: 4XXError
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 20
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: ApiName
+          Value: mnemospark-backend-api
+        - Name: Stage
+          Value: !Ref StageName
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  ApiGateway5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-${StageName}-api-5xx-errors"
+      AlarmDescription: Alert when API Gateway 5XX errors occur.
+      Namespace: AWS/ApiGateway
+      MetricName: 5XXError
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: ApiName
+          Value: mnemospark-backend-api
+        - Name: Stage
+          Value: !Ref StageName
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  ApiGatewayThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-${StageName}-api-throttle"
+      AlarmDescription: Alert when API Gateway request throttling is detected.
+      Namespace: AWS/ApiGateway
+      MetricName: Throttle
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: ApiName
+          Value: mnemospark-backend-api
+        - Name: Stage
+          Value: !Ref StageName
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  ApiGatewayLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-${StageName}-api-latency"
+      AlarmDescription: Alert when API Gateway average latency is too high.
+      Namespace: AWS/ApiGateway
+      MetricName: Latency
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 3000
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: ApiName
+          Value: mnemospark-backend-api
+        - Name: Stage
+          Value: !Ref StageName
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  CloudTrailLogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  CloudTrailLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CloudTrailLogBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt CloudTrailLogBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${AWS::StackName}-cloudtrail"
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub "${CloudTrailLogBucket.Arn}/AWSLogs/${AWS::AccountId}/*"
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${AWS::StackName}-cloudtrail"
+
+  MnemosparkCloudTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn:
+      - CloudTrailLogBucketPolicy
+    Properties:
+      TrailName: !Sub "${AWS::StackName}-cloudtrail"
+      S3BucketName: !Ref CloudTrailLogBucket
+      EnableLogFileValidation: true
+      IncludeGlobalServiceEvents: true
+      IsLogging: true
+      IsMultiRegionTrail: true
+      EventSelectors:
+        - IncludeManagementEvents: true
+          ReadWriteType: All
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
 Outputs:
   QuotesTableName:
     Description: DynamoDB table name for 1-hour storage quotes
@@ -568,6 +831,15 @@ Outputs:
     Value: !Sub "https://${MnemosparkBackendApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/estimate/transfer"
     Export:
       Name: !Sub "${AWS::StackName}-TransferApiUrl"
+  ApiGatewayAccessLogGroupName:
+    Description: CloudWatch Logs group for API Gateway access logs
+    Value: !Ref ApiGatewayAccessLogsLogGroup
+  CloudTrailArn:
+    Description: CloudTrail ARN for API and account activity
+    Value: !GetAtt MnemosparkCloudTrail.Arn
+  CloudTrailLogBucketName:
+    Description: S3 bucket name storing CloudTrail logs
+    Value: !Ref CloudTrailLogBucket
   EstimateStorageFunctionArn:
     Description: Lambda function ARN for /estimate/storage
     Value: !GetAtt EstimateStorageFunction.Arn
