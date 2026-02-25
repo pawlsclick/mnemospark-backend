@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  mnemospark-backend API (initial route: /estimate/storage).
+  mnemospark-backend API estimate routes.
   Resources are tagged with Project: mnemospark.
 
 Parameters:
@@ -69,12 +69,57 @@ Resources:
               Action: sts:GetCallerIdentity
               Resource: "*"
 
+  EstimateTransferFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Tags:
+        Project: mnemospark
+      Handler: app.lambda_handler
+      Runtime: python3.13
+      CodeUri: services/estimate-transfer
+      MemorySize: 256
+      Timeout: 60
+      Events:
+        EstimateTransferGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /estimate/transfer
+            Method: GET
+        EstimateTransferPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /estimate/transfer
+            Method: POST
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - bcm-pricing-calculator:CreateWorkloadEstimate
+                - bcm-pricing-calculator:GetWorkloadEstimate
+                - bcm-pricing-calculator:DeleteWorkloadEstimate
+                - bcm-pricing-calculator:CreateWorkloadEstimateUsage
+              Resource: "*"
+            - Effect: Allow
+              Action: sts:GetCallerIdentity
+              Resource: "*"
+
 Outputs:
   ApiUrl:
     Description: REST API endpoint URL for storage estimate route
     Value: !Sub "https://${MnemosparkBackendApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/estimate/storage"
     Export:
       Name: !Sub "${AWS::StackName}-ApiUrl"
+  TransferApiUrl:
+    Description: REST API endpoint URL for transfer estimate route
+    Value: !Sub "https://${MnemosparkBackendApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/estimate/transfer"
+    Export:
+      Name: !Sub "${AWS::StackName}-TransferApiUrl"
   EstimateStorageFunctionArn:
     Description: Lambda function ARN for POST /estimate/storage
     Value: !GetAtt EstimateStorageFunction.Arn
+  EstimateTransferFunctionArn:
+    Description: Lambda function ARN for POST /estimate/transfer
+    Value: !GetAtt EstimateTransferFunction.Arn
