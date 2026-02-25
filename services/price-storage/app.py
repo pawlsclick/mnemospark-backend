@@ -169,7 +169,7 @@ def _get_markup_multiplier() -> float:
         raise RuntimeError("PRICE_STORAGE_MARKUP_PERCENT must be non-negative")
 
     # Allow "0.15" (15%) or "15" (15%).
-    return markup / 100.0 if markup > 1 else markup
+    return markup / 100.0 if markup >= 1 else markup
 
 
 def estimate_storage_cost(gb: float, region: str, rate_type: str) -> float:
