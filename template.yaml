@@ -25,7 +25,8 @@ Resources:
     Properties:
       Name: mnemospark-backend-api
       StageName: !Ref StageName
-      EndpointConfiguration: REGIONAL
+      EndpointConfiguration:
+        Type: REGIONAL
       Tags:
         Project: mnemospark
       Auth:
