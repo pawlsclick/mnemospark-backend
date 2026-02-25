@@ -20,6 +20,108 @@ Globals:
       Project: mnemospark
 
 Resources:
+  QuotesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-quotes"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: quote_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: quote_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  UploadTransactionLogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-upload-transaction-log"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: quote_id
+          AttributeType: S
+        - AttributeName: trans_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: quote_id
+          KeyType: HASH
+        - AttributeName: trans_id
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  PriceStorageLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: price-storage-dynamodb-quotes
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt QuotesTable.Arn
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  UploadLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: upload-dynamodb-quotes-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource: !GetAtt QuotesTable.Arn
+        - PolicyName: upload-dynamodb-transaction-log-write
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt UploadTransactionLogTable.Arn
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
   MnemosparkBackendApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -410,9 +512,44 @@ Resources:
                   Caching: false
 
 Outputs:
-  ApiBaseUrl:
-    Description: Base URL for the mnemospark internet-facing REST API
-    Value: !Sub "https://${MnemosparkBackendApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+  QuotesTableName:
+    Description: DynamoDB table name for 1-hour storage quotes
+    Value: !Ref QuotesTable
+    Export:
+      Name: !Sub "${AWS::StackName}-QuotesTableName"
+  QuotesTableArn:
+    Description: DynamoDB table ARN for 1-hour storage quotes
+    Value: !GetAtt QuotesTable.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-QuotesTableArn"
+  UploadTransactionLogTableName:
+    Description: DynamoDB table name for upload transaction logs
+    Value: !Ref UploadTransactionLogTable
+    Export:
+      Name: !Sub "${AWS::StackName}-UploadTransactionLogTableName"
+  UploadTransactionLogTableArn:
+    Description: DynamoDB table ARN for upload transaction logs
+    Value: !GetAtt UploadTransactionLogTable.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-UploadTransactionLogTableArn"
+  PriceStorageLambdaRoleArn:
+    Description: IAM role ARN for price-storage Lambda (quotes read/write)
+    Value: !GetAtt PriceStorageLambdaRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-PriceStorageLambdaRoleArn"
+  UploadLambdaRoleArn:
+    Description: IAM role ARN for upload Lambda (quotes read + txn log write)
+    Value: !GetAtt UploadLambdaRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-UploadLambdaRoleArn"
+  ApiUrl:
+    Description: REST API endpoint URL for storage estimate route
+    Value: !Sub "https://${MnemosparkBackendApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/estimate/storage"
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiUrl"
+  TransferApiUrl:
+    Description: REST API endpoint URL for transfer estimate route
+    Value: !Sub "https://${MnemosparkBackendApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/estimate/transfer"
     Export:
       Name: !Sub "${AWS::StackName}-ApiBaseUrl"
   EstimateStorageFunctionArn:
