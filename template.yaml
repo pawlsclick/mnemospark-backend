@@ -655,7 +655,7 @@ Resources:
             - Effect: Allow
               Action:
                 - s3:HeadBucket
-                - s3:HeadObject
+                - s3:GetObject
                 - s3:DeleteObject
                 - s3:ListBucket
                 - s3:DeleteBucket

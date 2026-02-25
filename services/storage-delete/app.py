@@ -188,8 +188,13 @@ def delete_object(request: ParsedDeleteRequest, s3_client: Any) -> dict[str, Any
 
     bucket_deleted = False
     if _bucket_is_empty(list_response):
-        s3_client.delete_bucket(Bucket=bucket)
-        bucket_deleted = True
+        try:
+            s3_client.delete_bucket(Bucket=bucket)
+        except ClientError as exc:
+            if _parse_s3_error_code(exc) != "BucketNotEmpty":
+                raise
+        else:
+            bucket_deleted = True
 
     return {
         "success": True,
