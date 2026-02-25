@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Optional Amazon CloudFront distribution for mnemospark API Gateway origin.
+  Enforces HTTPS viewer traffic and TLS 1.2+ when using a custom certificate.
+
+Parameters:
+  ApiGatewayOriginDomainName:
+    Type: String
+    Description: API Gateway origin domain only (no scheme/path), for example abc123.execute-api.<region>.amazonaws.com
+  ApiGatewayOriginPath:
+    Type: String
+    Default: /prod
+    AllowedPattern: "^$|/.*$"
+    Description: Optional origin path (typically API Gateway stage) starting with "/" or empty
+  CloudFrontDistributionComment:
+    Type: String
+    Default: mnemospark API CloudFront distribution
+    Description: CloudFront distribution comment
+  PriceClass:
+    Type: String
+    Default: PriceClass_100
+    AllowedValues:
+      - PriceClass_100
+      - PriceClass_200
+      - PriceClass_All
+    Description: CloudFront price class
+  AlternateDomainNames:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|[^,]+(,[^,]+)*$"
+    Description: Optional alternate domain names (CNAMEs), comma-delimited
+  CloudFrontAcmCertificateArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|arn:aws[a-zA-Z-]*:acm:[a-z0-9-]+:[0-9]{12}:certificate/.+$"
+    Description: Optional ACM certificate ARN for alternate domain names
+  WafWebAclArn:
+    Type: String
+    Default: ""
+    Description: Optional AWS WAFv2 Web ACL ARN (scope CLOUDFRONT)
+
+Rules:
+  AlternateDomainNamesRequireCertificate:
+    RuleCondition: !Not [!Equals [!Ref AlternateDomainNames, ""]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref CloudFrontAcmCertificateArn, ""]]
+        AssertDescription: Set CloudFrontAcmCertificateArn when AlternateDomainNames are provided.
+  CertificateRequiresAlternateDomainNames:
+    RuleCondition: !Not [!Equals [!Ref CloudFrontAcmCertificateArn, ""]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref AlternateDomainNames, ""]]
+        AssertDescription: Set AlternateDomainNames when CloudFrontAcmCertificateArn is provided.
+
+Conditions:
+  HasOriginPath: !Not [!Equals [!Ref ApiGatewayOriginPath, ""]]
+  HasCustomCertificate: !Not [!Equals [!Ref CloudFrontAcmCertificateArn, ""]]
+  HasAlternateDomainNames: !Not [!Equals [!Ref AlternateDomainNames, ""]]
+  HasWafWebAcl: !Not [!Equals [!Ref WafWebAclArn, ""]]
+
+Resources:
+  MnemosparkApiDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Ref CloudFrontDistributionComment
+        HttpVersion: http2
+        IPV6Enabled: true
+        PriceClass: !Ref PriceClass
+        Aliases: !If [HasAlternateDomainNames, !Split [",", !Ref AlternateDomainNames], !Ref AWS::NoValue]
+        WebACLId: !If [HasWafWebAcl, !Ref WafWebAclArn, !Ref AWS::NoValue]
+        Origins:
+          - Id: api-gateway-origin
+            DomainName: !Ref ApiGatewayOriginDomainName
+            OriginPath: !If [HasOriginPath, !Ref ApiGatewayOriginPath, !Ref AWS::NoValue]
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+        DefaultCacheBehavior:
+          TargetOriginId: api-gateway-origin
+          ViewerProtocolPolicy: https-only
+          Compress: true
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+            - PUT
+            - PATCH
+            - POST
+            - DELETE
+          CachedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+        ViewerCertificate: !If
+          - HasCustomCertificate
+          - AcmCertificateArn: !Ref CloudFrontAcmCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+Outputs:
+  CloudFrontDistributionId:
+    Description: CloudFront distribution ID
+    Value: !Ref MnemosparkApiDistribution
+  CloudFrontDomainName:
+    Description: CloudFront domain name
+    Value: !GetAtt MnemosparkApiDistribution.DomainName
+  CloudFrontDistributionArn:
+    Description: CloudFront distribution ARN
+    Value: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${MnemosparkApiDistribution}"
+  CloudFrontUrl:
+    Description: Base URL of the CloudFront distribution
+    Value: !Sub "https://${MnemosparkApiDistribution.DomainName}"
+  CloudFrontHostedZoneId:
+    Description: Route 53 alias hosted zone ID for CloudFront distributions
+    Value: Z2FDTNDATAQYW2
