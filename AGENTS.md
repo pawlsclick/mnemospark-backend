@@ -42,3 +42,4 @@ Run `ruff check` on source files only — avoid running on `examples/*/. aws-sam
 - The `requests` library bundled with `aws-sam-cli` triggers a `RequestsDependencyWarning` about urllib3/chardet versions — safe to ignore.
 - `.gitignore` excludes `.aws-sam/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `env.json`.
 - The object-storage-management Lambda's `list` command returns 400 "Bucket not found" for wallets that have never uploaded — this is correct behavior, not an error.
+- The integration test `test_real_bcm_estimate_or_skip_when_no_credentials` in `test_estimate_storage_integration.py` fails even with valid AWS credentials due to a pre-existing BCM API `ValidationException` (key `s3-storage-gb-month` contains hyphens that violate the `[a-zA-Z0-9]*` constraint). This is a code-level issue, not an environment problem. The Lambda handler itself works fine via `sam local invoke` because it handles errors differently.
