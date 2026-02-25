@@ -55,8 +55,20 @@ class FakeDynamoTable:
         self.put_history.append(copy.deepcopy(Item))
         return {}
 
-    def delete_item(self, Key):
-        self.items.pop(self._key_tuple(Key), None)
+    def delete_item(self, Key, ConditionExpression=None, ExpressionAttributeValues=None):
+        key_tuple = self._key_tuple(Key)
+        item = self.items.get(key_tuple)
+
+        if ConditionExpression == "expires_at <= :now":
+            now = None if ExpressionAttributeValues is None else ExpressionAttributeValues.get(":now")
+            expires_at = None if item is None else item.get("expires_at")
+            if now is None or expires_at is None or int(expires_at) > int(now):
+                raise ClientError(
+                    {"Error": {"Code": "ConditionalCheckFailedException", "Message": "condition not met"}},
+                    "DeleteItem",
+                )
+
+        self.items.pop(key_tuple, None)
         return {}
 
 
@@ -155,6 +167,72 @@ class StorageUploadHelperTests(unittest.TestCase):
         authorization = app._extract_transfer_authorization(payment_payload)
 
         self.assertEqual(authorization.value, 0)
+
+    def test_fetch_existing_idempotency_deletes_expired_item_conditionally(self):
+        idempotency_table = FakeDynamoTable(["idempotency_key"])
+        now = int(time.time())
+        idempotency_table.put_item(
+            Item={
+                "idempotency_key": "idem-expired",
+                "status": "in_progress",
+                "request_hash": "request-hash",
+                "expires_at": now - 10,
+            }
+        )
+
+        result = app._fetch_existing_idempotency(
+            idempotency_table=idempotency_table,
+            idempotency_key="idem-expired",
+            request_hash="request-hash",
+            now=now,
+        )
+
+        self.assertIsNone(result)
+        self.assertNotIn((("idempotency_key", "idem-expired"),), idempotency_table.items)
+
+    def test_fetch_existing_idempotency_does_not_delete_newer_lock_after_race(self):
+        idempotency_table = FakeDynamoTable(["idempotency_key"])
+        now = int(time.time())
+        idempotency_key = "idem-race"
+        key_tuple = (("idempotency_key", idempotency_key),)
+        idempotency_table.put_item(
+            Item={
+                "idempotency_key": idempotency_key,
+                "status": "in_progress",
+                "request_hash": "request-hash",
+                "expires_at": now - 1,
+            }
+        )
+
+        original_delete_item = idempotency_table.delete_item
+        state = {"swapped": False}
+
+        def racing_delete_item(Key, ConditionExpression=None, ExpressionAttributeValues=None):
+            if not state["swapped"]:
+                state["swapped"] = True
+                idempotency_table.items[key_tuple] = {
+                    "idempotency_key": idempotency_key,
+                    "status": "in_progress",
+                    "request_hash": "request-hash",
+                    "expires_at": now + 3600,
+                }
+            return original_delete_item(
+                Key=Key,
+                ConditionExpression=ConditionExpression,
+                ExpressionAttributeValues=ExpressionAttributeValues,
+            )
+
+        with mock.patch.object(idempotency_table, "delete_item", side_effect=racing_delete_item):
+            with self.assertRaises(app.ConflictError):
+                app._fetch_existing_idempotency(
+                    idempotency_table=idempotency_table,
+                    idempotency_key=idempotency_key,
+                    request_hash="request-hash",
+                    now=now,
+                )
+
+        self.assertIn(key_tuple, idempotency_table.items)
+        self.assertGreater(int(idempotency_table.items[key_tuple]["expires_at"]), now)
 
 
 class StorageUploadLambdaTests(unittest.TestCase):
