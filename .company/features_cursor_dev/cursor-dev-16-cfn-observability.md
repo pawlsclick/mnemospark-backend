@@ -8,7 +8,7 @@
 
 ## Scope
 
-Add a **CloudFormation** template (or extend existing) for **observability**: CloudWatch log group(s) for API Gateway access logging and Lambda execution; CloudWatch alarms for 4xx, 5xx, throttle, and latency. Optional: CloudTrail for API and account activity. Per [infrastructure_design/internet_facing_API.md](../infrastructure_design/internet_facing_API.md) § Logging and monitoring. Depends on cursor-dev-08 (API Gateway and Lambdas).
+Add a **CloudFormation** template (or extend existing) for **observability**: CloudWatch log group(s) for API Gateway access logging and Lambda execution; CloudWatch alarms for 4xx, 5xx, throttle, and latency. Add: CloudTrail for API and account activity. Per [infrastructure_design/internet_facing_API.md](../infrastructure_design/internet_facing_API.md) § Logging and monitoring. Depends on cursor-dev-08 (API Gateway and Lambdas).
 
 ## References
 
@@ -22,10 +22,10 @@ Add a **CloudFormation** template (or extend existing) for **observability**: Cl
 - **Acceptance criteria (checkboxes):**
   - [ ] CloudFormation defines CloudWatch log group(s) for API Gateway access logs and/or Lambda execution logs; API Gateway stage configured to write access logs to the log group (or doc how to enable).
   - [ ] At least one CloudWatch alarm for API Gateway or Lambda: e.g. 4xx count, 5xx count, throttle count, or latency (metric and threshold defined).
-  - [ ] Optional: CloudTrail or documentation for enabling it for API and account actions.
+  - [ ] Add: CloudTrail or documentation for enabling it for API and account actions.
   - [ ] Template validates; stack deploys or change-set succeeds (or README with deploy steps).
   - [ ] All taggable resources tagged with `Project: mnemospark` (or `Application: mnemospark`).
 
 ## Task string (optional)
 
-Work only in this repo; do not use BlockRun/ClawRouter or any other repo. Before implementing, read .company/features_cursor_dev/AWS_DOCS_REFERENCES.md and use the listed AWS docs for CloudFormation/SAM syntax. Add CloudFormation for observability: CloudWatch log groups (API access + Lambda), alarms for 4xx/5xx/throttle/latency. Optional CloudTrail. Ref: infrastructure_design/internet_facing_API.md § Logging and monitoring. Depends on 08. Acceptance: [ ] log groups; [ ] alarms; [ ] template validates and deploys.
+Work only in this repo; do not use BlockRun/ClawRouter or any other repo. Before implementing, read .company/features_cursor_dev/AWS_DOCS_REFERENCES.md and use the listed AWS docs for CloudFormation/SAM syntax. Add CloudFormation for observability: CloudWatch log groups (API access + Lambda), alarms for 4xx/5xx/throttle/latency. Add CloudTrail. Ref: infrastructure_design/internet_facing_API.md § Logging and monitoring. Depends on 08. Acceptance: [ ] log groups; [ ] alarms; [ ] template validates and deploys.
