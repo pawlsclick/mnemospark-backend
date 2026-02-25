@@ -1,0 +1,4 @@
+{
+  "name": "mnemospark-backend cloud environment",
+  "install": "bash -lc 'if [ ! -d /workspace/.venv ]; then python3.13 -m venv /workspace/.venv; fi && source /workspace/.venv/bin/activate && python -m pip install --upgrade pip && pip install -r requirements.txt'"
+}
