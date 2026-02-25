@@ -687,7 +687,7 @@ Resources:
       AlarmName: !Sub "${AWS::StackName}-${StageName}-api-throttle"
       AlarmDescription: Alert when API Gateway request throttling is detected.
       Namespace: AWS/ApiGateway
-      MetricName: Throttle
+      MetricName: 4XXError
       Statistic: Sum
       Period: 300
       EvaluationPeriods: 1
