@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  AWS WAFv2 Web ACL for mnemospark API Gateway REST stage.
+  Includes AWS managed rule groups and associates with an existing API stage.
+
+Parameters:
+  ApiGatewayRestApiId:
+    Type: String
+    Description: Existing API Gateway REST API ID (from cursor-dev-08 stack)
+  ApiGatewayStageName:
+    Type: String
+    Default: prod
+    Description: Existing API Gateway stage name to protect (for example prod)
+  WebAclName:
+    Type: String
+    Default: mnemospark-api-web-acl
+    Description: Name of the WAF Web ACL resource
+
+Resources:
+  MnemosparkApiWebAcl:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Ref WebAclName
+      Scope: REGIONAL
+      Description: Managed-rule Web ACL for mnemospark internet-facing API
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: mnemospark-api-web-acl
+        SampledRequestsEnabled: true
+      Rules:
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 0
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: aws-managed-common-rule-set
+            SampledRequestsEnabled: true
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 1
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: aws-managed-known-bad-inputs
+            SampledRequestsEnabled: true
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  MnemosparkApiStageWebAclAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      WebACLArn: !GetAtt MnemosparkApiWebAcl.Arn
+      ResourceArn: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${ApiGatewayRestApiId}/stages/${ApiGatewayStageName}"
+
+Outputs:
+  WebAclArn:
+    Description: ARN of the WAF Web ACL
+    Value: !GetAtt MnemosparkApiWebAcl.Arn
+  AssociatedApiGatewayStageArn:
+    Description: API Gateway stage ARN protected by this Web ACL
+    Value: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${ApiGatewayRestApiId}/stages/${ApiGatewayStageName}"
