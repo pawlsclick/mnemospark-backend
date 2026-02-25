@@ -12,7 +12,14 @@ mnemospark-backend is a serverless AWS Lambda backend (Python 3.13) using AWS SA
 - **Python 3.13** is required (matches Lambda runtime in `template.yaml`). Installed from `ppa:deadsnakes/ppa`.
 - **Virtual environment** at `/workspace/.venv` — activate with `source /workspace/.venv/bin/activate`.
 - **AWS SAM CLI** is installed in the venv (`sam --version`).
+- **AWS CLI** is installed in the venv (`aws --version`) so CloudFormation validation works without extra setup.
 - **Docker** is required for `sam local invoke` / `sam local start-api`. The daemon needs `sudo dockerd &` on fresh VM starts; fuse-overlayfs and iptables-legacy are configured for nested-container operation.
+
+### Startup setup (Cloud Agent)
+Run this once at startup to ensure the Python 3.13 venv is ready and AWS CLI is available:
+```bash
+bash /workspace/scripts/cloud_agent_startup.sh
+```
 
 ### Key commands
 | Task | Command |
@@ -20,6 +27,7 @@ mnemospark-backend is a serverless AWS Lambda backend (Python 3.13) using AWS SA
 | Lint | `source /workspace/.venv/bin/activate && ruff check examples/` |
 | Unit tests | `source /workspace/.venv/bin/activate && pytest tests/ -v` |
 | SAM validate | `cd examples/<api-dir> && sam validate` |
+| CloudFormation validate | `source /workspace/.venv/bin/activate && aws cloudformation validate-template --template-body file://template.yaml` |
 | SAM build | `cd examples/<api-dir> && sam build` |
 | Local invoke | `cd examples/<api-dir> && sam local invoke <FunctionName> -e <event.json>` |
 | Local API | `cd examples/<api-dir> && sam local start-api --port 3001` |
