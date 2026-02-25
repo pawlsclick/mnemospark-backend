@@ -173,4 +173,16 @@ class StorageUploadIntegrationTests(unittest.TestCase):
         self.assertEqual(json.loads(first["body"]), json.loads(second["body"]))
         self.assertEqual(s3_client.put_count, 1)
         self.assertEqual(len(transaction_log_table.items), 1)
+        log_item = next(iter(transaction_log_table.items.values()))
+        self.assertEqual(
+            log_item["recipient_wallet"],
+            "0x47d241ae97fe37186ac59894290ca1c54c060a6c",
+        )
+        self.assertEqual(log_item["payment_network"], "eip155:8453")
+        self.assertEqual(
+            log_item["payment_asset"],
+            "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        )
+        self.assertEqual(log_item["payment_status"], "confirmed")
+        self.assertEqual(log_item["payment_amount"], "2000000")
 
