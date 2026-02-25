@@ -119,6 +119,53 @@ class FakeS3Client:
 
 
 class StorageUploadHelperTests(unittest.TestCase):
+    def setUp(self):
+        self.original_relayer_cache = app._RELAYER_PRIVATE_KEY_CACHE
+        app._RELAYER_PRIVATE_KEY_CACHE = None
+
+    def tearDown(self):
+        app._RELAYER_PRIVATE_KEY_CACHE = self.original_relayer_cache
+
+    def test_resolve_relayer_private_key_fetches_secret_once_and_caches(self):
+        secret_client = mock.Mock()
+        secret_client.get_secret_value.return_value = {"SecretString": "  0xabc123  "}
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"MNEMOSPARK_RELAYER_SECRET_ID": "mnemospark/relayer-private-key"},
+                clear=False,
+            ),
+            mock.patch.object(app.boto3, "client", return_value=secret_client) as client_mock,
+        ):
+            first = app._resolve_relayer_private_key()
+            second = app._resolve_relayer_private_key()
+
+        self.assertEqual(first, "0xabc123")
+        self.assertEqual(second, "0xabc123")
+        client_mock.assert_called_once_with("secretsmanager")
+        secret_client.get_secret_value.assert_called_once_with(
+            SecretId="mnemospark/relayer-private-key"
+        )
+
+    def test_resolve_relayer_private_key_decodes_secret_binary(self):
+        secret_client = mock.Mock()
+        secret_client.get_secret_value.return_value = {
+            "SecretBinary": base64.b64encode(b"0xfeedbeef").decode("ascii")
+        }
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"MNEMOSPARK_RELAYER_SECRET_ID": "mnemospark/relayer-private-key"},
+                clear=False,
+            ),
+            mock.patch.object(app.boto3, "client", return_value=secret_client),
+        ):
+            relayer_key = app._resolve_relayer_private_key()
+
+        self.assertEqual(relayer_key, "0xfeedbeef")
+
     def test_ensure_bucket_exists_omits_location_constraint_for_us_east_1(self):
         s3_client = FakeS3Client()
 
@@ -438,6 +485,56 @@ class StorageUploadLambdaTests(unittest.TestCase):
 
 
 class Eip712VerificationTests(unittest.TestCase):
+    def test_verify_and_settle_payment_onchain_mode_calls_onchain_settlement(self):
+        wallet_address = "0x1111111111111111111111111111111111111111"
+        recipient_wallet = "0x47d241ae97fe37186ac59894290ca1c54c060a6c"
+        asset = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+        network = "eip155:8453"
+        now = int(time.time())
+        authorization = app.TransferAuthorization(
+            signature="0x" + ("11" * 65),
+            from_address=wallet_address,
+            to_address=recipient_wallet,
+            value=2_000_000,
+            valid_after=now - 5,
+            valid_before=now + 300,
+            nonce="0x" + ("ab" * 32),
+            network=network,
+            asset=asset,
+            domain_name="USD Coin",
+            domain_version="2",
+        )
+        requirements = {
+            "network": network,
+            "asset": asset,
+            "payTo": recipient_wallet,
+            "amount": "2000000",
+        }
+
+        with (
+            mock.patch.dict(os.environ, {"MNEMOSPARK_PAYMENT_SETTLEMENT_MODE": "onchain"}, clear=False),
+            mock.patch.object(app, "_decode_payment_payload", return_value={}),
+            mock.patch.object(app, "_extract_transfer_authorization", return_value=authorization),
+            mock.patch.object(app, "_recover_authorization_signer", return_value=wallet_address),
+            mock.patch.object(app, "_onchain_settle_payment", return_value="0xonchain123") as onchain_mock,
+        ):
+            result = app.verify_and_settle_payment(
+                payment_header="signed-payload",
+                wallet_address=wallet_address,
+                quote_id="quote-onchain",
+                expected_amount=2_000_000,
+                expected_recipient=recipient_wallet,
+                expected_network=network,
+                expected_asset=asset,
+                requirements=requirements,
+            )
+
+        self.assertEqual(result.trans_id, "0xonchain123")
+        self.assertEqual(result.network, network)
+        self.assertEqual(result.asset, asset)
+        self.assertEqual(result.amount, 2_000_000)
+        onchain_mock.assert_called_once_with(authorization)
+
     def test_verify_and_settle_payment_valid_signature_mock_settlement(self):
         try:
             from eth_account import Account
