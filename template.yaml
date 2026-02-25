@@ -42,7 +42,8 @@ Resources:
             Limit: 10000
             Period: MONTH
           Tags:
-            Project: mnemospark
+            - Key: Project
+              Value: mnemospark
       MethodSettings:
         - ResourcePath: "/*"
           HttpMethod: "*"
