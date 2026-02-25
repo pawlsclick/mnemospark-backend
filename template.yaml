@@ -649,6 +649,19 @@ Resources:
               - method.request.header.x-api-key:
                   Required: true
                   Caching: false
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:HeadBucket
+                - s3:HeadObject
+                - s3:DeleteObject
+                - s3:ListBucket
+                - s3:DeleteBucket
+              Resource:
+                - !Sub "arn:aws:s3:::mnemospark-*"
+                - !Sub "arn:aws:s3:::mnemospark-*/*"
 
   EstimateStorageFunctionLogGroup:
     Type: AWS::Logs::LogGroup
