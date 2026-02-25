@@ -25,8 +25,9 @@ Parameters:
       - PriceClass_All
     Description: CloudFront price class
   AlternateDomainNames:
-    Type: CommaDelimitedList
+    Type: String
     Default: ""
+    AllowedPattern: "^$|[^,]+(,[^,]+)*$"
     Description: Optional alternate domain names (CNAMEs), comma-delimited
   CloudFrontAcmCertificateArn:
     Type: String
@@ -40,20 +41,20 @@ Parameters:
 
 Rules:
   AlternateDomainNamesRequireCertificate:
-    RuleCondition: !Not [!Equals [!Join ["", !Ref AlternateDomainNames], ""]]
+    RuleCondition: !Not [!Equals [!Ref AlternateDomainNames, ""]]
     Assertions:
       - Assert: !Not [!Equals [!Ref CloudFrontAcmCertificateArn, ""]]
         AssertDescription: Set CloudFrontAcmCertificateArn when AlternateDomainNames are provided.
   CertificateRequiresAlternateDomainNames:
     RuleCondition: !Not [!Equals [!Ref CloudFrontAcmCertificateArn, ""]]
     Assertions:
-      - Assert: !Not [!Equals [!Join ["", !Ref AlternateDomainNames], ""]]
+      - Assert: !Not [!Equals [!Ref AlternateDomainNames, ""]]
         AssertDescription: Set AlternateDomainNames when CloudFrontAcmCertificateArn is provided.
 
 Conditions:
   HasOriginPath: !Not [!Equals [!Ref ApiGatewayOriginPath, ""]]
   HasCustomCertificate: !Not [!Equals [!Ref CloudFrontAcmCertificateArn, ""]]
-  HasAlternateDomainNames: !Not [!Equals [!Join ["", !Ref AlternateDomainNames], ""]]
+  HasAlternateDomainNames: !Not [!Equals [!Ref AlternateDomainNames, ""]]
   HasWafWebAcl: !Not [!Equals [!Ref WafWebAclArn, ""]]
 
 Resources:
@@ -66,7 +67,7 @@ Resources:
         HttpVersion: http2
         IPV6Enabled: true
         PriceClass: !Ref PriceClass
-        Aliases: !If [HasAlternateDomainNames, !Ref AlternateDomainNames, !Ref AWS::NoValue]
+        Aliases: !If [HasAlternateDomainNames, !Split [",", !Ref AlternateDomainNames], !Ref AWS::NoValue]
         WebACLId: !If [HasWafWebAcl, !Ref WafWebAclArn, !Ref AWS::NoValue]
         Origins:
           - Id: api-gateway-origin
