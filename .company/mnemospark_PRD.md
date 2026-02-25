@@ -1,9 +1,13 @@
 # mnemospark – Product Requirements Document (PRD)
 
-**Version:** 2.2  
+**Version:** 2.3  
 **Last updated:** February 2026  
 **Source:** [mnemospark_product_spec_v3.md](./mnemospark_product_spec_v3.md)  
 **Audience:** Product, Engineering, Leadership, Antfarm feature development
+
+**Changelog (v2.3):**
+
+- **Secrets management:** Relayer private key (Base wallet) must be stored in **AWS Secrets Manager** only—never in environment variables, CloudFormation parameters, or code. See [infrastructure_design/secrets_management.md](./infrastructure_design/secrets_management.md). Implemented via cursor-dev-18 (Secrets Manager for relayer key). R8c added; PRD → Feature mapping and References updated.
 
 **Changelog (v2.2):**
 
@@ -114,6 +118,7 @@ OpenClaw agents need **persistent, sovereign storage** for state, memories, and 
 - **R7.** **Agent-facing API:** REST: Upload object, Download object, List (prefix/object). All require per-request x402. No separate “get storage usage” endpoint in MVP; `/cloud ls` is sufficient. Idempotency for upload per [mnemospark_backend_api_spec.md](./mnemospark_backend_api_spec.md) §8 (optional key, 24h TTL). Full API contract (auth, payloads, errors) in [mnemospark_backend_api_spec.md](./mnemospark_backend_api_spec.md) and [mnemospark_full_workflow.md](./mnemospark_full_workflow.md).
 - **R8.** **OpenClaw integration:** Plugin installable via OpenClaw plugin system; config under `openclaw.json` or `~/.openclaw/mnemospark/`; wallet at `~/.openclaw/blockrun/wallet.key` if present, else `~/.openclaw/mnemospark/key/wallet.key`; object lifecycle log per workflow at `~/.openclaw/mnemospark/object.log`; audit/activity log at `~/.openclaw/mnemospark/logs/`; commands **`/wallet`, `/cloud`** (and subcommands per [mnemospark_full_workflow.md](./mnemospark_full_workflow.md)); gateway starts when OpenClaw gateway runs, stops on service `stop()`. **mnemospark proxy port: 7120** (configurable via `MNEMOSPARK_PROXY_PORT`).
 - **R8b.** **Backend API architecture:** mnemospark-backend exposes **one internet-facing REST API** (API Gateway). Requests are routed **by path** to **specific Lambda functions**; each Lambda has a single responsibility and least-privilege IAM. Backend is secured by **API key** (proxy/server-to-backend); details in [mnemospark_backend_api_spec.md](./mnemospark_backend_api_spec.md) §1. Path-to-Lambda mapping and full API contract: [mnemospark_full_workflow.md](./mnemospark_full_workflow.md) § mnemospark-backend API architecture and [mnemospark_backend_api_spec.md](./mnemospark_backend_api_spec.md) (e.g. `POST /estimate/storage` → S3 storage cost Lambda; `POST /price-storage` → price-storage orchestrator Lambda; `POST /storage/upload`, `GET /storage/ls`, etc. → object storage Lambda). Deployment should follow [infrastructure_design/internet_facing_API.md](./infrastructure_design/internet_facing_API.md) for the public API.
+- **R8c.** **Secrets management (relayer key):** The **Base wallet relayer private key** used for on-chain USDC settlement must be stored in **AWS Secrets Manager** only (e.g. secret ID `mnemospark/relayer-private-key`). It must not live in Lambda environment variables, CloudFormation/SAM parameters, or application code. The upload Lambda reads it at runtime via `secretsmanager:GetSecretValue`; use only in memory for signing; never log or expose it. See [infrastructure_design/secrets_management.md](./infrastructure_design/secrets_management.md).
 - **R9.** **Usage source of truth:** **No internal ledger** for GB stored. Use **AWS APIs only** (S3, Cost Explorer/GetCostForecast) for usage and billing.
 - **R10.** **MVP scope:** AWS S3 only (no Glacier); 2–3 regions; no region premium; cost + markup only.
 - **R11.** **Encryption (MVP):** **Client-held envelope encryption only** (KEK/DEK) per `mvp_option_aws_client_encryption.md`: client stores KEK in key store (file under `~/.openclaw/mnemospark/keys/`); client encrypts payload with DEK, wraps DEK with KEK; backend stores only ciphertext + wrapped_DEK. Goal: “their data, their key.” No Phase 1 (SSE-S3/SSE-KMS) in scope.
@@ -178,6 +183,7 @@ OpenClaw agents need **persistent, sovereign storage** for state, memories, and 
 | R6 (Tenant model: bucket-per-wallet, single account) | Feature 05 (Bucket-per-wallet provisioning)                              |
 | R7 (Agent-facing API)                                | Feature 06                                                               |
 | R8 (OpenClaw integration)                            | Feature 07 (OpenClaw Plugin Integration)                                 |
+| R8c (Secrets: relayer key in Secrets Manager)        | cursor-dev-18 (Secrets Manager for relayer private key)                  |
 | R9 (Usage source of truth)                           | Feature 02, Feature 03                                                   |
 | R10 (MVP scope)                                      | All features                                                             |
 | R11 (Encryption: client-held KEK/DEK only)           | Feature 02, Encryption module (KEK/DEK, key store)                       |
@@ -221,6 +227,8 @@ See [mnemospark_full_workflow.md](./mnemospark_full_workflow.md) for full workfl
 - **Full workflow:** [mnemospark_full_workflow.md](./mnemospark_full_workflow.md)
 - **Backend API spec:** [mnemospark_backend_api_spec.md](./mnemospark_backend_api_spec.md) — REST API contract (paths, API key auth, request/response, idempotency, errors, presigned URL flows).
 - **Infrastructure (security):** [infrastructure_design/internet_facing_API.md](./infrastructure_design/internet_facing_API.md) — AWS security and hardening for the backend API (API Gateway, WAF, throttling, etc.).
+- **Secrets management:** [infrastructure_design/secrets_management.md](./infrastructure_design/secrets_management.md) — Relayer private key in AWS Secrets Manager only; no env vars or parameters for the key.
 - **Feature specs:** [.company/features/README.md](./features/README.md)
+- **Cursor Cloud Agent features:** [.company/features_cursor_dev/README.md](./features_cursor_dev/README.md) — cursor-dev-01 through cursor-dev-18 (backend + client micro-features).
 - **Spec feedback (sr. engineer):** [.company/features/spec_feedback_for_sr_engineer.md](./features/spec_feedback_for_sr_engineer.md)
 - **Client-held encryption (Phase 2):** [.company/archive/mvp_option_aws_client_encryption.md](./archive/mvp_option_aws_client_encryption.md)

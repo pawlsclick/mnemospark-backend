@@ -25,7 +25,7 @@ The agent must work **only in the repo it was started in**. Do **not** open, clo
 
 | Features     | Repo to run agent from | Notes                                                                                                                                                                                                                      |
 | ------------ | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 01–10, 15–17 | **mnemospark-backend** | Seed first (see above). Backend infra (08, 15–17) is built with **CloudFormation** (or SAM) per [infrastructure_design/internet_facing_API.md](../infrastructure_design/internet_facing_API.md).                           |
+| 01–10, 15–18 | **mnemospark-backend** | Seed first (see above). Backend infra (08, 15–17) is built with **CloudFormation** (or SAM) per [infrastructure_design/internet_facing_API.md](../infrastructure_design/internet_facing_API.md). Secrets (18) per [infrastructure_design/secrets_management.md](../infrastructure_design/secrets_management.md). |
 | 11–14        | **mnemospark**         | Plugin/client.                                                                                                                                                                                                             |
 
 **mnemospark proxy port:** For client features (11–14), the mnemospark proxy listens on **port 7120** by default. Agents and config should use `http://127.0.0.1:7120` when talking to the proxy (configurable via `MNEMOSPARK_PROXY_PORT`).
@@ -53,6 +53,7 @@ Each feature file includes:
 - **08** (API Gateway) can be done after the first Lambda exists; implement via CloudFormation or SAM.
 - **15** (WAF), **16** (observability), **17** (CloudFront, optional) after **08**.
 - **10** (housekeeping) after **04** (upload).
+- **18** (secrets: relayer key in Secrets Manager) after **04** (upload Lambda exists); implements [infrastructure_design/secrets_management.md](../infrastructure_design/secrets_management.md).
 - **11–14** (client) after backend routes exist.
 
 ---
@@ -74,6 +75,7 @@ Each feature file includes:
 | 15  | [cursor-dev-15-cfn-waf.md](cursor-dev-15-cfn-waf.md)                                     | CloudFormation: WAF                               |
 | 16  | [cursor-dev-16-cfn-observability.md](cursor-dev-16-cfn-observability.md)                 | CloudFormation: Observability                     |
 | 17  | [cursor-dev-17-cfn-cloudfront.md](cursor-dev-17-cfn-cloudfront.md)                       | CloudFormation: CloudFront (optional)             |
+| 18  | [cursor-dev-18-secrets-relayer-key.md](cursor-dev-18-secrets-relayer-key.md)             | Secrets Manager for relayer private key           |
 | 11  | [cursor-dev-11-client-cloud-backup.md](cursor-dev-11-client-cloud-backup.md)             | Client /cloud backup                              |
 | 12  | [cursor-dev-12-client-price-storage.md](cursor-dev-12-client-price-storage.md)           | Client /cloud price-storage                       |
 | 13  | [cursor-dev-13-client-upload.md](cursor-dev-13-client-upload.md)                         | Client /cloud upload                              |
