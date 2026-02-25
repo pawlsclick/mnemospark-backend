@@ -966,15 +966,29 @@ def _write_transaction_log(
     now: int,
     request: ParsedUploadRequest,
     quote_context: QuoteContext,
+    payment_config: dict[str, str],
+    payment_result: PaymentVerificationResult,
     trans_id: str,
     bucket_name: str,
 ) -> None:
     timestamp = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    payment_received_at = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+    payment_asset = (
+        payment_result.asset.lower()
+        if isinstance(payment_result.asset, str)
+        else str(payment_result.asset)
+    )
     transaction_log_table.put_item(
         Item={
             "quote_id": request.quote_id,
             "trans_id": trans_id,
             "timestamp": timestamp,
+            "payment_received_at": payment_received_at,
+            "payment_status": "confirmed",
+            "recipient_wallet": payment_config["recipient_wallet"],
+            "payment_network": payment_result.network,
+            "payment_asset": payment_asset,
+            "payment_amount": str(payment_result.amount),
             "addr": request.wallet_address,
             "addr_hash": _wallet_hash(request.wallet_address),
             "storage_price": quote_context.storage_price,
@@ -1060,6 +1074,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             now=now,
             request=request,
             quote_context=quote_context,
+            payment_config=payment_config,
+            payment_result=payment_result,
             trans_id=payment_result.trans_id,
             bucket_name=bucket_name,
         )

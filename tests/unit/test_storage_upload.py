@@ -411,6 +411,17 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertEqual(log_item["trans_id"], "0xabc123")
         self.assertEqual(log_item["object_id"], self.object_id)
         self.assertEqual(log_item["object_key"], self.object_id)
+        self.assertEqual(
+            log_item["recipient_wallet"],
+            "0x47d241ae97fe37186ac59894290ca1c54c060a6c",
+        )
+        self.assertEqual(log_item["payment_network"], "eip155:8453")
+        self.assertEqual(
+            log_item["payment_asset"],
+            "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        )
+        self.assertEqual(log_item["payment_status"], "confirmed")
+        self.assertEqual(log_item["payment_amount"], "1250000")
 
         idem_item = self.idempotency_table.items[(("idempotency_key", "idem-456"),)]
         self.assertEqual(idem_item["status"], "completed")
