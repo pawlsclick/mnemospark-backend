@@ -69,6 +69,24 @@ Resources:
         - Key: Project
           Value: mnemospark
 
+  UploadIdempotencyTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-upload-idempotency"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: idempotency_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: idempotency_key
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
   PriceStorageLambdaRole:
     Type: AWS::IAM::Role
     Properties:
@@ -130,6 +148,30 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:UpdateItem
                 Resource: !GetAtt UploadTransactionLogTable.Arn
+        - PolicyName: upload-dynamodb-idempotency
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt UploadIdempotencyTable.Arn
+        - PolicyName: upload-s3-storage-write
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:HeadBucket
+                  - s3:PutObject
+                Resource:
+                  - !Sub "arn:aws:s3:::mnemospark-*"
+                  - !Sub "arn:aws:s3:::mnemospark-*/*"
       Tags:
         - Key: Project
           Value: mnemospark
@@ -207,7 +249,7 @@ Resources:
           {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.resourcePath","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationError":"$context.integrationErrorMessage"}
       Cors:
         AllowMethods: "'GET,POST,DELETE,OPTIONS'"
-        AllowHeaders: "'Content-Type,x-api-key,Idempotency-Key,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,x-payment,x-payment-required,x-payment-response'"
+        AllowHeaders: "'Content-Type,x-api-key,Idempotency-Key,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,X-PAYMENT,x-payment,x-payment-required,x-payment-response'"
         AllowOrigin: "'*'"
       Models:
         EstimateStorageRequest:
@@ -264,6 +306,8 @@ Resources:
             - wallet_address
             - object_id
             - object_id_hash
+            - ciphertext
+            - wrapped_dek
           properties:
             quote_id:
               type: string
@@ -272,6 +316,16 @@ Resources:
             object_id:
               type: string
             object_id_hash:
+              type: string
+            object_key:
+              type: string
+            ciphertext:
+              type: string
+            wrapped_dek:
+              type: string
+            provider:
+              type: string
+            location:
               type: string
         StorageObjectRequest:
           type: object
@@ -432,6 +486,18 @@ Resources:
     Properties:
       Handler: app.lambda_handler
       CodeUri: services/storage-upload
+      Role: !GetAtt UploadLambdaRole.Arn
+      Environment:
+        Variables:
+          QUOTES_TABLE_NAME: !Ref QuotesTable
+          UPLOAD_TRANSACTION_LOG_TABLE_NAME: !Ref UploadTransactionLogTable
+          UPLOAD_IDEMPOTENCY_TABLE_NAME: !Ref UploadIdempotencyTable
+          MNEMOSPARK_RECIPIENT_WALLET: !Ref MnemosparkRecipientWallet
+          MNEMOSPARK_PAYMENT_NETWORK: !Ref PaymentNetwork
+          MNEMOSPARK_PAYMENT_ASSET: !Ref PaymentAssetAddress
+          MNEMOSPARK_PAYMENT_SETTLEMENT_MODE: !Ref PaymentSettlementMode
+          MNEMOSPARK_BASE_RPC_URL: !Ref BaseRpcUrl
+          MNEMOSPARK_RELAYER_PRIVATE_KEY: !Ref RelayerPrivateKey
       Events:
         StorageUploadPost:
           Type: Api
@@ -447,6 +513,18 @@ Resources:
             RequestParameters:
               - method.request.header.x-api-key:
                   Required: true
+                  Caching: false
+              - method.request.header.Idempotency-Key:
+                  Required: false
+                  Caching: false
+              - method.request.header.PAYMENT-SIGNATURE:
+                  Required: false
+                  Caching: false
+              - method.request.header.x-payment:
+                  Required: false
+                  Caching: false
+              - method.request.header.X-PAYMENT:
+                  Required: false
                   Caching: false
 
   StorageLsFunction:
@@ -811,6 +889,16 @@ Outputs:
     Value: !GetAtt UploadTransactionLogTable.Arn
     Export:
       Name: !Sub "${AWS::StackName}-UploadTransactionLogTableArn"
+  UploadIdempotencyTableName:
+    Description: DynamoDB table name for upload idempotency records
+    Value: !Ref UploadIdempotencyTable
+    Export:
+      Name: !Sub "${AWS::StackName}-UploadIdempotencyTableName"
+  UploadIdempotencyTableArn:
+    Description: DynamoDB table ARN for upload idempotency records
+    Value: !GetAtt UploadIdempotencyTable.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-UploadIdempotencyTableArn"
   PriceStorageLambdaRoleArn:
     Description: IAM role ARN for price-storage Lambda (quotes read/write)
     Value: !GetAtt PriceStorageLambdaRole.Arn
