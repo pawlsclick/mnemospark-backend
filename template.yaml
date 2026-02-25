@@ -219,6 +219,14 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:s3:::mnemospark-*"
                   - !Sub "arn:aws:s3:::mnemospark-*/*"
+        - PolicyName: upload-relayer-secret-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:mnemospark/relayer-private-key*"
       Tags:
         - Key: Project
           Value: mnemospark
@@ -544,7 +552,8 @@ Resources:
           MNEMOSPARK_PAYMENT_ASSET: !Ref PaymentAssetAddress
           MNEMOSPARK_PAYMENT_SETTLEMENT_MODE: !Ref PaymentSettlementMode
           MNEMOSPARK_BASE_RPC_URL: !Ref BaseRpcUrl
-          MNEMOSPARK_RELAYER_PRIVATE_KEY: !Ref RelayerPrivateKey
+          # Secret value is created out-of-band by operator/pipeline in Secrets Manager.
+          MNEMOSPARK_RELAYER_SECRET_ID: mnemospark/relayer-private-key
       Events:
         StorageUploadPost:
           Type: Api
