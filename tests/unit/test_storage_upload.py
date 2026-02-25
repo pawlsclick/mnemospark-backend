@@ -106,6 +106,57 @@ class FakeS3Client:
         return {}
 
 
+class StorageUploadHelperTests(unittest.TestCase):
+    def test_ensure_bucket_exists_omits_location_constraint_for_us_east_1(self):
+        s3_client = FakeS3Client()
+
+        app._ensure_bucket_exists(
+            s3_client=s3_client,
+            bucket_name="mnemospark-test-bucket",
+            location=app.US_EAST_1_REGION,
+        )
+
+        self.assertEqual(len(s3_client.created_buckets), 1)
+        self.assertIsNone(s3_client.created_buckets[0]["CreateBucketConfiguration"])
+
+    def test_ensure_bucket_exists_sets_location_constraint_for_other_regions(self):
+        s3_client = FakeS3Client()
+
+        app._ensure_bucket_exists(
+            s3_client=s3_client,
+            bucket_name="mnemospark-test-bucket",
+            location="eu-west-1",
+        )
+
+        self.assertEqual(len(s3_client.created_buckets), 1)
+        self.assertEqual(
+            s3_client.created_buckets[0]["CreateBucketConfiguration"],
+            {"LocationConstraint": "eu-west-1"},
+        )
+
+    def test_extract_transfer_authorization_preserves_explicit_zero_value(self):
+        payment_payload = {
+            "payload": {
+                "signature": "0x" + ("11" * 65),
+                "authorization": {
+                    "from": "0x1111111111111111111111111111111111111111",
+                    "to": "0x2222222222222222222222222222222222222222",
+                    "value": 0,
+                    "validAfter": 1,
+                    "validBefore": 2,
+                    "nonce": "0x" + ("ab" * 32),
+                    "network": "eip155:8453",
+                    "asset": "0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+                },
+            },
+            "accepted": [{"maxAmountRequired": 999999}],
+        }
+
+        authorization = app._extract_transfer_authorization(payment_payload)
+
+        self.assertEqual(authorization.value, 0)
+
+
 class StorageUploadLambdaTests(unittest.TestCase):
     def setUp(self):
         self.wallet_address = "0x1111111111111111111111111111111111111111"

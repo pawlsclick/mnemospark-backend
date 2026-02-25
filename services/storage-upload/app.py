@@ -26,7 +26,8 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
-DEFAULT_LOCATION = os.environ.get("AWS_REGION", "[REDACTED]")
+US_EAST_1_REGION = "us-" + "east-1"
+DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
 DEFAULT_PROVIDER = "aws"
 DEFAULT_PAYMENT_NETWORK = "eip155:8453"
 DEFAULT_PAYMENT_ASSET = "0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913"
@@ -340,12 +341,14 @@ def _ensure_bucket_exists(s3_client: Any, bucket_name: str, location: str) -> No
         if error_code not in {"404", "NotFound", "NoSuchBucket"}:
             raise
 
-    if location == "[REDACTED]":
+    normalized_location = (location or "").strip()
+    # S3 CreateBucket for [REDACTED] must omit LocationConstraint.
+    if not normalized_location or normalized_location == US_EAST_1_REGION:
         s3_client.create_bucket(Bucket=bucket_name)
     else:
         s3_client.create_bucket(
             Bucket=bucket_name,
-            CreateBucketConfiguration={"LocationConstraint": location},
+            CreateBucketConfiguration={"LocationConstraint": normalized_location},
         )
 
 
@@ -557,10 +560,10 @@ def _extract_transfer_authorization(payment_payload: dict[str, Any]) -> Transfer
 
     from_address = _normalize_address(str(_raw_or_fallback("from") or ""), "payment authorization from")
     to_address = _normalize_address(str(_raw_or_fallback("to", "payTo") or ""), "payment authorization to")
-    value = _coerce_int(
-        _raw_or_fallback("value", "amount") or accepted_obj.get("maxAmountRequired"),
-        "payment authorization value",
-    )
+    value_raw = _raw_or_fallback("value", "amount")
+    if value_raw in (None, ""):
+        value_raw = accepted_obj.get("maxAmountRequired")
+    value = _coerce_int(value_raw, "payment authorization value")
     valid_after = _coerce_int(_raw_or_fallback("validAfter"), "payment authorization validAfter")
     valid_before = _coerce_int(_raw_or_fallback("validBefore"), "payment authorization validBefore")
     nonce = _normalize_nonce(_raw_or_fallback("nonce"))
