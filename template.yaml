@@ -10,34 +10,14 @@ Parameters:
     Type: String
     Default: prod
     Description: API Gateway stage name
-  MnemosparkRecipientWallet:
+  PriceStorageMarkupPercent:
     Type: String
-    Default: "0x47D241ae97fE37186AC59894290CA1c54c060A6c"
-    Description: Recipient wallet address for USDC payments on Base.
-  PaymentNetwork:
+    Default: "10"
+    Description: Percent markup added to (storage + transfer) quote, e.g. 15 = 15%
+  PriceStorageQuoteTtlSeconds:
     Type: String
-    Default: "eip155:8453"
-    Description: CAIP-2 network id for payment settlement.
-  PaymentAssetAddress:
-    Type: String
-    Default: "0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913"
-    Description: USDC token contract address for payment authorization.
-  PaymentSettlementMode:
-    Type: String
-    Default: "mock"
-    AllowedValues:
-      - mock
-      - onchain
-    Description: Settlement mode for payment processing.
-  BaseRpcUrl:
-    Type: String
-    Default: ""
-    Description: Base RPC URL for on-chain settlement mode.
-  RelayerPrivateKey:
-    Type: String
-    Default: ""
-    NoEcho: true
-    Description: Private key used for on-chain settlement mode.
+    Default: "3600"
+    Description: Quote TTL in seconds for DynamoDB expiration
 
 Globals:
   Function:
@@ -431,6 +411,14 @@ Resources:
     Properties:
       Handler: app.lambda_handler
       CodeUri: services/price-storage
+      Role: !GetAtt PriceStorageLambdaRole.Arn
+      Environment:
+        Variables:
+          QUOTES_TABLE_NAME: !Ref QuotesTable
+          QUOTE_TTL_SECONDS: !Ref PriceStorageQuoteTtlSeconds
+          PRICE_STORAGE_MARKUP_PERCENT: !Ref PriceStorageMarkupPercent
+          PRICE_STORAGE_TRANSFER_DIRECTION: out
+          PRICE_STORAGE_RATE_TYPE: BEFORE_DISCOUNTS
       Events:
         PriceStoragePost:
           Type: Api
