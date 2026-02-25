@@ -1,8 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  mnemospark-backend API estimate routes.
-  Resources are tagged with Project: mnemospark.
+  mnemospark-backend internet-facing REST API.
+  Path-based routing to Lambda functions with API key auth, throttling,
+  quota, request validation, and CORS. Resources are tagged Project: mnemospark.
 
 Parameters:
   StageName:
@@ -10,16 +11,26 @@ Parameters:
     Default: prod
     Description: API Gateway stage name
 
+Globals:
+  Function:
+    Runtime: python3.13
+    MemorySize: 256
+    Timeout: 60
+    Tags:
+      Project: mnemospark
+
 Resources:
   MnemosparkBackendApi:
     Type: AWS::Serverless::Api
     Properties:
       Name: mnemospark-backend-api
       StageName: !Ref StageName
+      EndpointConfiguration: REGIONAL
       Tags:
         Project: mnemospark
       Auth:
         ApiKeyRequired: true
+        AddApiKeyRequiredToCorsPreflight: false
         UsagePlan:
           CreateUsagePlan: PER_API
           UsagePlanName: !Sub "${AWS::StackName}-usage-plan"
@@ -27,21 +38,102 @@ Resources:
           Throttle:
             RateLimit: 10
             BurstLimit: 20
+          Quota:
+            Limit: 10000
+            Period: MONTH
+          Tags:
+            Project: mnemospark
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
       Cors:
-        AllowMethods: "'GET,POST,OPTIONS'"
-        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+        AllowMethods: "'GET,POST,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,x-api-key,Idempotency-Key,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,x-payment,x-payment-required,x-payment-response'"
         AllowOrigin: "'*'"
+      Models:
+        EstimateStorageRequest:
+          type: object
+          required:
+            - gb
+          properties:
+            gb:
+              type: number
+            region:
+              type: string
+            rateType:
+              type: string
+        EstimateTransferRequest:
+          type: object
+          properties:
+            direction:
+              type: string
+              enum:
+                - in
+                - out
+            gb:
+              type: number
+            region:
+              type: string
+            rateType:
+              type: string
+        PriceStorageRequest:
+          type: object
+          required:
+            - wallet_address
+            - object_id
+            - object_id_hash
+            - gb
+            - provider
+            - region
+          properties:
+            wallet_address:
+              type: string
+            object_id:
+              type: string
+            object_id_hash:
+              type: string
+            gb:
+              type: number
+            provider:
+              type: string
+            region:
+              type: string
+        StorageUploadRequest:
+          type: object
+          required:
+            - quote_id
+            - wallet_address
+            - object_id
+            - object_id_hash
+          properties:
+            quote_id:
+              type: string
+            wallet_address:
+              type: string
+            object_id:
+              type: string
+            object_id_hash:
+              type: string
+        StorageObjectRequest:
+          type: object
+          required:
+            - wallet_address
+            - object_key
+          properties:
+            wallet_address:
+              type: string
+            object_key:
+              type: string
+            location:
+              type: string
 
   EstimateStorageFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Tags:
-        Project: mnemospark
       Handler: app.lambda_handler
-      Runtime: python3.13
       CodeUri: services/estimate-storage
-      MemorySize: 256
-      Timeout: 60
       Events:
         EstimateStorageGet:
           Type: Api
@@ -49,12 +141,34 @@ Resources:
             RestApiId: !Ref MnemosparkBackendApi
             Path: /estimate/storage
             Method: GET
+            RequestParameters:
+              - method.request.header.x-api-key:
+                  Required: true
+                  Caching: false
+              - method.request.querystring.gb:
+                  Required: true
+                  Caching: false
+              - method.request.querystring.region:
+                  Required: false
+                  Caching: false
+              - method.request.querystring.rateType:
+                  Required: false
+                  Caching: false
         EstimateStoragePost:
           Type: Api
           Properties:
             RestApiId: !Ref MnemosparkBackendApi
             Path: /estimate/storage
             Method: POST
+            RequestModel:
+              Model: EstimateStorageRequest
+              Required: true
+              ValidateBody: true
+              ValidateParameters: true
+            RequestParameters:
+              - method.request.header.x-api-key:
+                  Required: true
+                  Caching: false
       Policies:
         - Version: "2012-10-17"
           Statement:
@@ -72,13 +186,8 @@ Resources:
   EstimateTransferFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Tags:
-        Project: mnemospark
       Handler: app.lambda_handler
-      Runtime: python3.13
       CodeUri: services/estimate-transfer
-      MemorySize: 256
-      Timeout: 60
       Events:
         EstimateTransferGet:
           Type: Api
@@ -86,12 +195,37 @@ Resources:
             RestApiId: !Ref MnemosparkBackendApi
             Path: /estimate/transfer
             Method: GET
+            RequestParameters:
+              - method.request.header.x-api-key:
+                  Required: true
+                  Caching: false
+              - method.request.querystring.direction:
+                  Required: false
+                  Caching: false
+              - method.request.querystring.gb:
+                  Required: false
+                  Caching: false
+              - method.request.querystring.region:
+                  Required: false
+                  Caching: false
+              - method.request.querystring.rateType:
+                  Required: false
+                  Caching: false
         EstimateTransferPost:
           Type: Api
           Properties:
             RestApiId: !Ref MnemosparkBackendApi
             Path: /estimate/transfer
             Method: POST
+            RequestModel:
+              Model: EstimateTransferRequest
+              Required: true
+              ValidateBody: true
+              ValidateParameters: true
+            RequestParameters:
+              - method.request.header.x-api-key:
+                  Required: true
+                  Caching: false
       Policies:
         - Version: "2012-10-17"
           Statement:
@@ -106,20 +240,197 @@ Resources:
               Action: sts:GetCallerIdentity
               Resource: "*"
 
+  PriceStorageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: services/price-storage
+      Events:
+        PriceStoragePost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /price-storage
+            Method: POST
+            RequestModel:
+              Model: PriceStorageRequest
+              Required: true
+              ValidateBody: true
+              ValidateParameters: true
+            RequestParameters:
+              - method.request.header.x-api-key:
+                  Required: true
+                  Caching: false
+
+  StorageUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: services/storage-upload
+      Events:
+        StorageUploadPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/upload
+            Method: POST
+            RequestModel:
+              Model: StorageUploadRequest
+              Required: true
+              ValidateBody: true
+              ValidateParameters: true
+            RequestParameters:
+              - method.request.header.x-api-key:
+                  Required: true
+                  Caching: false
+
+  StorageLsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: services/storage-ls
+      Events:
+        StorageLsGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/ls
+            Method: GET
+            RequestParameters:
+              - method.request.header.x-api-key:
+                  Required: true
+                  Caching: false
+              - method.request.querystring.wallet_address:
+                  Required: true
+                  Caching: false
+              - method.request.querystring.object_key:
+                  Required: true
+                  Caching: false
+              - method.request.querystring.location:
+                  Required: false
+                  Caching: false
+        StorageLsPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/ls
+            Method: POST
+            RequestModel:
+              Model: StorageObjectRequest
+              Required: true
+              ValidateBody: true
+              ValidateParameters: true
+            RequestParameters:
+              - method.request.header.x-api-key:
+                  Required: true
+                  Caching: false
+
+  StorageDownloadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: services/storage-download
+      Events:
+        StorageDownloadGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/download
+            Method: GET
+            RequestParameters:
+              - method.request.header.x-api-key:
+                  Required: true
+                  Caching: false
+              - method.request.querystring.wallet_address:
+                  Required: true
+                  Caching: false
+              - method.request.querystring.object_key:
+                  Required: true
+                  Caching: false
+              - method.request.querystring.location:
+                  Required: false
+                  Caching: false
+        StorageDownloadPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/download
+            Method: POST
+            RequestModel:
+              Model: StorageObjectRequest
+              Required: true
+              ValidateBody: true
+              ValidateParameters: true
+            RequestParameters:
+              - method.request.header.x-api-key:
+                  Required: true
+                  Caching: false
+
+  StorageDeleteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: services/storage-delete
+      Events:
+        StorageDeleteDelete:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/delete
+            Method: DELETE
+            RequestParameters:
+              - method.request.header.x-api-key:
+                  Required: true
+                  Caching: false
+              - method.request.querystring.wallet_address:
+                  Required: true
+                  Caching: false
+              - method.request.querystring.object_key:
+                  Required: true
+                  Caching: false
+              - method.request.querystring.location:
+                  Required: false
+                  Caching: false
+        StorageDeletePost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/delete
+            Method: POST
+            RequestModel:
+              Model: StorageObjectRequest
+              Required: true
+              ValidateBody: true
+              ValidateParameters: true
+            RequestParameters:
+              - method.request.header.x-api-key:
+                  Required: true
+                  Caching: false
+
 Outputs:
-  ApiUrl:
-    Description: REST API endpoint URL for storage estimate route
-    Value: !Sub "https://${MnemosparkBackendApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/estimate/storage"
+  ApiBaseUrl:
+    Description: Base URL for the mnemospark internet-facing REST API
+    Value: !Sub "https://${MnemosparkBackendApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
     Export:
-      Name: !Sub "${AWS::StackName}-ApiUrl"
-  TransferApiUrl:
-    Description: REST API endpoint URL for transfer estimate route
-    Value: !Sub "https://${MnemosparkBackendApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/estimate/transfer"
-    Export:
-      Name: !Sub "${AWS::StackName}-TransferApiUrl"
+      Name: !Sub "${AWS::StackName}-ApiBaseUrl"
   EstimateStorageFunctionArn:
-    Description: Lambda function ARN for POST /estimate/storage
+    Description: Lambda function ARN for /estimate/storage
     Value: !GetAtt EstimateStorageFunction.Arn
   EstimateTransferFunctionArn:
-    Description: Lambda function ARN for POST /estimate/transfer
+    Description: Lambda function ARN for /estimate/transfer
     Value: !GetAtt EstimateTransferFunction.Arn
+  PriceStorageFunctionArn:
+    Description: Lambda function ARN for /price-storage
+    Value: !GetAtt PriceStorageFunction.Arn
+  StorageUploadFunctionArn:
+    Description: Lambda function ARN for /storage/upload
+    Value: !GetAtt StorageUploadFunction.Arn
+  StorageLsFunctionArn:
+    Description: Lambda function ARN for /storage/ls
+    Value: !GetAtt StorageLsFunction.Arn
+  StorageDownloadFunctionArn:
+    Description: Lambda function ARN for /storage/download
+    Value: !GetAtt StorageDownloadFunction.Arn
+  StorageDeleteFunctionArn:
+    Description: Lambda function ARN for /storage/delete
+    Value: !GetAtt StorageDeleteFunction.Arn
