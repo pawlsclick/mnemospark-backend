@@ -567,6 +567,16 @@ Resources:
               - method.request.header.x-api-key:
                   Required: true
                   Caching: false
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:HeadBucket
+                - s3:HeadObject
+              Resource:
+                - !Sub "arn:aws:s3:::mnemospark-*"
+                - !Sub "arn:aws:s3:::mnemospark-*/*"
 
   StorageDownloadFunction:
     Type: AWS::Serverless::Function
