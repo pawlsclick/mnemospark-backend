@@ -49,6 +49,27 @@ class FakeS3Client:
 
 
 class StorageLsIntegrationTests(unittest.TestCase):
+    def test_wallet_mismatch_returns_403(self):
+        wallet = "0x" + ("2" * 40)
+        event = {
+            "httpMethod": "GET",
+            "queryStringParameters": {
+                "wallet_address": wallet,
+                "object_key": "archive.tar.gz",
+            },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": "0x" + ("3" * 40),
+                }
+            },
+        }
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 403)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "forbidden")
+
     def test_get_and_post_return_object_metadata_for_wallet_bucket(self):
         wallet = "0x" + ("2" * 40)
         object_key = "archive.tar.gz"
@@ -63,6 +84,11 @@ class StorageLsIntegrationTests(unittest.TestCase):
                 "object_key": object_key,
                 "location": "us-west-2",
             },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": wallet,
+                }
+            },
         }
         post_event = {
             "httpMethod": "POST",
@@ -73,6 +99,11 @@ class StorageLsIntegrationTests(unittest.TestCase):
                     "location": "us-west-2",
                 }
             ),
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": wallet,
+                }
+            },
         }
 
         with mock.patch.object(app.boto3, "client", return_value=fake_s3):

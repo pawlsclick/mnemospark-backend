@@ -99,6 +99,11 @@ class StorageDeleteLambdaTests(unittest.TestCase):
                     "object_key": object_key,
                 }
             ),
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": wallet_address,
+                }
+            },
         }
 
         with mock.patch.object(app.boto3, "client", return_value=s3_client):
@@ -127,6 +132,11 @@ class StorageDeleteLambdaTests(unittest.TestCase):
             "queryStringParameters": {
                 "wallet_address": wallet_address,
                 "object_key": object_key,
+            },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": wallet_address,
+                }
             },
         }
 
@@ -180,6 +190,11 @@ class StorageDeleteLambdaTests(unittest.TestCase):
                 "wallet_address": wallet_address,
                 "object_key": "missing.bin",
             },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": wallet_address,
+                }
+            },
         }
 
         with mock.patch.object(app.boto3, "client", return_value=s3_client):
@@ -198,6 +213,11 @@ class StorageDeleteLambdaTests(unittest.TestCase):
                 "wallet_address": "0x1111111111111111111111111111111111111111",
                 "object_key": "file.bin",
             },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": "0x1111111111111111111111111111111111111111",
+                }
+            },
         }
 
         with mock.patch.object(app.boto3, "client", return_value=s3_client):
@@ -207,4 +227,43 @@ class StorageDeleteLambdaTests(unittest.TestCase):
         body = json.loads(response["body"])
         self.assertEqual(body["error"], "bucket_not_found")
         self.assertEqual(body["message"], "Bucket not found for this wallet")
+
+    def test_missing_authorizer_context_returns_403(self):
+        wallet_address = "0x1111111111111111111111111111111111111111"
+        event = {
+            "httpMethod": "DELETE",
+            "queryStringParameters": {
+                "wallet_address": wallet_address,
+                "object_key": "file.bin",
+            },
+        }
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 403)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "forbidden")
+        self.assertIn("wallet authorization context is required", body["message"])
+
+    def test_authorizer_wallet_mismatch_returns_403(self):
+        wallet_address = "0x1111111111111111111111111111111111111111"
+        event = {
+            "httpMethod": "DELETE",
+            "queryStringParameters": {
+                "wallet_address": wallet_address,
+                "object_key": "file.bin",
+            },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": "0x2222222222222222222222222222222222222222",
+                }
+            },
+        }
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 403)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "forbidden")
+        self.assertIn("wallet_address does not match authorized wallet", body["message"])
 

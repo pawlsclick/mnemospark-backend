@@ -172,6 +172,34 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertIn("timestamp", body)
         write_quote_mock.assert_called_once()
 
+    def test_lambda_handler_reads_authorizer_wallet_context(self):
+        event = self._valid_event()
+        event["requestContext"] = {
+            "authorizer": {
+                "walletAddress": "0xabc123",
+            }
+        }
+
+        with (
+            mock.patch.object(app, "estimate_storage_cost", return_value=2.0),
+            mock.patch.object(app, "estimate_transfer_cost", return_value=1.0),
+            mock.patch.object(app, "write_quote"),
+            mock.patch("builtins.print") as print_mock,
+            mock.patch.dict(
+                os.environ,
+                {
+                    "PRICE_STORAGE_MARKUP_PERCENT": "10",
+                    "PRICE_STORAGE_TRANSFER_DIRECTION": "out",
+                    "PRICE_STORAGE_RATE_TYPE": "BEFORE_DISCOUNTS",
+                },
+                clear=False,
+            ),
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 200)
+        print_mock.assert_called()
+
     def test_lambda_handler_returns_bad_request_shape(self):
         response = app.lambda_handler({"body": json.dumps({"wallet_address": "0xabc123"})}, None)
 

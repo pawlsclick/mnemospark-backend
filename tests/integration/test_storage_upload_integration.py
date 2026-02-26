@@ -88,6 +88,32 @@ class FakeS3Client:
 
 
 class StorageUploadIntegrationTests(unittest.TestCase):
+    def test_mismatched_authorizer_wallet_returns_403(self):
+        wallet_address = "0x1111111111111111111111111111111111111111"
+        event = {
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": "0x2222222222222222222222222222222222222222",
+                }
+            },
+            "body": json.dumps(
+                {
+                    "quote_id": "quote-int-mismatch",
+                    "wallet_address": wallet_address,
+                    "object_id": "object.bin",
+                    "object_id_hash": "hash-int-mismatch",
+                    "ciphertext": base64.b64encode(b"encrypted").decode("ascii"),
+                    "wrapped_dek": base64.b64encode(b"wrapped").decode("ascii"),
+                }
+            ),
+        }
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 403)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "forbidden")
+
     def test_upload_then_idempotent_retry_returns_cached_response(self):
         now = int(time.time())
         wallet_address = "0x1111111111111111111111111111111111111111"
@@ -127,9 +153,13 @@ class StorageUploadIntegrationTests(unittest.TestCase):
 
         event = {
             "headers": {
-                "x-api-key": "key",
                 "PAYMENT-SIGNATURE": "signed",
                 "Idempotency-Key": "idem-int-1",
+            },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": wallet_address,
+                }
             },
             "body": json.dumps(
                 {

@@ -129,6 +129,11 @@ class LambdaHandlerTests(unittest.TestCase):
                 "object_key": "backup.tar.gz",
                 **query,
             },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": "0x1111111111111111111111111111111111111111",
+                }
+            },
         }
 
     def test_lambda_handler_success_returns_presigned_url_shape(self):
@@ -197,3 +202,25 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertEqual(response["statusCode"], 400)
         body = json.loads(response["body"])
         self.assertEqual(body["error"], "Bad request")
+
+    def test_lambda_handler_missing_authorizer_context_returns_403(self):
+        event = self._event()
+        event.pop("requestContext")
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 403)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "forbidden")
+        self.assertIn("wallet authorization context is required", body["message"])
+
+    def test_lambda_handler_authorizer_wallet_mismatch_returns_403(self):
+        event = self._event()
+        event["requestContext"]["authorizer"]["walletAddress"] = "0x" + ("2" * 40)
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 403)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "forbidden")
+        self.assertIn("wallet_address does not match authorized wallet", body["message"])
