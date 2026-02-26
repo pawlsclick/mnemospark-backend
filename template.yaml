@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
   mnemospark-backend internet-facing REST API.
-  Path-based routing to Lambda functions with API key auth, throttling,
+  Path-based routing to Lambda functions with wallet-proof Lambda authorizer auth, throttling,
   quota, request validation, and CORS. Resources are tagged Project: mnemospark.
 
 Parameters:
