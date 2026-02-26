@@ -1,0 +1,3 @@
+[submodule ".company"]
+	path = .company
+	url = git@github.com:pawlsclick/mnemospark-docs.git
