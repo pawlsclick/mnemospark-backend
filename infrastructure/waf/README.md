@@ -8,6 +8,8 @@ This stack adds AWS WAF protection for the existing mnemospark REST API stage fr
 - AWS managed rule groups:
   - `AWSManagedRulesCommonRuleSet`
   - `AWSManagedRulesKnownBadInputsRuleSet`
+- Custom rate-based rule:
+  - `PriceStoragePerIpRateLimit` (per-IP limit for `/price-storage`)
 - `AWS::WAFv2::WebACLAssociation` to an existing API Gateway REST API stage
 
 ## Validate
@@ -35,7 +37,7 @@ API_ID="$(aws cloudformation describe-stack-resource \
 aws cloudformation deploy \
   --template-file infrastructure/waf/template.yaml \
   --stack-name <waf-stack-name> \
-  --parameter-overrides ApiGatewayRestApiId="${API_ID}" ApiGatewayStageName=prod \
+  --parameter-overrides ApiGatewayRestApiId="${API_ID}" ApiGatewayStageName=prod PriceStorageRateLimitPer5Min=300 \
   --tags Project=mnemospark \
   --no-execute-changeset
 ```
@@ -46,7 +48,7 @@ aws cloudformation deploy \
 aws cloudformation deploy \
   --template-file infrastructure/waf/template.yaml \
   --stack-name <waf-stack-name> \
-  --parameter-overrides ApiGatewayRestApiId="${API_ID}" ApiGatewayStageName=prod \
+  --parameter-overrides ApiGatewayRestApiId="${API_ID}" ApiGatewayStageName=prod PriceStorageRateLimitPer5Min=300 \
   --tags Project=mnemospark
 ```
 
@@ -55,3 +57,8 @@ aws cloudformation deploy \
 - `ApiGatewayRestApiId` (required): REST API ID from the API stack.
 - `ApiGatewayStageName` (default: `prod`): stage to protect.
 - `WebAclName` (default: `mnemospark-api-web-acl`): Web ACL name.
+- `PriceStorageRateLimitPer5Min` (default: `300`): max requests per 5-minute window per source IP for `/price-storage`.
+
+## Notes on per-wallet rate limiting
+
+WAF can rate-limit by IP and request attributes (for example headers), but it cannot directly consume API Gateway Lambda authorizer context. Because `walletAddress` is provided by the authorizer context (not a first-class WAF key), per-wallet throttling for `POST /price-storage` should be enforced in Lambda/business logic.
