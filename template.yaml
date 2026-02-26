@@ -231,6 +231,17 @@ Resources:
         - Key: Project
           Value: mnemospark
 
+  WalletAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: services/wallet-authorizer
+      Description: Validates X-Wallet-Signature wallet proofs and returns IAM allow/deny policy.
+      Environment:
+        Variables:
+          MNEMOSPARK_AUTH_MAX_AGE_SECONDS: "300"
+          MNEMOSPARK_REQUEST_VERIFYING_CONTRACT: "0x0000000000000000000000000000000000000001"
+
   ApiGatewayAccessLogsLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -866,6 +877,15 @@ Resources:
         - Key: Project
           Value: mnemospark
 
+  WalletAuthorizerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${WalletAuthorizerFunction}"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
   ApiGateway4xxAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -1105,6 +1125,9 @@ Outputs:
   StorageHousekeepingFunctionArn:
     Description: Lambda function ARN for scheduled storage housekeeping
     Value: !GetAtt StorageHousekeepingFunction.Arn
+  WalletAuthorizerFunctionArn:
+    Description: Lambda function ARN for wallet-proof authorizer
+    Value: !GetAtt WalletAuthorizerFunction.Arn
   StorageHousekeepingScheduleRuleArn:
     Description: EventBridge rule ARN for scheduled storage housekeeping
     Value: !GetAtt StorageHousekeepingScheduleRule.Arn
