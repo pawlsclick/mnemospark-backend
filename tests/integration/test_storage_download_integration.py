@@ -33,6 +33,11 @@ class StorageDownloadIntegrationTests(unittest.TestCase):
                 "object_key": "backup.tar.gz",
                 "location": app.US_EAST_1_REGION,
             },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": "0x1111111111111111111111111111111111111111",
+                }
+            },
         }
 
     def _s3_client(self):
@@ -43,6 +48,16 @@ class StorageDownloadIntegrationTests(unittest.TestCase):
             aws_secret_access_key="testing",
             aws_session_token="testing",
         )
+
+    def test_lambda_handler_wallet_mismatch_returns_403(self):
+        event = self._event()
+        event["requestContext"]["authorizer"]["walletAddress"] = "0x" + ("2" * 40)
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 403)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "forbidden")
 
     def test_lambda_handler_generates_presigned_url_with_stubbed_s3(self):
         event = self._event()

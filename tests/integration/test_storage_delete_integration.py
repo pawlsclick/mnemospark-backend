@@ -70,6 +70,27 @@ class FakeS3Client:
 
 
 class StorageDeleteIntegrationTests(unittest.TestCase):
+    def test_wallet_mismatch_returns_403(self):
+        wallet_address = "0x9999999999999999999999999999999999999999"
+        event = {
+            "httpMethod": "DELETE",
+            "queryStringParameters": {
+                "wallet_address": wallet_address,
+                "object_key": "one.bin",
+            },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": "0x8888888888888888888888888888888888888888",
+                }
+            },
+        }
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 403)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "forbidden")
+
     def test_delete_lifecycle_post_then_delete_query(self):
         wallet_address = "0x9999999999999999999999999999999999999999"
         bucket = app._bucket_name(wallet_address)
@@ -87,12 +108,22 @@ class StorageDeleteIntegrationTests(unittest.TestCase):
                     "object_key": first_key,
                 }
             ),
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": wallet_address,
+                }
+            },
         }
         delete_event = {
             "httpMethod": "DELETE",
             "queryStringParameters": {
                 "wallet_address": wallet_address,
                 "object_key": second_key,
+            },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": wallet_address,
+                }
             },
         }
 
@@ -121,6 +152,11 @@ class StorageDeleteIntegrationTests(unittest.TestCase):
             "queryStringParameters": {
                 "wallet_address": wallet_address,
                 "object_key": object_key,
+            },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": wallet_address,
+                }
             },
         }
 
