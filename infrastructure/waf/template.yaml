@@ -15,6 +15,10 @@ Parameters:
     Type: String
     Default: mnemospark-api-web-acl
     Description: Name of the WAF Web ACL resource
+  PriceStorageRateLimitPer5Min:
+    Type: Number
+    Default: 300
+    Description: Maximum requests per 5-minute window per IP for /price-storage
 
 Resources:
   MnemosparkApiWebAcl:
@@ -53,6 +57,26 @@ Resources:
           VisibilityConfig:
             CloudWatchMetricsEnabled: true
             MetricName: aws-managed-known-bad-inputs
+            SampledRequestsEnabled: true
+        - Name: PriceStoragePerIpRateLimit
+          Priority: 2
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              AggregateKeyType: IP
+              Limit: !Ref PriceStorageRateLimitPer5Min
+              ScopeDownStatement:
+                RegexMatchStatement:
+                  FieldToMatch:
+                    UriPath: {}
+                  RegexString: "^/(?:[^/]+/)*price-storage/?$"
+                  TextTransformations:
+                    - Priority: 0
+                      Type: NONE
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: price-storage-per-ip-rate-limit
             SampledRequestsEnabled: true
       Tags:
         - Key: Project
