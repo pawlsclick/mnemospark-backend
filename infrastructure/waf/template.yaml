@@ -73,7 +73,7 @@ Resources:
                   RegexString: "^/(?:[^/]+/)*price-storage/?$"
                   TextTransformations:
                     - Priority: 0
-                      Type: NONE
+                      Type: URL_DECODE
           VisibilityConfig:
             CloudWatchMetricsEnabled: true
             MetricName: price-storage-per-ip-rate-limit
