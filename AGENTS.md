@@ -12,7 +12,7 @@ mnemospark-backend is a serverless AWS Lambda backend (Python 3.13) using AWS SA
 - **Python 3.13** is required (matches Lambda runtime in `template.yaml`). Installed from `ppa:deadsnakes/ppa`.
 - **Virtual environment** at `/workspace/.venv` — activate with `source /workspace/.venv/bin/activate`.
 - **AWS SAM CLI** is installed in the venv (`sam --version`).
-- **Docker** is required for `sam local invoke` / `sam local start-api`. The daemon needs `sudo dockerd &` on fresh VM starts; fuse-overlayfs and iptables-legacy are configured for nested-container operation. After starting dockerd, run `sudo chmod 666 /var/run/docker.sock` so the non-root user (ubuntu) can use Docker without sudo.
+- **Docker** is required for `sam local invoke` / `sam local start-api`. The daemon needs `sudo dockerd &` on fresh VM starts; fuse-overlayfs and iptables-legacy are configured for nested-container operation. After starting dockerd, run `sudo chmod 666 /var/run/docker.sock` so the non-root user (ubuntu) can use Docker without sudo. Use this only in single-user dev environments; access to the socket is effectively root-equivalent, so in shared or production-like environments prefer adding the user to the `docker` group instead of making the socket world-writable.
 
 ### Key commands
 | Task | Command |
