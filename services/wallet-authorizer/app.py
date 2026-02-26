@@ -74,6 +74,7 @@ def _max_signature_age_seconds() -> int:
 
 
 MAX_SIGNATURE_AGE_SECONDS = _max_signature_age_seconds()
+MAX_SIGNATURE_FUTURE_SKEW_SECONDS = 60
 VERIFYING_CONTRACT = (os.environ.get("MNEMOSPARK_REQUEST_VERIFYING_CONTRACT") or "").strip() or DEFAULT_VERIFYING_CONTRACT
 
 
@@ -373,10 +374,11 @@ def _recover_signer(proof: WalletProof) -> str:
             message_data=message,
         )
         try:
-            recovered = Account.recover_message(signable, signature=proof.signature)
-            return _normalize_address(recovered, "recovered signer")
+            recovered = _normalize_address(Account.recover_message(signable, signature=proof.signature), "recovered signer")
         except Exception:
             continue
+        if recovered == proof.declared_address:
+            return recovered
 
     raise AuthError("EIP-712 signature verification failed")
 
@@ -389,8 +391,11 @@ def _verify_wallet_proof(header_value: str, method: str, path: str) -> str:
     if proof.path != path:
         raise AuthError("signed path does not match request path")
 
-    if proof.timestamp < int(time.time()) - MAX_SIGNATURE_AGE_SECONDS:
+    now = int(time.time())
+    if proof.timestamp < now - MAX_SIGNATURE_AGE_SECONDS:
         raise AuthError("wallet signature has expired")
+    if proof.timestamp > now + MAX_SIGNATURE_FUTURE_SKEW_SECONDS:
+        raise AuthError("wallet signature timestamp is too far in the future")
 
     signer = _recover_signer(proof)
     if signer != proof.declared_address:
