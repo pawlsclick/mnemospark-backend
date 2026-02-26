@@ -33,6 +33,11 @@ class PriceStorageIntegrationTests(unittest.TestCase):
     def test_lambda_handler_with_mocked_estimates_and_dynamodb(self):
         fake_dynamodb = FakeDynamoDbClient()
         event = {
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": "0xabc123",
+                }
+            },
             "body": json.dumps(
                 {
                     "wallet_address": "0xabc123",

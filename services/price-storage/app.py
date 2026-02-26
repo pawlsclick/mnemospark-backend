@@ -118,6 +118,33 @@ def parse_input(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _extract_authorizer_wallet(event: dict[str, Any]) -> str | None:
+    request_context = event.get("requestContext")
+    if not isinstance(request_context, dict):
+        return None
+    authorizer = request_context.get("authorizer")
+    if not isinstance(authorizer, dict):
+        return None
+
+    candidates: list[Any] = [
+        authorizer.get("walletAddress"),
+        authorizer.get("wallet_address"),
+    ]
+    lambda_authorizer_context = authorizer.get("lambda")
+    if isinstance(lambda_authorizer_context, dict):
+        candidates.extend(
+            [
+                lambda_authorizer_context.get("walletAddress"),
+                lambda_authorizer_context.get("wallet_address"),
+            ]
+        )
+
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
 def _get_quotes_table_name() -> str:
     table_name = (os.getenv("QUOTES_TABLE_NAME") or os.getenv("DYNAMODB_QUOTES_TABLE") or "").strip()
     if not table_name:
@@ -260,6 +287,17 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     del context
     try:
         request = parse_input(event)
+        authorizer_wallet = _extract_authorizer_wallet(event)
+        if authorizer_wallet:
+            print(
+                "price-storage authorizer wallet context",
+                json.dumps(
+                    {
+                        "walletAddress": authorizer_wallet,
+                        "request_wallet_address": request["wallet_address"],
+                    }
+                ),
+            )
         rate_type = _get_rate_type()
         direction = _get_transfer_direction()
         markup_multiplier = _get_markup_multiplier()

@@ -346,7 +346,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
             return self.s3_client
         raise AssertionError(f"Unexpected boto3 client service: {service_name}")
 
-    def _make_event(self, headers=None, **body_updates):
+    def _make_event(self, headers=None, include_authorizer=True, authorizer_wallet=None, **body_updates):
         body = {
             "quote_id": self.quote_id,
             "wallet_address": self.wallet_address,
@@ -356,10 +356,37 @@ class StorageUploadLambdaTests(unittest.TestCase):
             "wrapped_dek": base64.b64encode(b"wrapped-key").decode("ascii"),
         }
         body.update(body_updates)
-        event_headers = {"x-api-key": "dummy"}
+        event_headers = {}
         if headers:
             event_headers.update(headers)
-        return {"body": json.dumps(body), "headers": event_headers}
+        event = {"body": json.dumps(body), "headers": event_headers}
+        if include_authorizer:
+            event["requestContext"] = {
+                "authorizer": {
+                    "walletAddress": authorizer_wallet or body["wallet_address"],
+                }
+            }
+        return event
+
+    def test_missing_authorizer_wallet_context_returns_403(self):
+        event = self._make_event(include_authorizer=False)
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 403)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "forbidden")
+        self.assertIn("wallet authorization context is required", body["message"])
+
+    def test_authorizer_wallet_mismatch_returns_403(self):
+        event = self._make_event(authorizer_wallet="0x2222222222222222222222222222222222222222")
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 403)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "forbidden")
+        self.assertIn("wallet_address does not match authorized wallet", body["message"])
 
     def test_missing_payment_header_returns_402_with_payment_required_headers(self):
         event = self._make_event()
