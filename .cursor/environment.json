@@ -1,4 +1,4 @@
 {
   "name": "mnemospark-backend cloud environment",
-  "install": "bash -lc 'if [ ! -d /workspace/.venv ]; then PY=$(command -v python3.13 2>/dev/null || command -v python3) && $PY -m venv --without-pip /workspace/.venv && curl -sS https://bootstrap.pypa.io/get-pip.py | /workspace/.venv/bin/python; fi && source /workspace/.venv/bin/activate && python -m pip install --upgrade pip && pip install -r requirements.txt'"
+  "install": "bash -lc 'if [ ! -d /workspace/.venv ]; then PY=$(command -v python3.13 2>/dev/null || command -v python3) && $PY -m venv --without-pip /workspace/.venv && curl -sS https://bootstrap.pypa.io/get-pip.py | /workspace/.venv/bin/python; fi && source /workspace/.venv/bin/activate && python -m pip install --upgrade pip && python -m pip install -r requirements.txt pytest ruff aws-sam-cli awscli'"
 }
