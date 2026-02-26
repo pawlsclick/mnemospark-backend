@@ -212,6 +212,25 @@ class WalletAuthorizerTests(unittest.TestCase):
 
         self.assertEqual(_policy_effect(response), "Deny")
 
+    def test_storage_ls_get_with_query_wallet_is_allowed(self):
+        wallet_header = _build_wallet_header(
+            method="GET",
+            path="/storage/ls",
+            wallet_address=self.wallet_address,
+            private_key=self.signer.key,
+        )
+        event = _make_request_event(
+            method="GET",
+            path="/storage/ls",
+            wallet_header=wallet_header,
+            query={"wallet_address": self.wallet_address, "object_key": "backup.tar.gz"},
+        )
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(_policy_effect(response), "Allow")
+        self.assertEqual(response.get("context"), {"walletAddress": self.wallet_address.lower()})
+
     def test_token_authorizer_event_is_supported(self):
         wallet_header = _build_wallet_header(
             method="POST",
