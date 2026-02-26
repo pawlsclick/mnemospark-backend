@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import json
+import sys
 import time
 from pathlib import Path
 import unittest
@@ -15,6 +16,7 @@ def load_app_module():
     if module_spec is None or module_spec.loader is None:
         raise RuntimeError("Unable to load wallet authorizer module")
     module = importlib.util.module_from_spec(module_spec)
+    sys.modules[module_spec.name] = module
     module_spec.loader.exec_module(module)
     return module
 
