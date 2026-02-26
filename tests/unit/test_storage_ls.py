@@ -145,6 +145,11 @@ class LambdaHandlerTests(unittest.TestCase):
                 "object_key": self.object_key,
                 "location": "us-west-2",
             },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": self.wallet,
+                }
+            },
         }
 
     def _post_event(self):
@@ -157,6 +162,11 @@ class LambdaHandlerTests(unittest.TestCase):
                     "location": "us-west-2",
                 }
             ),
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": self.wallet,
+                }
+            },
         }
 
     def test_lambda_handler_get_success(self):
@@ -204,6 +214,28 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertEqual(response["statusCode"], 400)
         body = json.loads(response["body"])
         self.assertEqual(body["error"], "Bad request")
+
+    def test_lambda_handler_missing_authorizer_context_returns_403(self):
+        event = self._get_event()
+        event.pop("requestContext")
+        with mock.patch.object(app.boto3, "client", return_value=self.s3_client):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 403)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "forbidden")
+        self.assertIn("wallet authorization context is required", body["message"])
+
+    def test_lambda_handler_authorizer_wallet_mismatch_returns_403(self):
+        event = self._get_event()
+        event["requestContext"]["authorizer"]["walletAddress"] = "0x" + ("3" * 40)
+        with mock.patch.object(app.boto3, "client", return_value=self.s3_client):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 403)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "forbidden")
+        self.assertIn("wallet_address does not match authorized wallet", body["message"])
 
     def test_lambda_handler_unexpected_s3_error_returns_500(self):
         class FailingS3Client(FakeS3Client):

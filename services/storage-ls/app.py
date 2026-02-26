@@ -49,6 +49,10 @@ class BadRequestError(ValueError):
     """Raised when request validation fails."""
 
 
+class ForbiddenError(ValueError):
+    """Raised when authorizer wallet context is missing or mismatched."""
+
+
 @dataclass(frozen=True)
 class NotFoundError(Exception):
     error: str
@@ -125,6 +129,46 @@ def _normalize_address(value: str, field_name: str) -> str:
     return f"0x{candidate[2:].lower()}"
 
 
+def _extract_authorizer_wallet(event: dict[str, Any]) -> str | None:
+    request_context = event.get("requestContext")
+    if not isinstance(request_context, dict):
+        return None
+    authorizer = request_context.get("authorizer")
+    if not isinstance(authorizer, dict):
+        return None
+
+    candidates: list[Any] = [
+        authorizer.get("walletAddress"),
+        authorizer.get("wallet_address"),
+    ]
+    lambda_authorizer_context = authorizer.get("lambda")
+    if isinstance(lambda_authorizer_context, dict):
+        candidates.extend(
+            [
+                lambda_authorizer_context.get("walletAddress"),
+                lambda_authorizer_context.get("wallet_address"),
+            ]
+        )
+
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate.strip():
+            continue
+        try:
+            return _normalize_address(candidate, "authorizer walletAddress")
+        except BadRequestError as exc:
+            raise ForbiddenError("wallet authorization context is invalid") from exc
+
+    return None
+
+
+def _require_authorized_wallet(event: dict[str, Any], wallet_address: str) -> None:
+    authorized_wallet = _extract_authorizer_wallet(event)
+    if authorized_wallet is None:
+        raise ForbiddenError("wallet authorization context is required")
+    if authorized_wallet != wallet_address:
+        raise ForbiddenError("wallet_address does not match authorized wallet")
+
+
 def _validate_object_key(object_key: str) -> None:
     if not object_key or "/" in object_key or "\\" in object_key or object_key in {".", ".."}:
         raise BadRequestError("object_key must be a single path segment")
@@ -187,6 +231,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     del context
     try:
         request = parse_input(event)
+        _require_authorized_wallet(event, request.wallet_address)
         s3_client = boto3.client("s3", region_name=request.location)
         bucket_name = _bucket_name(request.wallet_address)
 
@@ -207,6 +252,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 "bucket": bucket_name,
             },
         )
+    except ForbiddenError as exc:
+        return _error_response(403, "forbidden", str(exc))
     except BadRequestError as exc:
         return _error_response(400, "Bad request", str(exc))
     except NotFoundError as exc:
