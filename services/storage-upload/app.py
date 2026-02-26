@@ -145,8 +145,6 @@ class ParsedUploadRequest:
 
 @dataclass(frozen=True)
 class QuoteContext:
-    quote_id: str
-    wallet_address: str
     storage_price: Decimal
     storage_price_micro: int
     provider: str
@@ -521,15 +519,14 @@ def _build_quote_context(quote_item: dict[str, Any] | None, request: ParsedUploa
         raise BadRequestError("quote.storage_price must be greater than 0")
 
     provider = str(quote_item.get("provider") or request.provider).strip() or request.provider
-    location = str(quote_item.get("location") or quote_item.get("region") or request.location).strip() or request.location
-    wallet_address = quote_addr or request.wallet_address
+    location = str(
+        quote_item.get("location") or quote_item.get("region") or request.location
+    ).strip() or request.location
     storage_price_micro = int(
         (storage_price * USDC_DECIMALS).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     )
 
     return QuoteContext(
-        quote_id=request.quote_id,
-        wallet_address=wallet_address,
         storage_price=storage_price,
         storage_price_micro=storage_price_micro,
         provider=provider,
@@ -1164,6 +1161,11 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             trans_id=payment_result.trans_id,
             bucket_name=bucket_name,
         )
+
+        try:
+            quotes_table.delete_item(Key={"quote_id": request.quote_id})
+        except ClientError:
+            pass
 
         response_body = {
             "quote_id": request.quote_id,

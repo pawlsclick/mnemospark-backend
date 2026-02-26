@@ -184,6 +184,7 @@ Resources:
                   - dynamodb:DescribeTable
                   - dynamodb:GetItem
                   - dynamodb:Query
+                  - dynamodb:DeleteItem
                 Resource: !GetAtt QuotesTable.Arn
         - PolicyName: upload-dynamodb-transaction-log-write
           PolicyDocument:
