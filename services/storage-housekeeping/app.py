@@ -197,9 +197,12 @@ def _is_not_found_s3_error(exc: ClientError) -> bool:
 def _scan_transaction_rows(transaction_log_table: Any, scan_limit: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     scan_kwargs: dict[str, Any] = {"Limit": scan_limit}
-    while True:
+    while len(rows) < scan_limit:
         response = transaction_log_table.scan(**scan_kwargs)
-        rows.extend(response.get("Items") or [])
+        remaining = scan_limit - len(rows)
+        rows.extend((response.get("Items") or [])[:remaining])
+        if len(rows) >= scan_limit:
+            break
         last_evaluated_key = response.get("LastEvaluatedKey")
         if not last_evaluated_key:
             break

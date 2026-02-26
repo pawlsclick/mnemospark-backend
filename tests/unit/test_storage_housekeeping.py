@@ -312,3 +312,24 @@ class StorageHousekeepingLambdaTests(unittest.TestCase):
         self.assertEqual(body["transaction_rows_deleted"], 0)
         self.assertIn(self.transaction_table._key_tuple(item), self.transaction_table.items)
         self.assertIn(object_key, self.s3_client.buckets[item["bucket_name"]])
+
+    def test_scan_limit_caps_total_rows_scanned(self):
+        now = datetime(2026, 2, 25, 12, 0, tzinfo=timezone.utc)
+        wallet = "0x6666666666666666666666666666666666666666"
+
+        for index in range(3):
+            item = self._make_txn_item(
+                quote_id=f"quote-scan-{index}",
+                trans_id=f"tx-scan-{index}",
+                wallet_address=wallet,
+                object_key=f"object-{index}.enc",
+                paid_at=now - timedelta(days=40),
+            )
+            self.transaction_table.put_item(Item=item)
+
+        with mock.patch.dict(os.environ, {"HOUSEKEEPING_SCAN_LIMIT": "2"}, clear=False):
+            response = app.lambda_handler({"now": now.isoformat(), "dry_run": True}, None)
+        body = json.loads(response["body"])
+
+        self.assertEqual(response["statusCode"], 200)
+        self.assertEqual(body["rows_scanned"], 2)
