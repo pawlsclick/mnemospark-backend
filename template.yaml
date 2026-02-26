@@ -22,6 +22,53 @@ Parameters:
     Type: String
     Default: "3600"
     Description: Quote TTL in seconds for DynamoDB expiration
+  MnemosparkRecipientWallet:
+    Type: String
+    Default: "0x47D241ae97fE37186AC59894290CA1c54c060A6c"
+    Description: Recipient wallet address for x402 USDC payments
+  PaymentNetwork:
+    Type: String
+    Default: eip155:8453
+    Description: CAIP-2 network identifier for payment verification
+  PaymentAssetAddress:
+    Type: String
+    Default: "0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913"
+    Description: USDC token contract address for payment verification
+  PaymentSettlementMode:
+    Type: String
+    Default: mock
+    AllowedValues:
+      - mock
+      - onchain
+    Description: Payment settlement mode for upload flow
+  BaseRpcUrl:
+    Type: String
+    Default: ""
+    Description: Base chain RPC URL used when PaymentSettlementMode is onchain
+  RelayerPrivateKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Relayer private key used when PaymentSettlementMode is onchain
+  HousekeepingScheduleExpression:
+    Type: String
+    Default: rate(1 day)
+    Description: EventBridge schedule expression for storage housekeeping
+  HousekeepingBillingIntervalDays:
+    Type: Number
+    Default: 30
+    Description: Billing interval in days before storage payment is due
+  HousekeepingGracePeriodDays:
+    Type: Number
+    Default: 2
+    Description: Grace period in days after billing due date
+  HousekeepingDryRun:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: If true, housekeeping reports overdue objects without deleting
 
 Globals:
   Function:
@@ -172,6 +219,14 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:s3:::mnemospark-*"
                   - !Sub "arn:aws:s3:::mnemospark-*/*"
+        - PolicyName: upload-relayer-secret-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:mnemospark/relayer-private-key*"
       Tags:
         - Key: Project
           Value: mnemospark
@@ -497,7 +552,8 @@ Resources:
           MNEMOSPARK_PAYMENT_ASSET: !Ref PaymentAssetAddress
           MNEMOSPARK_PAYMENT_SETTLEMENT_MODE: !Ref PaymentSettlementMode
           MNEMOSPARK_BASE_RPC_URL: !Ref BaseRpcUrl
-          MNEMOSPARK_RELAYER_PRIVATE_KEY: !Ref RelayerPrivateKey
+          # Secret value is created out-of-band by operator/pipeline in Secrets Manager.
+          MNEMOSPARK_RELAYER_SECRET_ID: mnemospark/relayer-private-key
       Events:
         StorageUploadPost:
           Type: Api
@@ -684,6 +740,60 @@ Resources:
                 - !Sub "arn:aws:s3:::mnemospark-*"
                 - !Sub "arn:aws:s3:::mnemospark-*/*"
 
+  StorageHousekeepingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: services/storage-housekeeping
+      Environment:
+        Variables:
+          UPLOAD_TRANSACTION_LOG_TABLE_NAME: !Ref UploadTransactionLogTable
+          MNEMOSPARK_RECIPIENT_WALLET: !Ref MnemosparkRecipientWallet
+          HOUSEKEEPING_BILLING_INTERVAL_DAYS: !Ref HousekeepingBillingIntervalDays
+          HOUSEKEEPING_GRACE_PERIOD_DAYS: !Ref HousekeepingGracePeriodDays
+          HOUSEKEEPING_DRY_RUN: !Ref HousekeepingDryRun
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:DescribeTable
+                - dynamodb:Scan
+                - dynamodb:DeleteItem
+              Resource: !GetAtt UploadTransactionLogTable.Arn
+            - Effect: Allow
+              Action:
+                - s3:HeadBucket
+                - s3:HeadObject
+                - s3:DeleteObject
+                - s3:ListBucket
+                - s3:DeleteBucket
+              Resource:
+                - !Sub "arn:aws:s3:::mnemospark-*"
+                - !Sub "arn:aws:s3:::mnemospark-*/*"
+
+  StorageHousekeepingScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-storage-housekeeping"
+      Description: Deletes overdue storage objects after 30-day billing plus 2-day grace.
+      ScheduleExpression: !Ref HousekeepingScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt StorageHousekeepingFunction.Arn
+          Id: StorageHousekeepingLambdaTarget
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  StorageHousekeepingInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref StorageHousekeepingFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt StorageHousekeepingScheduleRule.Arn
+
   EstimateStorageFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -742,6 +852,15 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${StorageDeleteFunction}"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  StorageHousekeepingFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StorageHousekeepingFunction}"
       RetentionInDays: !Ref ObservabilityLogRetentionDays
       Tags:
         - Key: Project
@@ -983,3 +1102,9 @@ Outputs:
   StorageDeleteFunctionArn:
     Description: Lambda function ARN for /storage/delete
     Value: !GetAtt StorageDeleteFunction.Arn
+  StorageHousekeepingFunctionArn:
+    Description: Lambda function ARN for scheduled storage housekeeping
+    Value: !GetAtt StorageHousekeepingFunction.Arn
+  StorageHousekeepingScheduleRuleArn:
+    Description: EventBridge rule ARN for scheduled storage housekeeping
+    Value: !GetAtt StorageHousekeepingScheduleRule.Arn

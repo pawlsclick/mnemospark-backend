@@ -41,6 +41,9 @@ IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
 QUOTES_TABLE_ENV = "QUOTES_TABLE_NAME"
 UPLOAD_TRANSACTION_LOG_TABLE_ENV = "UPLOAD_TRANSACTION_LOG_TABLE_NAME"
 UPLOAD_IDEMPOTENCY_TABLE_ENV = "UPLOAD_IDEMPOTENCY_TABLE_NAME"
+RELAYER_SECRET_ID_ENV = "MNEMOSPARK_RELAYER_SECRET_ID"
+
+_RELAYER_PRIVATE_KEY_CACHE: str | None = None
 
 # Headers are normalized to lowercase by _normalize_headers, so keep only unique keys here.
 PAYMENT_SIGNATURE_HEADER_NAMES = (
@@ -407,6 +410,45 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _resolve_relayer_private_key() -> str:
+    global _RELAYER_PRIVATE_KEY_CACHE
+    if _RELAYER_PRIVATE_KEY_CACHE:
+        return _RELAYER_PRIVATE_KEY_CACHE
+
+    secret_id = _require_env(RELAYER_SECRET_ID_ENV)
+    try:
+        secret_response = boto3.client("secretsmanager").get_secret_value(SecretId=secret_id)
+    except ClientError as exc:
+        raise RuntimeError("Unable to retrieve relayer private key from Secrets Manager") from exc
+
+    relayer_private_key = ""
+    secret_string = secret_response.get("SecretString")
+    if isinstance(secret_string, str):
+        relayer_private_key = secret_string.strip()
+    elif "SecretBinary" in secret_response:
+        secret_binary = secret_response.get("SecretBinary")
+        if isinstance(secret_binary, str):
+            try:
+                secret_binary_bytes = base64.b64decode(secret_binary)
+            except Exception as exc:
+                raise RuntimeError("Relayer secret payload is invalid") from exc
+        elif isinstance(secret_binary, (bytes, bytearray)):
+            secret_binary_bytes = bytes(secret_binary)
+        else:
+            raise RuntimeError("Relayer secret payload is invalid")
+
+        try:
+            relayer_private_key = secret_binary_bytes.decode("utf-8").strip()
+        except UnicodeDecodeError as exc:
+            raise RuntimeError("Relayer secret payload is invalid") from exc
+
+    if not relayer_private_key:
+        raise RuntimeError("Relayer secret payload is empty")
+
+    _RELAYER_PRIVATE_KEY_CACHE = relayer_private_key
+    return relayer_private_key
+
+
 def _build_quote_context(quote_item: dict[str, Any] | None, request: ParsedUploadRequest, now: int) -> QuoteContext:
     if not quote_item:
         raise NotFoundError("quote_not_found")
@@ -659,11 +701,9 @@ def _onchain_settle_payment(authorization: TransferAuthorization) -> str:
         raise RuntimeError("web3 and eth-account dependencies are required for on-chain settlement") from exc
 
     rpc_url = os.environ.get("MNEMOSPARK_BASE_RPC_URL", "").strip()
-    relayer_private_key = os.environ.get("MNEMOSPARK_RELAYER_PRIVATE_KEY", "").strip()
     if not rpc_url:
         raise RuntimeError("MNEMOSPARK_BASE_RPC_URL is required for on-chain settlement mode")
-    if not relayer_private_key:
-        raise RuntimeError("MNEMOSPARK_RELAYER_PRIVATE_KEY is required for on-chain settlement mode")
+    relayer_private_key = _resolve_relayer_private_key()
 
     web3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 20}))
     if not web3.is_connected():
@@ -966,15 +1006,29 @@ def _write_transaction_log(
     now: int,
     request: ParsedUploadRequest,
     quote_context: QuoteContext,
+    payment_config: dict[str, str],
+    payment_result: PaymentVerificationResult,
     trans_id: str,
     bucket_name: str,
 ) -> None:
     timestamp = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    payment_received_at = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+    payment_asset = (
+        payment_result.asset.lower()
+        if isinstance(payment_result.asset, str)
+        else str(payment_result.asset)
+    )
     transaction_log_table.put_item(
         Item={
             "quote_id": request.quote_id,
             "trans_id": trans_id,
             "timestamp": timestamp,
+            "payment_received_at": payment_received_at,
+            "payment_status": "confirmed",
+            "recipient_wallet": payment_config["recipient_wallet"],
+            "payment_network": payment_result.network,
+            "payment_asset": payment_asset,
+            "payment_amount": str(payment_result.amount),
             "addr": request.wallet_address,
             "addr_hash": _wallet_hash(request.wallet_address),
             "storage_price": quote_context.storage_price,
@@ -1060,6 +1114,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             now=now,
             request=request,
             quote_context=quote_context,
+            payment_config=payment_config,
+            payment_result=payment_result,
             trans_id=payment_result.trans_id,
             bucket_name=bucket_name,
         )
