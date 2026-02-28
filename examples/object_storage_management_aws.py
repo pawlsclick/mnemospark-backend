@@ -12,9 +12,9 @@ logs permissions. Install with:
 Run from the repository root (mnemospark/):
 
   python3 examples/object_storage_management_aws.py upload --wallet-address <addr> --object-id <local-path> [--location REGION]
-  python3 examples/object_storage_management_aws.py ls --wallet-address <addr> --object-key <s3-key> [--location REGION]
-  python3 examples/object_storage_management_aws.py download --wallet-address <addr> --object-key <s3-key> [--location REGION]
-  python3 examples/object_storage_management_aws.py delete --wallet-address <addr> --object-key <s3-key> [--location REGION]
+  python3 examples/object_storage_management_aws.py ls --wallet-address <addr> --object-key <object-key> [--location REGION]
+  python3 examples/object_storage_management_aws.py download --wallet-address <addr> --object-key <object-key> [--location REGION]
+  python3 examples/object_storage_management_aws.py delete --wallet-address <addr> --object-key <object-key> [--location REGION]
 
 For upload, --object-id is a local file path; the S3 key is the file name (returned after upload).
 For ls/download/delete, --object-key is the S3 object key.
@@ -98,7 +98,7 @@ def ensure_bucket_exists(s3_client, bucket_name_str: str, location: str) -> None
         if e.response["Error"]["Code"] != "404":
             raise
     # Create bucket
-    if location == "us-east-1":
+    if location == "[REDACTED]":
         s3_client.create_bucket(Bucket=bucket_name_str)
     else:
         s3_client.create_bucket(
@@ -426,7 +426,7 @@ def main() -> int:
     for cmd in ("upload", "ls", "download", "delete"):
         sub = subparsers.add_parser(cmd, help=f"{cmd} object")
         sub.add_argument("--wallet-address", required=True, help="Base blockchain wallet address")
-        sub.add_argument("--location", default="us-east-1", help="AWS region (default: us-east-1)")
+        sub.add_argument("--location", default="[REDACTED]", help="AWS region (default: [REDACTED])")
         if cmd == "upload":
             sub.add_argument("--object-id", required=True, help="Local file path to upload")
         else:
@@ -435,7 +435,7 @@ def main() -> int:
     args = parser.parse_args()
     command = args.command
     wallet_address = (args.wallet_address or "").strip()
-    location = (getattr(args, "location", None) or "us-east-1").strip()
+    location = (getattr(args, "location", None) or "[REDACTED]").strip()
 
     if not wallet_address:
         print("Error: --wallet-address is required and must be non-empty.", file=sys.stderr)
