@@ -349,8 +349,8 @@ def _parse_wallet_proof(header_value: str) -> WalletProof:
 
 def _recover_signer(proof: WalletProof) -> str:
     try:
-        from eth_account import Account
-        from eth_account.messages import encode_typed_data
+        from eth_account import Account  # type: ignore[reportMissingImports]
+        from eth_account.messages import encode_typed_data  # type: ignore[reportMissingImports]
     except ImportError as exc:  # pragma: no cover - runtime dependency guard
         raise RuntimeError("eth-account dependency is required for EIP-712 verification") from exc
 
