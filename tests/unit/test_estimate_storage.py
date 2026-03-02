@@ -129,6 +129,9 @@ class EstimateCostTests(unittest.TestCase):
         usage_record = fake_pricing.batch_create_workload_estimate_usage_calls[0]["usage"][0]
         self.assertEqual(usage_record["serviceCode"], "AmazonS3")
         self.assertEqual(usage_record["usageType"], app.S3_STANDARD_STORAGE_USAGE_TYPE)
+        self.assertEqual(usage_record["key"], app.S3_STORAGE_USAGE_KEY)
+        self.assertTrue(usage_record["key"].isalnum())
+        self.assertLessEqual(len(usage_record["key"]), 10)
         self.assertEqual(usage_record["amount"], 100.0)
 
     def test_estimate_s3_storage_cost_invalid_estimate_raises(self):

@@ -24,6 +24,7 @@ VALID_RATE_TYPES = (
     "AFTER_DISCOUNTS_AND_COMMITMENTS",
 )
 S3_STANDARD_STORAGE_USAGE_TYPE = "TimedStorage-ByteHrs"
+S3_STORAGE_USAGE_KEY = "s3stor01"
 MAX_POLL_ATTEMPTS = 30
 POLL_INTERVAL_SECONDS = 1
 
@@ -143,7 +144,7 @@ def estimate_s3_storage_cost(
                     "serviceCode": "AmazonS3",
                     "usageType": S3_STANDARD_STORAGE_USAGE_TYPE,
                     "operation": "",
-                    "key": "s3-storage-gb-month",
+                    "key": S3_STORAGE_USAGE_KEY,
                     "usageAccountId": str(resolved_account_id),
                     "amount": float(storage_gb_month),
                     "group": "mnemospark",
