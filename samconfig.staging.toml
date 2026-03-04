@@ -8,5 +8,5 @@ region = "eu-central-1"
 confirm_changeset = false
 capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
 disable_rollback = false
-parameter_overrides = "EnvName=staging LogLevel=INFO ReservedConcurrency=5 AlarmEmail=ops@example.com"
+parameter_overrides = "StageName=staging"
 image_repositories = []

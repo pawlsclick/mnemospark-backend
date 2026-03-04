@@ -38,4 +38,9 @@ jobs:
         run: sam deploy --config-file samconfig.prod.toml --no-fail-on-empty-changeset
 
       - name: Smoke tests (prod)
+        if: ${{ vars.PROD_BASE_URL != '' && !contains(vars.PROD_BASE_URL, 'example.com') }}
         run: bash scripts/smoke.sh "${{ vars.PROD_BASE_URL }}"
+
+      - name: Smoke tests skipped (placeholder URL)
+        if: ${{ vars.PROD_BASE_URL == '' || contains(vars.PROD_BASE_URL, 'example.com') }}
+        run: echo "Skipping smoke tests because PROD_BASE_URL is placeholder or unset."
