@@ -1,0 +1,53 @@
+name: Promote to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit SHA validated in staging
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install aws-sam-cli
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: SAM build
+        run: sam build
+
+      - name: SAM deploy (prod)
+        run: sam deploy --config-file samconfig.prod.toml --region "${{ vars.AWS_REGION }}" --no-fail-on-empty-changeset
+
+      - name: Smoke tests (prod)
+        if: ${{ vars.PROD_BASE_URL != '' && !contains(vars.PROD_BASE_URL, 'example.com') }}
+        run: bash scripts/smoke.sh "${{ vars.PROD_BASE_URL }}"
+
+      - name: Smoke tests skipped (placeholder URL)
+        if: ${{ vars.PROD_BASE_URL == '' || contains(vars.PROD_BASE_URL, 'example.com') }}
+        run: echo "Skipping smoke tests because PROD_BASE_URL is placeholder or unset."

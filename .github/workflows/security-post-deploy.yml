@@ -1,0 +1,62 @@
+name: Security Post Deploy
+
+on:
+  workflow_run:
+    workflows: ["Deploy Staging"]
+    types: [completed]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  security-checks:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Trivy (filesystem)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Checkov (IaC)
+        if: always()
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          soft_fail: true
+          quiet: true
+          framework: cloudformation
+          output_format: cli
+
+      - name: OWASP ZAP Baseline
+        if: ${{ always() && vars.ZAP_TARGET_URL_STAGING != '' && !contains(vars.ZAP_TARGET_URL_STAGING, 'example.com') }}
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: ${{ vars.ZAP_TARGET_URL_STAGING }}
+          fail_action: true
+          cmd_options: '-a -m 5'
+
+      - name: ZAP skipped (placeholder URL)
+        if: ${{ always() && (vars.ZAP_TARGET_URL_STAGING == '' || contains(vars.ZAP_TARGET_URL_STAGING, 'example.com')) }}
+        run: echo "Skipping ZAP baseline because ZAP_TARGET_URL_STAGING is placeholder or unset."
+
+      - name: Upload ZAP report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-baseline-report
+          path: report_html.html
+          if-no-files-found: ignore
