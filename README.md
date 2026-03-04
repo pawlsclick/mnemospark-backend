@@ -1,6 +1,6 @@
 # mnemospark-backend
 
-**Documentation:** The `.company` directory is the **mnemospark-docs** Git submodule (single source of truth for product and API docs). Do not edit `.company` here; edit in the [mnemospark-docs](https://github.com/pawlsclick/mnemospark-docs) repo. After cloning, run `git submodule update --init` to populate `.company`.
+**Documentation:** The canonical product and API docs live in the separate [mnemospark-docs](https://github.com/pawlsclick/mnemospark-docs) repository (single source of truth). This repo no longer includes a `.company` docs subdirectory; clone or open `mnemospark-docs` directly when working on documentation.
 
 ## Observability stack validation and deploy
 
