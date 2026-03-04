@@ -2,6 +2,11 @@ name: Promote to Production
 
 on:
   workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit SHA validated in staging
+        required: true
+        type: string
 
 permissions:
   id-token: write
@@ -14,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.sha }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
