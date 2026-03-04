@@ -1,0 +1,51 @@
+name: Deploy Staging
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install aws-sam-cli pytest
+
+      - name: Unit tests
+        run: pytest -q
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_STAGING }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: SAM build
+        run: sam build
+
+      - name: SAM deploy (staging)
+        run: sam deploy --config-file samconfig.staging.toml --no-fail-on-empty-changeset
+
+      - name: Smoke tests
+        if: ${{ vars.STAGING_BASE_URL != '' && !contains(vars.STAGING_BASE_URL, 'example.com') }}
+        run: bash scripts/smoke.sh "${{ vars.STAGING_BASE_URL }}"
+
+      - name: Smoke tests skipped (placeholder URL)
+        if: ${{ vars.STAGING_BASE_URL == '' || contains(vars.STAGING_BASE_URL, 'example.com') }}
+        run: echo "Skipping smoke tests because STAGING_BASE_URL is placeholder or unset."

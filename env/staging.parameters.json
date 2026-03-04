@@ -1,0 +1,6 @@
+{
+  "EnvName": "staging",
+  "LogLevel": "INFO",
+  "ReservedConcurrency": 5,
+  "AlarmEmail": "ops@example.com"
+}
