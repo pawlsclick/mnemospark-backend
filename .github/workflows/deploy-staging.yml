@@ -40,7 +40,7 @@ jobs:
         run: sam build
 
       - name: SAM deploy (staging)
-        run: sam deploy --config-file samconfig.staging.toml --no-fail-on-empty-changeset
+        run: sam deploy --config-file samconfig.staging.toml --region "${{ vars.AWS_REGION }}" --no-fail-on-empty-changeset
 
       - name: Smoke tests
         if: ${{ vars.STAGING_BASE_URL != '' && !contains(vars.STAGING_BASE_URL, 'example.com') }}
