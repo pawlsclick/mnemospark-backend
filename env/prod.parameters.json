@@ -1,6 +1,0 @@
-{
-  "EnvName": "prod",
-  "LogLevel": "WARN",
-  "ReservedConcurrency": 25,
-  "AlarmEmail": "ops@example.com"
-}
