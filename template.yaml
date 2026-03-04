@@ -741,6 +741,9 @@ Resources:
               Action:
                 - s3:HeadBucket
                 - s3:HeadObject
+              Resource:
+                - !Sub "arn:aws:s3:::mnemospark-*"
+                - !Sub "arn:aws:s3:::mnemospark-*/*"
 
   StorageHousekeepingScheduleRule:
     Type: AWS::Events::Rule
