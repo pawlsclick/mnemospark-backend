@@ -4,7 +4,6 @@ version = 0.1
 stack_name = "mnemospark-prod"
 resolve_s3 = true
 s3_prefix = "mnemospark-prod"
-region = "eu-central-1"
 confirm_changeset = false
 capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
 disable_rollback = false
