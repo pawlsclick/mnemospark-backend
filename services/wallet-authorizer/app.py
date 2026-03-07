@@ -21,13 +21,14 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+# Must match mnemospark client (mnemospark-request-sign.ts) for EIP-712 verification.
 MNEMOSPARK_REQUEST_TYPES = {
     "MnemosparkRequest": [
         {"name": "method", "type": "string"},
         {"name": "path", "type": "string"},
         {"name": "walletAddress", "type": "address"},
-        {"name": "nonce", "type": "bytes32"},
-        {"name": "timestamp", "type": "uint256"},
+        {"name": "nonce", "type": "string"},
+        {"name": "timestamp", "type": "string"},
     ]
 }
 
@@ -359,7 +360,7 @@ def _recover_signer(proof: WalletProof) -> str:
         "path": proof.path,
         "walletAddress": proof.wallet_address,
         "nonce": proof.nonce,
-        "timestamp": int(proof.timestamp),
+        "timestamp": str(proof.timestamp),
     }
     domain = {
         "name": DOMAIN_NAME,
