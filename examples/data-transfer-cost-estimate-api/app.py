@@ -63,7 +63,7 @@ def estimate_data_transfer_cost(
                     "operation": "",
                     "key": "dtxfer01",
                     "usageAccountId": str(account_id),
-                    "amount": float(data_gb),
+                    "amount": float(data_gb) * (1024**3),
                     "group": "mnemospark",
                 }
             ],
