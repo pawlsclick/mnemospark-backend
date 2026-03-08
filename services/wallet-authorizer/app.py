@@ -21,6 +21,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+# Canonical EIP-712 types: bytes32/uint256 align with Solidity and OpenZeppelin EIP712.
+# Must match mnemospark client (mnemospark-request-sign.ts) for verification.
 MNEMOSPARK_REQUEST_TYPES = {
     "MnemosparkRequest": [
         {"name": "method", "type": "string"},

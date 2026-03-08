@@ -448,8 +448,8 @@ Resources:
   EstimateTransferFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: app.lambda_handler
-      CodeUri: services/estimate-transfer
+      Handler: estimate_transfer_entry.lambda_handler
+      CodeUri: services
       Events:
         EstimateTransferGet:
           Type: Api
@@ -498,8 +498,8 @@ Resources:
   PriceStorageFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: app.lambda_handler
-      CodeUri: services/price-storage
+      Handler: price_storage_entry.lambda_handler
+      CodeUri: services
       Role: !GetAtt PriceStorageLambdaRole.Arn
       Environment:
         Variables:
