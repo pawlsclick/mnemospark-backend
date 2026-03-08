@@ -157,7 +157,7 @@ class EstimateCostTests(unittest.TestCase):
         usage_record = fake_pricing.batch_create_workload_estimate_usage_calls[0]["usage"][0]
         self.assertEqual(usage_record["serviceCode"], "AmazonEC2")
         self.assertEqual(usage_record["usageType"], "USE1-DataTransfer-Out-Bytes")
-        self.assertEqual(usage_record["amount"], 100.0 * (1024**3))
+        self.assertEqual(usage_record["amount"], 100.0 * (1000**3))
 
     def test_estimate_data_transfer_cost_invalid_estimate_raises(self):
         fake_pricing = FakePricingClient(
