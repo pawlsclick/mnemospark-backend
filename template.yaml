@@ -158,6 +158,20 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:UpdateItem
                 Resource: !GetAtt QuotesTable.Arn
+        - PolicyName: price-storage-bcm-pricing-calculator
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bcm-pricing-calculator:CreateWorkloadEstimate
+                  - bcm-pricing-calculator:GetWorkloadEstimate
+                  - bcm-pricing-calculator:DeleteWorkloadEstimate
+                  - bcm-pricing-calculator:CreateWorkloadEstimateUsage
+                Resource: "*"
+              - Effect: Allow
+                Action: sts:GetCallerIdentity
+                Resource: "*"
       Tags:
         - Key: Project
           Value: mnemospark
