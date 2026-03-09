@@ -37,6 +37,7 @@ DEFAULT_PAYMENT_TOKEN_VERSION = "2"
 USDC_DECIMALS = Decimal("1000000")
 
 IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
+PRESIGNED_URL_EXPIRES_IN_SECONDS = 60 * 60
 
 QUOTES_TABLE_ENV = "QUOTES_TABLE_NAME"
 UPLOAD_TRANSACTION_LOG_TABLE_ENV = "UPLOAD_TRANSACTION_LOG_TABLE_NAME"
@@ -1042,11 +1043,25 @@ def _release_idempotency_lock(idempotency_table: Any, idempotency_key: str) -> N
         return
 
 
-def _cached_success_response(idempotency_item: dict[str, Any]) -> dict[str, Any]:
+def _cached_success_response(
+    idempotency_item: dict[str, Any],
+    request: ParsedUploadRequest | None = None,
+) -> dict[str, Any]:
     response_body_raw = idempotency_item.get("response_body")
     if not isinstance(response_body_raw, str):
         raise RuntimeError("Stored idempotency response_body is invalid")
     response_body = json.loads(response_body_raw)
+    if isinstance(response_body, dict) and request is not None and "upload_url" in response_body:
+        s3_client = boto3.client("s3", region_name=str(response_body.get("location") or request.location))
+        response_body["upload_url"] = s3_client.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": str(response_body.get("bucket_name") or _bucket_name(request.wallet_address)),
+                "Key": str(response_body.get("object_key") or request.object_key),
+                "Metadata": {"wrapped-dek": request.wrapped_dek},
+            },
+            ExpiresIn=PRESIGNED_URL_EXPIRES_IN_SECONDS,
+        )
     headers: dict[str, str] = {}
     payment_response = idempotency_item.get("payment_response")
     if isinstance(payment_response, str) and payment_response:
@@ -1142,7 +1157,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 now=now,
             )
             if existing:
-                return _cached_success_response(existing)
+                return _cached_success_response(existing, request=request)
 
         quote_resp = quotes_table.get_item(
             Key={"quote_id": request.quote_id},
@@ -1161,7 +1176,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 now=now,
             )
             if existing:
-                return _cached_success_response(existing)
+                return _cached_success_response(existing, request=request)
             idempotency_lock_acquired = True
 
         payment_result = verify_and_settle_payment(
@@ -1188,7 +1203,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     "Key": request.object_key,
                     "Metadata": {"wrapped-dek": request.wrapped_dek},
                 },
-                ExpiresIn=3600,
+                ExpiresIn=PRESIGNED_URL_EXPIRES_IN_SECONDS,
             )
         else:
             if request.ciphertext is None:
