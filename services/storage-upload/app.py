@@ -1436,7 +1436,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             logging.WARNING,
             "upload_payment_required",
             error_type=type(exc).__name__,
-            error_message=str(exc),
+            error_message=exc.message,
             quote_id=request.quote_id if request else None,
             wallet_address=request.wallet_address if request else None,
         )
