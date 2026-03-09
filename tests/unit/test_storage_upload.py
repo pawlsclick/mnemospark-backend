@@ -1,5 +1,6 @@
 import base64
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -293,6 +294,39 @@ class StorageUploadHelperTests(unittest.TestCase):
 
         self.assertIn(key_tuple, idempotency_table.items)
         self.assertGreater(int(idempotency_table.items[key_tuple]["expires_at"]), now)
+
+    def test_request_fingerprint_keeps_legacy_shape_for_inline_mode(self):
+        request = app.ParsedUploadRequest(
+            quote_id="quote-123",
+            wallet_address="0x1111111111111111111111111111111111111111",
+            object_id="object-123",
+            object_id_hash="hash-123",
+            object_key="object-123",
+            provider="aws",
+            location="us-east-1",  # pragma: allowlist secret
+            mode="inline",
+            content_sha256="abc123",
+            ciphertext=None,
+            wrapped_dek="wrapped",
+            idempotency_key=None,
+            payment_header=None,
+        )
+        legacy_payload = {
+            "quote_id": request.quote_id,
+            "wallet_address": request.wallet_address,
+            "object_id": request.object_id,
+            "object_id_hash": request.object_id_hash,
+            "object_key": request.object_key,
+            "provider": request.provider,
+            "location": request.location,
+            "wrapped_dek": request.wrapped_dek,
+            "ciphertext_sha256": request.content_sha256,
+        }
+        expected_fingerprint = hashlib.sha256(
+            json.dumps(legacy_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+        self.assertEqual(app._request_fingerprint(request), expected_fingerprint)
 
 
 class StorageUploadLambdaTests(unittest.TestCase):

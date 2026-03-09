@@ -912,6 +912,7 @@ def _request_fingerprint(request: ParsedUploadRequest) -> str:
     if request.ciphertext is not None:
         ciphertext_sha256 = hashlib.sha256(request.ciphertext).hexdigest()
 
+    normalized_mode = (request.mode or "").strip().lower()
     stable_payload = {
         "quote_id": request.quote_id,
         "wallet_address": request.wallet_address,
@@ -920,10 +921,12 @@ def _request_fingerprint(request: ParsedUploadRequest) -> str:
         "object_key": request.object_key,
         "provider": request.provider,
         "location": request.location,
-        "mode": request.mode or "",
         "wrapped_dek": request.wrapped_dek,
         "ciphertext_sha256": ciphertext_sha256 or "",
     }
+    # Keep legacy fingerprint compatibility for inline uploads.
+    if normalized_mode and normalized_mode != "inline":
+        stable_payload["mode"] = normalized_mode
     encoded = json.dumps(stable_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
