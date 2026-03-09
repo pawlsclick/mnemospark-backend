@@ -37,6 +37,7 @@ DEFAULT_PAYMENT_TOKEN_VERSION = "2"
 USDC_DECIMALS = Decimal("1000000")
 
 IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
+PRESIGNED_URL_EXPIRES_IN_SECONDS = 60 * 60
 
 QUOTES_TABLE_ENV = "QUOTES_TABLE_NAME"
 UPLOAD_TRANSACTION_LOG_TABLE_ENV = "UPLOAD_TRANSACTION_LOG_TABLE_NAME"
@@ -137,10 +138,13 @@ class ParsedUploadRequest:
     object_key: str
     provider: str
     location: str
-    ciphertext: bytes
+    mode: str | None
+    content_sha256: str | None
+    ciphertext: bytes | None
     wrapped_dek: str
     idempotency_key: str | None
     payment_header: str | None
+    content_length_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -396,6 +400,19 @@ def _ensure_bucket_exists(s3_client: Any, bucket_name: str, location: str) -> No
         )
 
 
+def _presigned_put_object_params(
+    bucket_name: str, object_key: str, wrapped_dek: str, content_length_bytes: int | None = None
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "Bucket": bucket_name,
+        "Key": object_key,
+        "Metadata": {"wrapped-dek": wrapped_dek},
+    }
+    if content_length_bytes is not None:
+        params["ContentLength"] = content_length_bytes
+    return params
+
+
 def parse_input(event: dict[str, Any]) -> ParsedUploadRequest:
     params, headers = _collect_request_params(event)
     quote_id = _require_string_field(params, "quote_id")
@@ -409,10 +426,37 @@ def parse_input(event: dict[str, Any]) -> ParsedUploadRequest:
     provider = str(params.get("provider") or DEFAULT_PROVIDER).strip() or DEFAULT_PROVIDER
     location = str(params.get("location") or params.get("region") or DEFAULT_LOCATION).strip() or DEFAULT_LOCATION
 
-    ciphertext_field = "ciphertext"
-    if "ciphertext" not in params and "content" in params:
-        ciphertext_field = "content"
-    ciphertext = _decode_base64_field(params, ciphertext_field)
+    raw_mode = params.get("mode")
+    if raw_mode is None:
+        mode = "inline"
+    elif not isinstance(raw_mode, str):
+        raise BadRequestError("mode must be a string")
+    else:
+        mode = raw_mode.strip().lower() or "inline"
+    if mode not in {"inline", "presigned"}:
+        raise BadRequestError("mode must be either 'inline' or 'presigned'")
+
+    content_sha256: str | None = None
+    raw_content_sha256 = params.get("content_sha256")
+    if raw_content_sha256 is not None:
+        if not isinstance(raw_content_sha256, str):
+            raise BadRequestError("content_sha256 must be a string")
+        content_sha256 = raw_content_sha256.strip() or None
+
+    content_length_bytes: int | None = None
+    raw_content_length = params.get("content_length_bytes")
+    if raw_content_length is not None:
+        content_length_bytes = _coerce_int(raw_content_length, "content_length_bytes")
+        if content_length_bytes < 0:
+            raise BadRequestError("content_length_bytes must be greater than or equal to 0")
+
+    ciphertext: bytes | None = None
+    has_ciphertext_field = "ciphertext" in params or "content" in params
+    if mode == "inline" or has_ciphertext_field:
+        ciphertext_field = "ciphertext"
+        if "ciphertext" not in params and "content" in params:
+            ciphertext_field = "content"
+        ciphertext = _decode_base64_field(params, ciphertext_field)
 
     wrapped_dek = str(params.get("wrapped_dek") or params.get("wrapped-dek") or "").strip()
     if not wrapped_dek:
@@ -438,10 +482,13 @@ def parse_input(event: dict[str, Any]) -> ParsedUploadRequest:
         object_key=object_key,
         provider=provider,
         location=location,
+        mode=mode,
+        content_sha256=content_sha256,
         ciphertext=ciphertext,
         wrapped_dek=wrapped_dek,
         idempotency_key=idempotency_key,
         payment_header=payment_header,
+        content_length_bytes=content_length_bytes,
     )
 
 
@@ -884,6 +931,11 @@ def verify_and_settle_payment(
 
 
 def _request_fingerprint(request: ParsedUploadRequest) -> str:
+    ciphertext_sha256 = request.content_sha256
+    if request.ciphertext is not None:
+        ciphertext_sha256 = hashlib.sha256(request.ciphertext).hexdigest()
+
+    normalized_mode = (request.mode or "").strip().lower()
     stable_payload = {
         "quote_id": request.quote_id,
         "wallet_address": request.wallet_address,
@@ -893,8 +945,13 @@ def _request_fingerprint(request: ParsedUploadRequest) -> str:
         "provider": request.provider,
         "location": request.location,
         "wrapped_dek": request.wrapped_dek,
-        "ciphertext_sha256": hashlib.sha256(request.ciphertext).hexdigest(),
+        "ciphertext_sha256": ciphertext_sha256 or "",
     }
+    # Keep legacy fingerprint compatibility for inline uploads.
+    if normalized_mode and normalized_mode != "inline":
+        stable_payload["mode"] = normalized_mode
+        if request.content_length_bytes is not None:
+            stable_payload["content_length_bytes"] = request.content_length_bytes
     encoded = json.dumps(stable_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -1010,11 +1067,26 @@ def _release_idempotency_lock(idempotency_table: Any, idempotency_key: str) -> N
         return
 
 
-def _cached_success_response(idempotency_item: dict[str, Any]) -> dict[str, Any]:
+def _cached_success_response(
+    idempotency_item: dict[str, Any],
+    request: ParsedUploadRequest | None = None,
+) -> dict[str, Any]:
     response_body_raw = idempotency_item.get("response_body")
     if not isinstance(response_body_raw, str):
         raise RuntimeError("Stored idempotency response_body is invalid")
     response_body = json.loads(response_body_raw)
+    if isinstance(response_body, dict) and request is not None and "upload_url" in response_body:
+        s3_client = boto3.client("s3", region_name=str(response_body.get("location") or request.location))
+        response_body["upload_url"] = s3_client.generate_presigned_url(
+            "put_object",
+            Params=_presigned_put_object_params(
+                bucket_name=str(response_body.get("bucket_name") or _bucket_name(request.wallet_address)),
+                object_key=str(response_body.get("object_key") or request.object_key),
+                wrapped_dek=request.wrapped_dek,
+                content_length_bytes=request.content_length_bytes,
+            ),
+            ExpiresIn=PRESIGNED_URL_EXPIRES_IN_SECONDS,
+        )
     headers: dict[str, str] = {}
     payment_response = idempotency_item.get("payment_response")
     if isinstance(payment_response, str) and payment_response:
@@ -1110,7 +1182,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 now=now,
             )
             if existing:
-                return _cached_success_response(existing)
+                return _cached_success_response(existing, request=request)
 
         quote_resp = quotes_table.get_item(
             Key={"quote_id": request.quote_id},
@@ -1129,7 +1201,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 now=now,
             )
             if existing:
-                return _cached_success_response(existing)
+                return _cached_success_response(existing, request=request)
             idempotency_lock_acquired = True
 
         payment_result = verify_and_settle_payment(
@@ -1143,13 +1215,32 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             requirements=requirements,
         )
 
-        bucket_name = _upload_ciphertext_to_s3(
-            wallet_address=request.wallet_address,
-            object_key=request.object_key,
-            ciphertext=request.ciphertext,
-            wrapped_dek=request.wrapped_dek,
-            location=quote_context.location,
-        )
+        upload_url: str | None = None
+        if request.mode == "presigned":
+            s3_client = boto3.client("s3", region_name=quote_context.location)
+            bucket_name = _bucket_name(request.wallet_address)
+            _validate_bucket_name(bucket_name)
+            _ensure_bucket_exists(s3_client, bucket_name, quote_context.location)
+            upload_url = s3_client.generate_presigned_url(
+                "put_object",
+                Params=_presigned_put_object_params(
+                    bucket_name=bucket_name,
+                    object_key=request.object_key,
+                    wrapped_dek=request.wrapped_dek,
+                    content_length_bytes=request.content_length_bytes,
+                ),
+                ExpiresIn=PRESIGNED_URL_EXPIRES_IN_SECONDS,
+            )
+        else:
+            if request.ciphertext is None:
+                raise BadRequestError("ciphertext is required")
+            bucket_name = _upload_ciphertext_to_s3(
+                wallet_address=request.wallet_address,
+                object_key=request.object_key,
+                ciphertext=request.ciphertext,
+                wrapped_dek=request.wrapped_dek,
+                location=quote_context.location,
+            )
 
         _write_transaction_log(
             transaction_log_table=transaction_log_table,
@@ -1179,6 +1270,12 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "bucket_name": bucket_name,
             "location": quote_context.location,
         }
+        if upload_url:
+            response_body["upload_url"] = upload_url
+            response_body["upload_headers"] = {
+                "content-type": "application/octet-stream",
+                "x-amz-meta-wrapped-dek": request.wrapped_dek,
+            }
         payment_response_header = _encode_json_base64(
             {
                 "trans_id": payment_result.trans_id,

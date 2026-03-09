@@ -378,7 +378,6 @@ Resources:
             - wallet_address
             - object_id
             - object_id_hash
-            - ciphertext
             - wrapped_dek
           properties:
             quote_id:
@@ -391,10 +390,16 @@ Resources:
               type: string
             object_key:
               type: string
+            mode:
+              type: string
             ciphertext:
               type: string
             wrapped_dek:
               type: string
+            content_sha256:
+              type: string
+            content_length_bytes:
+              type: integer
             provider:
               type: string
             location:
