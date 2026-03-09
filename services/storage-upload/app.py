@@ -1318,28 +1318,33 @@ def _write_transaction_log(
         if isinstance(payment_result.asset, str)
         else str(payment_result.asset)
     )
-    transaction_log_table.put_item(
-        Item={
-            "quote_id": request.quote_id,
-            "trans_id": trans_id,
-            "timestamp": timestamp,
-            "payment_received_at": payment_received_at,
-            "payment_status": "confirmed",
-            "recipient_wallet": payment_config["recipient_wallet"],
-            "payment_network": payment_result.network,
-            "payment_asset": payment_asset,
-            "payment_amount": str(payment_result.amount),
-            "addr": request.wallet_address,
-            "addr_hash": _wallet_hash(request.wallet_address),
-            "storage_price": quote_context.storage_price,
-            "object_id": request.object_id,
-            "object_key": request.object_key,
-            "provider": quote_context.provider,
-            "bucket_name": bucket_name,
-            "location": quote_context.location,
-            "idempotency_key": request.idempotency_key or "",
-        }
-    )
+    try:
+        transaction_log_table.put_item(
+            Item={
+                "quote_id": request.quote_id,
+                "trans_id": trans_id,
+                "timestamp": timestamp,
+                "payment_received_at": payment_received_at,
+                "payment_status": "confirmed",
+                "recipient_wallet": payment_config["recipient_wallet"],
+                "payment_network": payment_result.network,
+                "payment_asset": payment_asset,
+                "payment_amount": str(payment_result.amount),
+                "addr": request.wallet_address,
+                "addr_hash": _wallet_hash(request.wallet_address),
+                "storage_price": quote_context.storage_price,
+                "object_id": request.object_id,
+                "object_key": request.object_key,
+                "provider": quote_context.provider,
+                "bucket_name": bucket_name,
+                "location": quote_context.location,
+                "idempotency_key": request.idempotency_key or "",
+            },
+            ConditionExpression="attribute_not_exists(quote_id)",
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:

@@ -52,6 +52,11 @@ class FakeDynamoTable:
                 {"Error": {"Code": "ConditionalCheckFailedException", "Message": "duplicate key"}},
                 "PutItem",
             )
+        if ConditionExpression == "attribute_not_exists(quote_id)" and key in self.items:
+            raise ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "duplicate key"}},
+                "PutItem",
+            )
         if ConditionExpression == "attribute_not_exists(idempotency_key) OR status <> :completed_status":
             existing_item = self.items.get(key)
             completed_status = (
@@ -865,6 +870,66 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertEqual(second_confirm["statusCode"], 200)
         self.assertEqual(json.loads(first_confirm["body"]), json.loads(second_confirm["body"]))
         self.assertEqual(len(self.transaction_log_table.items), 1)
+
+    def test_confirm_retry_after_idempotency_completion_failure_does_not_overwrite_log_timestamp(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-confirm-retry-log"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        body = json.loads(event["body"])
+        body.pop("ciphertext", None)
+        event["body"] = json.dumps(body)
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xconfirm-retry",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            first_response = app.lambda_handler(event, None)
+        first_body = json.loads(first_response["body"])
+        self.s3_client.objects.add((first_body["bucket_name"], first_body["object_key"]))
+
+        original_mark_completed = app._mark_idempotency_completed
+        mark_attempts = 0
+
+        def fail_once_then_mark(*, idempotency_table, idempotency_key, request_hash, response_body, payment_response_header, now):
+            nonlocal mark_attempts
+            mark_attempts += 1
+            if mark_attempts == 1:
+                raise RuntimeError("simulated idempotency completion failure")
+            return original_mark_completed(
+                idempotency_table=idempotency_table,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+                response_body=response_body,
+                payment_response_header=payment_response_header,
+                now=now,
+            )
+
+        confirm_event = self._make_confirm_event(idempotency_key="idem-confirm-retry-log")
+        with (
+            mock.patch.object(
+                app.time,
+                "time",
+                side_effect=range(1_700_000_100, 1_700_000_300),
+            ),
+            mock.patch.object(app, "_mark_idempotency_completed", side_effect=fail_once_then_mark),
+        ):
+            first_confirm = app.confirm_upload_handler(confirm_event, None)
+            first_log_item = next(iter(self.transaction_log_table.items.values())).copy()
+            second_confirm = app.confirm_upload_handler(confirm_event, None)
+
+        self.assertEqual(first_confirm["statusCode"], 500)
+        self.assertEqual(second_confirm["statusCode"], 200)
+        self.assertEqual(mark_attempts, 2)
+        self.assertEqual(len(self.transaction_log_table.put_history), 1)
+        log_item = next(iter(self.transaction_log_table.items.values()))
+        self.assertEqual(log_item["timestamp"], first_log_item["timestamp"])
+        self.assertEqual(log_item["payment_received_at"], first_log_item["payment_received_at"])
 
     def test_inline_mode_uses_existing_direct_upload_path(self):
         event = self._make_event(headers={"PAYMENT-SIGNATURE": "mock"}, mode="inline")
