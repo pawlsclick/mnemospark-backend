@@ -1104,23 +1104,29 @@ def _mark_idempotency_upload_retryable(
     quote_context: QuoteContext,
     now: int,
 ) -> None:
-    idempotency_table.put_item(
-        Item={
-            "idempotency_key": idempotency_key,
-            "status": "in_progress",
-            "request_hash": request_hash,
-            "upload_retry_after_payment": True,
-            "payment_trans_id": payment_result.trans_id,
-            "payment_network": payment_result.network,
-            "payment_asset": payment_result.asset,
-            "payment_amount": str(payment_result.amount),
-            "quote_storage_price": str(quote_context.storage_price),
-            "quote_provider": quote_context.provider,
-            "quote_location": quote_context.location,
-            "updated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
-            "expires_at": now + IDEMPOTENCY_TTL_SECONDS,
-        }
-    )
+    try:
+        idempotency_table.put_item(
+            Item={
+                "idempotency_key": idempotency_key,
+                "status": "in_progress",
+                "request_hash": request_hash,
+                "upload_retry_after_payment": True,
+                "payment_trans_id": payment_result.trans_id,
+                "payment_network": payment_result.network,
+                "payment_asset": payment_result.asset,
+                "payment_amount": str(payment_result.amount),
+                "quote_storage_price": str(quote_context.storage_price),
+                "quote_provider": quote_context.provider,
+                "quote_location": quote_context.location,
+                "updated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+                "expires_at": now + IDEMPOTENCY_TTL_SECONDS,
+            },
+            ConditionExpression="attribute_not_exists(idempotency_key) OR status <> :completed_status",
+            ExpressionAttributeValues={":completed_status": "completed"},
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
 
 
 def _payment_result_from_retryable_idempotency(item: dict[str, Any]) -> PaymentVerificationResult:

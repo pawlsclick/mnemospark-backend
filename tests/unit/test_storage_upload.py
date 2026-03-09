@@ -45,13 +45,30 @@ class FakeDynamoTable:
             return {}
         return {"Item": copy.deepcopy(item)}
 
-    def put_item(self, Item, ConditionExpression=None):
+    def put_item(self, Item, ConditionExpression=None, ExpressionAttributeValues=None):
         key = self._key_tuple(Item)
         if ConditionExpression == "attribute_not_exists(idempotency_key)" and key in self.items:
             raise ClientError(
                 {"Error": {"Code": "ConditionalCheckFailedException", "Message": "duplicate key"}},
                 "PutItem",
             )
+        if ConditionExpression == "attribute_not_exists(idempotency_key) OR status <> :completed_status":
+            existing_item = self.items.get(key)
+            completed_status = (
+                None
+                if ExpressionAttributeValues is None
+                else ExpressionAttributeValues.get(":completed_status")
+            )
+            if existing_item is not None and existing_item.get("status") == completed_status:
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "ConditionalCheckFailedException",
+                            "Message": "status already completed",
+                        }
+                    },
+                    "PutItem",
+                )
         self.items[key] = copy.deepcopy(Item)
         self.put_history.append(copy.deepcopy(Item))
         return {}
@@ -294,6 +311,47 @@ class StorageUploadHelperTests(unittest.TestCase):
 
         self.assertIn(key_tuple, idempotency_table.items)
         self.assertGreater(int(idempotency_table.items[key_tuple]["expires_at"]), now)
+
+    def test_mark_idempotency_upload_retryable_does_not_overwrite_completed_status(self):
+        idempotency_table = FakeDynamoTable(["idempotency_key"])
+        now = int(time.time())
+        idempotency_table.put_item(
+            Item={
+                "idempotency_key": "idem-completed",
+                "status": "completed",
+                "request_hash": "request-hash",
+                "response_body": "{}",
+                "payment_response": "encoded",
+                "completed_at": "2026-01-01T00:00:00+00:00",
+                "expires_at": now + 3600,
+            }
+        )
+        payment_result = app.PaymentVerificationResult(
+            trans_id="0xpaid",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+        quote_context = app.QuoteContext(
+            storage_price=Decimal("1.25"),
+            storage_price_micro=1_250_000,
+            provider="aws",
+            location="[REDACTED]",
+        )
+
+        app._mark_idempotency_upload_retryable(
+            idempotency_table=idempotency_table,
+            idempotency_key="idem-completed",
+            request_hash="request-hash",
+            payment_result=payment_result,
+            quote_context=quote_context,
+            now=now,
+        )
+
+        idem_item = idempotency_table.items[(("idempotency_key", "idem-completed"),)]
+        self.assertEqual(idem_item["status"], "completed")
+        self.assertIn("response_body", idem_item)
+        self.assertNotIn("upload_retry_after_payment", idem_item)
 
     def test_request_fingerprint_keeps_legacy_shape_for_inline_mode(self):
         request = app.ParsedUploadRequest(
