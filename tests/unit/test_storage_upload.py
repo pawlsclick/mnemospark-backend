@@ -871,6 +871,43 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertEqual(json.loads(first_confirm["body"]), json.loads(second_confirm["body"]))
         self.assertEqual(len(self.transaction_log_table.items), 1)
 
+    def test_confirm_upload_completed_rejects_wallet_mismatch(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-confirm-wallet-mismatch"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        body = json.loads(event["body"])
+        body.pop("ciphertext", None)
+        event["body"] = json.dumps(body)
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xconfirm-wallet-mismatch",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            first_response = app.lambda_handler(event, None)
+        first_body = json.loads(first_response["body"])
+        self.s3_client.objects.add((first_body["bucket_name"], first_body["object_key"]))
+
+        confirm_event = self._make_confirm_event(idempotency_key="idem-confirm-wallet-mismatch")
+        first_confirm = app.confirm_upload_handler(confirm_event, None)
+        self.assertEqual(first_confirm["statusCode"], 200)
+
+        attacker_wallet = "0x2222222222222222222222222222222222222222"
+        mismatched_wallet_event = self._make_confirm_event(
+            idempotency_key="idem-confirm-wallet-mismatch",
+            wallet_address=attacker_wallet,
+            authorizer_wallet=attacker_wallet,
+        )
+        mismatched_wallet_response = app.confirm_upload_handler(mismatched_wallet_event, None)
+
+        self.assertEqual(mismatched_wallet_response["statusCode"], 409)
+        self.assertEqual(json.loads(mismatched_wallet_response["body"])["error"], "conflict")
+
     def test_confirm_retry_after_idempotency_completion_failure_does_not_overwrite_log_timestamp(self):
         event = self._make_event(
             headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-confirm-retry-log"},

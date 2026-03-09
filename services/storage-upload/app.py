@@ -1877,9 +1877,7 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
             return _error_response(404, "not_found", "Upload confirmation idempotency record not found")
 
         status = str(idempotency_item.get("status") or "").lower()
-        if status == "completed":
-            return _cached_success_response(idempotency_item)
-        if status != "pending_confirmation":
+        if status not in {"completed", "pending_confirmation"}:
             return _error_response(409, "conflict", "Upload confirmation is not pending for this Idempotency-Key")
 
         confirm_hash = _confirm_request_fingerprint(
@@ -1904,6 +1902,9 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
             raise ConflictError("object_key does not match pending confirmation idempotency state")
         if str(pending_response_body.get("addr") or "").strip() != request.wallet_address:
             raise ConflictError("wallet_address does not match pending confirmation idempotency state")
+
+        if status == "completed":
+            return _cached_success_response(idempotency_item)
 
         payment_result = _payment_result_from_retryable_idempotency(idempotency_item)
         quote_context = _quote_context_from_retryable_idempotency(idempotency_item)
