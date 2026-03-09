@@ -328,6 +328,28 @@ class StorageUploadHelperTests(unittest.TestCase):
 
         self.assertEqual(app._request_fingerprint(request), expected_fingerprint)
 
+    def test_settlement_mode_defaults_to_onchain_when_env_missing(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(app._settlement_mode(), "onchain")
+
+    def test_emit_mock_settlement_warning_once_logs_warning_payload(self):
+        original_flag = app._MOCK_SETTLEMENT_WARNING_EMITTED
+        app._MOCK_SETTLEMENT_WARNING_EMITTED = False
+        try:
+            with mock.patch.object(app.logger, "log") as log_mock:
+                app._emit_mock_settlement_warning_once("mock")
+                app._emit_mock_settlement_warning_once("mock")
+                app._emit_mock_settlement_warning_once("onchain")
+        finally:
+            app._MOCK_SETTLEMENT_WARNING_EMITTED = original_flag
+
+        log_mock.assert_called_once()
+        level_arg, payload_arg = log_mock.call_args.args
+        self.assertEqual(level_arg, app.logging.WARNING)
+        payload = json.loads(payload_arg)
+        self.assertEqual(payload["event"], "mock_settlement_mode_active")
+        self.assertIn("No real USDC transfers will occur", payload["message"])
+
 
 class StorageUploadLambdaTests(unittest.TestCase):
     def setUp(self):
