@@ -1305,13 +1305,57 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         else:
             if request.ciphertext is None:
                 raise BadRequestError("ciphertext is required")
-            bucket_name = _upload_ciphertext_to_s3(
-                wallet_address=request.wallet_address,
-                object_key=request.object_key,
-                ciphertext=request.ciphertext,
-                wrapped_dek=request.wrapped_dek,
-                location=quote_context.location,
-            )
+            try:
+                bucket_name = _upload_ciphertext_to_s3(
+                    wallet_address=request.wallet_address,
+                    object_key=request.object_key,
+                    ciphertext=request.ciphertext,
+                    wrapped_dek=request.wrapped_dek,
+                    location=quote_context.location,
+                )
+            except Exception as s3_exc:
+                # Payment was already settled, so preserve the idempotency lock and
+                # surface a resumable upload response for operational recovery.
+                logger.error(
+                    json.dumps(
+                        {
+                            "event": "s3_upload_failed_after_payment",
+                            "quote_id": request.quote_id,
+                            "trans_id": payment_result.trans_id,
+                            "wallet_address": request.wallet_address,
+                            "object_key": request.object_key,
+                            "error": str(s3_exc),
+                        },
+                        default=str,
+                    )
+                )
+                response_body = {
+                    "quote_id": request.quote_id,
+                    "addr": request.wallet_address,
+                    "addr_hash": _wallet_hash(request.wallet_address),
+                    "trans_id": payment_result.trans_id,
+                    "storage_price": float(quote_context.storage_price),
+                    "object_id": request.object_id,
+                    "object_key": request.object_key,
+                    "provider": quote_context.provider,
+                    "bucket_name": _bucket_name(request.wallet_address),
+                    "location": quote_context.location,
+                    "upload_failed": True,
+                    "error": "S3 upload failed after payment settlement. Retry the upload.",
+                }
+                payment_response_header = _encode_json_base64(
+                    {
+                        "trans_id": payment_result.trans_id,
+                        "network": payment_result.network,
+                        "asset": payment_result.asset,
+                        "amount": str(payment_result.amount),
+                    }
+                )
+                return _response(
+                    207,
+                    response_body,
+                    headers=_payment_response_headers(payment_response_header),
+                )
             _log_event(
                 logging.INFO,
                 "s3_upload_succeeded",

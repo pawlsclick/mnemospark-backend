@@ -654,6 +654,85 @@ class StorageUploadLambdaTests(unittest.TestCase):
         upload_mock.assert_called_once()
         self.assertEqual(len(self.s3_client.presigned_calls), 0)
 
+    def test_inline_mode_s3_client_error_after_payment_returns_207_and_keeps_idempotency_lock(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-s3-fail"},
+            mode="inline",
+        )
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xpaid1",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+        upload_error = ClientError(
+            {"Error": {"Code": "InternalError", "Message": "simulated put failure"}},
+            "PutObject",
+        )
+
+        with (
+            mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result),
+            mock.patch.object(app, "_upload_ciphertext_to_s3", side_effect=upload_error),
+            mock.patch.object(app, "_release_idempotency_lock") as release_lock_mock,
+            mock.patch.object(app, "_write_transaction_log") as write_log_mock,
+            mock.patch.object(app.logger, "error") as logger_error_mock,
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 207)
+        self.assertIn("PAYMENT-RESPONSE", response["headers"])
+        self.assertIn("x-payment-response", response["headers"])
+        body = json.loads(response["body"])
+        self.assertTrue(body["upload_failed"])
+        self.assertEqual(body["trans_id"], "0xpaid1")
+        self.assertEqual(body["quote_id"], self.quote_id)
+        self.assertEqual(body["object_key"], self.object_id)
+        self.assertEqual(body["bucket_name"], app._bucket_name(self.wallet_address))
+        self.assertIn("Retry the upload", body["error"])
+        release_lock_mock.assert_not_called()
+        write_log_mock.assert_not_called()
+
+        idem_item = self.idempotency_table.items[(("idempotency_key", "idem-s3-fail"),)]
+        self.assertEqual(idem_item["status"], "in_progress")
+
+        logger_error_mock.assert_called_once()
+        log_payload = json.loads(logger_error_mock.call_args.args[0])
+        self.assertEqual(log_payload["event"], "s3_upload_failed_after_payment")
+        self.assertEqual(log_payload["quote_id"], self.quote_id)
+        self.assertEqual(log_payload["trans_id"], "0xpaid1")
+        self.assertEqual(log_payload["wallet_address"], self.wallet_address)
+        self.assertEqual(log_payload["object_key"], self.object_id)
+        self.assertIn("simulated put failure", log_payload["error"])
+
+    def test_inline_mode_s3_exception_after_payment_returns_207_without_releasing_lock(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-s3-runtime"},
+            mode="inline",
+        )
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xpaid2",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with (
+            mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result),
+            mock.patch.object(app, "_upload_ciphertext_to_s3", side_effect=RuntimeError("simulated runtime failure")),
+            mock.patch.object(app, "_release_idempotency_lock") as release_lock_mock,
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 207)
+        self.assertIn("PAYMENT-RESPONSE", response["headers"])
+        body = json.loads(response["body"])
+        self.assertTrue(body["upload_failed"])
+        self.assertEqual(body["trans_id"], "0xpaid2")
+        release_lock_mock.assert_not_called()
+
+        idem_item = self.idempotency_table.items[(("idempotency_key", "idem-s3-runtime"),)]
+        self.assertEqual(idem_item["status"], "in_progress")
+
     def test_presigned_mode_still_requires_payment_verification(self):
         event = self._make_event(mode="presigned")
         body = json.loads(event["body"])
