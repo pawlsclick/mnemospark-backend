@@ -833,7 +833,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         response_body = json.loads(response["body"])
         self.assertEqual(
             response_body["error"],
-            "S3 object not found. Upload the file using the presigned URL first.",
+            "not_found",
         )
         self.assertEqual(len(self.transaction_log_table.items), 0)
         self.assertIn((("quote_id", self.quote_id),), self.quotes_table.items)
