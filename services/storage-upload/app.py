@@ -1912,9 +1912,10 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
         except ClientError as exc:
             error_code = exc.response.get("Error", {}).get("Code")
             if error_code in {"404", "NotFound", "NoSuchKey", "NoSuchBucket"}:
-                return _response(
+                return _error_response(
                     404,
-                    {"error": "S3 object not found. Upload the file using the presigned URL first."},
+                    "not_found",
+                    "S3 object not found. Upload the file using the presigned URL first.",
                 )
             raise
 
