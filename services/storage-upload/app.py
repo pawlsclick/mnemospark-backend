@@ -399,6 +399,14 @@ def _ensure_bucket_exists(s3_client: Any, bucket_name: str, location: str) -> No
         )
 
 
+def _presigned_put_object_params(bucket_name: str, object_key: str, wrapped_dek: str) -> dict[str, Any]:
+    return {
+        "Bucket": bucket_name,
+        "Key": object_key,
+        "Metadata": {"wrapped-dek": wrapped_dek},
+    }
+
+
 def parse_input(event: dict[str, Any]) -> ParsedUploadRequest:
     params, headers = _collect_request_params(event)
     quote_id = _require_string_field(params, "quote_id")
@@ -1055,11 +1063,11 @@ def _cached_success_response(
         s3_client = boto3.client("s3", region_name=str(response_body.get("location") or request.location))
         response_body["upload_url"] = s3_client.generate_presigned_url(
             "put_object",
-            Params={
-                "Bucket": str(response_body.get("bucket_name") or _bucket_name(request.wallet_address)),
-                "Key": str(response_body.get("object_key") or request.object_key),
-                "Metadata": {"wrapped-dek": request.wrapped_dek},
-            },
+            Params=_presigned_put_object_params(
+                bucket_name=str(response_body.get("bucket_name") or _bucket_name(request.wallet_address)),
+                object_key=str(response_body.get("object_key") or request.object_key),
+                wrapped_dek=request.wrapped_dek,
+            ),
             ExpiresIn=PRESIGNED_URL_EXPIRES_IN_SECONDS,
         )
     headers: dict[str, str] = {}
@@ -1198,11 +1206,11 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             _ensure_bucket_exists(s3_client, bucket_name, quote_context.location)
             upload_url = s3_client.generate_presigned_url(
                 "put_object",
-                Params={
-                    "Bucket": bucket_name,
-                    "Key": request.object_key,
-                    "Metadata": {"wrapped-dek": request.wrapped_dek},
-                },
+                Params=_presigned_put_object_params(
+                    bucket_name=bucket_name,
+                    object_key=request.object_key,
+                    wrapped_dek=request.wrapped_dek,
+                ),
                 ExpiresIn=PRESIGNED_URL_EXPIRES_IN_SECONDS,
             )
         else:
