@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -25,6 +26,9 @@ from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 US_EAST_1_REGION = "us-" + "east-1"
 DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
@@ -176,6 +180,12 @@ class PaymentVerificationResult:
     network: str
     asset: str
     amount: int
+
+
+def _log_event(level: int, event_name: str, **fields: Any) -> None:
+    payload: dict[str, Any] = {"event": event_name}
+    payload.update({key: value for key, value in fields.items() if value is not None})
+    logger.log(level, json.dumps(payload, default=str, separators=(",", ":")))
 
 
 def _response(status_code: int, body: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -1161,11 +1171,25 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     idempotency_table: Any | None = None
     idempotency_key: str | None = None
     request_hash: str | None = None
+    request: ParsedUploadRequest | None = None
 
     try:
         now = int(time.time())
         request = parse_input(event)
+        _log_event(
+            logging.INFO,
+            "upload_request_parsed",
+            quote_id=request.quote_id,
+            wallet_address=request.wallet_address,
+            object_id=request.object_id,
+            mode=request.mode,
+        )
         _require_authorized_wallet(event, request.wallet_address)
+        _log_event(
+            logging.DEBUG,
+            "authorized_wallet_confirmed",
+            wallet_address=request.wallet_address,
+        )
         request_hash = _request_fingerprint(request)
         idempotency_key = request.idempotency_key
 
@@ -1182,6 +1206,12 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 now=now,
             )
             if existing:
+                _log_event(
+                    logging.INFO,
+                    "idempotency_cache_hit",
+                    idempotency_key=idempotency_key,
+                    message="returning cached response",
+                )
                 return _cached_success_response(existing, request=request)
 
         quote_resp = quotes_table.get_item(
@@ -1189,6 +1219,15 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             ConsistentRead=True,
         )
         quote_context = _build_quote_context(quote_resp.get("Item"), request=request, now=now)
+        _log_event(
+            logging.INFO,
+            "quote_lookup_succeeded",
+            quote_id=request.quote_id,
+            storage_price=str(quote_context.storage_price),
+            storage_price_micro=quote_context.storage_price_micro,
+            provider=quote_context.provider,
+            location=quote_context.location,
+        )
 
         payment_config = _payment_config()
         requirements = _payment_requirements(quote_context, payment_config)
@@ -1201,9 +1240,22 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 now=now,
             )
             if existing:
+                _log_event(
+                    logging.INFO,
+                    "idempotency_cache_hit",
+                    idempotency_key=idempotency_key,
+                    message="returning cached response",
+                )
                 return _cached_success_response(existing, request=request)
             idempotency_lock_acquired = True
+            _log_event(
+                logging.INFO,
+                "idempotency_lock_acquired",
+                idempotency_key=idempotency_key,
+                message="lock acquired",
+            )
 
+        settlement_mode = os.environ.get("MNEMOSPARK_PAYMENT_SETTLEMENT_MODE", "mock").strip().lower() or "mock"
         payment_result = verify_and_settle_payment(
             payment_header=request.payment_header,
             wallet_address=request.wallet_address,
@@ -1213,6 +1265,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             expected_network=payment_config["payment_network"],
             expected_asset=payment_config["payment_asset"],
             requirements=requirements,
+        )
+        _log_event(
+            logging.INFO,
+            "payment_verification_succeeded",
+            trans_id=payment_result.trans_id,
+            settlement_mode=settlement_mode,
+            amount=payment_result.amount,
+            network=payment_result.network,
         )
 
         upload_url: str | None = None
@@ -1231,6 +1291,13 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 ),
                 ExpiresIn=PRESIGNED_URL_EXPIRES_IN_SECONDS,
             )
+            _log_event(
+                logging.INFO,
+                "presigned_url_generated",
+                bucket_name=bucket_name,
+                object_key=request.object_key,
+                message="presigned URL generated",
+            )
         else:
             if request.ciphertext is None:
                 raise BadRequestError("ciphertext is required")
@@ -1240,6 +1307,13 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 ciphertext=request.ciphertext,
                 wrapped_dek=request.wrapped_dek,
                 location=quote_context.location,
+            )
+            _log_event(
+                logging.INFO,
+                "s3_upload_succeeded",
+                bucket_name=bucket_name,
+                object_key=request.object_key,
+                ciphertext_size_bytes=len(request.ciphertext),
             )
 
         _write_transaction_log(
@@ -1252,9 +1326,21 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             trans_id=payment_result.trans_id,
             bucket_name=bucket_name,
         )
+        _log_event(
+            logging.INFO,
+            "transaction_log_written",
+            trans_id=payment_result.trans_id,
+            quote_id=request.quote_id,
+        )
 
         try:
             quotes_table.delete_item(Key={"quote_id": request.quote_id})
+            _log_event(
+                logging.DEBUG,
+                "consumed_quote_deleted",
+                quote_id=request.quote_id,
+                message="consumed quote deleted",
+            )
         except ClientError:
             pass
 
@@ -1294,34 +1380,87 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 payment_response_header=payment_response_header,
                 now=now,
             )
+            _log_event(
+                logging.DEBUG,
+                "idempotency_marked_completed",
+                idempotency_key=idempotency_key,
+            )
 
         return _response(200, response_body, headers=_payment_response_headers(payment_response_header))
 
     except ForbiddenError as exc:
+        _log_event(
+            logging.WARNING,
+            "upload_request_forbidden",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            quote_id=request.quote_id if request else None,
+            wallet_address=request.wallet_address if request else None,
+        )
         if idempotency_lock_acquired and idempotency_table and idempotency_key:
             _release_idempotency_lock(idempotency_table, idempotency_key)
         return _error_response(403, "forbidden", str(exc))
 
     except BadRequestError as exc:
+        _log_event(
+            logging.WARNING,
+            "upload_request_bad_request",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            quote_id=request.quote_id if request else None,
+            wallet_address=request.wallet_address if request else None,
+        )
         if idempotency_lock_acquired and idempotency_table and idempotency_key:
             _release_idempotency_lock(idempotency_table, idempotency_key)
         return _error_response(400, "Bad request", str(exc))
 
-    except NotFoundError:
+    except NotFoundError as exc:
+        _log_event(
+            logging.WARNING,
+            "upload_quote_not_found",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            quote_id=request.quote_id if request else None,
+            wallet_address=request.wallet_address if request else None,
+        )
         if idempotency_lock_acquired and idempotency_table and idempotency_key:
             _release_idempotency_lock(idempotency_table, idempotency_key)
         return _error_response(404, "quote_not_found", "Quote not found or expired")
 
     except PaymentRequiredError as exc:
+        _log_event(
+            logging.WARNING,
+            "upload_payment_required",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            quote_id=request.quote_id if request else None,
+            wallet_address=request.wallet_address if request else None,
+        )
         if idempotency_lock_acquired and idempotency_table and idempotency_key:
             _release_idempotency_lock(idempotency_table, idempotency_key)
         headers = _payment_required_headers(exc.requirements)
         return _error_response(402, "payment_required", exc.message, details=exc.details, headers=headers)
 
     except ConflictError as exc:
+        _log_event(
+            logging.WARNING,
+            "upload_idempotency_conflict",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            quote_id=request.quote_id if request else None,
+            wallet_address=request.wallet_address if request else None,
+        )
         return _error_response(409, "conflict", str(exc))
 
     except Exception as exc:
+        _log_event(
+            logging.ERROR,
+            "upload_internal_error",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            quote_id=request.quote_id if request else None,
+            wallet_address=request.wallet_address if request else None,
+        )
         if idempotency_lock_acquired and idempotency_table and idempotency_key:
             _release_idempotency_lock(idempotency_table, idempotency_key)
         return _error_response(500, "Internal error", str(exc))
