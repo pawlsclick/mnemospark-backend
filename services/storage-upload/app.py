@@ -1465,14 +1465,25 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 # Payment was already settled, so preserve the idempotency lock and
                 # surface a resumable upload response for operational recovery.
                 if idempotency_table and idempotency_key and request_hash:
-                    _mark_idempotency_upload_retryable(
-                        idempotency_table=idempotency_table,
-                        idempotency_key=idempotency_key,
-                        request_hash=request_hash,
-                        payment_result=payment_result,
-                        quote_context=quote_context,
-                        now=now,
-                    )
+                    try:
+                        _mark_idempotency_upload_retryable(
+                            idempotency_table=idempotency_table,
+                            idempotency_key=idempotency_key,
+                            request_hash=request_hash,
+                            payment_result=payment_result,
+                            quote_context=quote_context,
+                            now=now,
+                        )
+                    except Exception as idempotency_exc:
+                        _log_event(
+                            logging.ERROR,
+                            "idempotency_mark_retryable_failed",
+                            idempotency_key=idempotency_key,
+                            quote_id=request.quote_id,
+                            trans_id=payment_result.trans_id,
+                            error_type=type(idempotency_exc).__name__,
+                            error_message=str(idempotency_exc),
+                        )
                 logger.error(
                     json.dumps(
                         {

@@ -813,6 +813,45 @@ class StorageUploadLambdaTests(unittest.TestCase):
         idem_item = self.idempotency_table.items[(("idempotency_key", "idem-s3-runtime"),)]
         self.assertEqual(idem_item["status"], "in_progress")
 
+    def test_inline_mode_idempotency_retry_marker_failure_still_returns_207(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-s3-marker-fail"},
+            mode="inline",
+        )
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xpaid3",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with (
+            mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result),
+            mock.patch.object(
+                app,
+                "_upload_ciphertext_to_s3",
+                side_effect=RuntimeError("simulated upload failure"),
+            ),
+            mock.patch.object(
+                app,
+                "_mark_idempotency_upload_retryable",
+                side_effect=RuntimeError("simulated idempotency write failure"),
+            ),
+            mock.patch.object(app, "_release_idempotency_lock") as release_lock_mock,
+            mock.patch.object(app, "_write_transaction_log") as write_log_mock,
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 207)
+        body = json.loads(response["body"])
+        self.assertTrue(body["upload_failed"])
+        self.assertEqual(body["trans_id"], "0xpaid3")
+        release_lock_mock.assert_not_called()
+        write_log_mock.assert_not_called()
+
+        idem_item = self.idempotency_table.items[(("idempotency_key", "idem-s3-marker-fail"),)]
+        self.assertEqual(idem_item["status"], "in_progress")
+
     def test_inline_mode_retry_with_same_idempotency_key_resumes_upload_after_207(self):
         event = self._make_event(
             headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-s3-resume"},
