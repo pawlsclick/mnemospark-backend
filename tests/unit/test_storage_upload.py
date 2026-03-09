@@ -1,5 +1,6 @@
 import base64
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -85,6 +86,7 @@ class FakeS3Client:
         self.buckets = set()
         self.created_buckets = []
         self.put_calls = []
+        self.presigned_calls = []
 
     def head_bucket(self, Bucket):
         if Bucket not in self.buckets:
@@ -116,6 +118,18 @@ class FakeS3Client:
             }
         )
         return {}
+
+    def generate_presigned_url(self, ClientMethod, Params, ExpiresIn):
+        self.presigned_calls.append(
+            {
+                "ClientMethod": ClientMethod,
+                "Params": copy.deepcopy(Params),
+                "ExpiresIn": ExpiresIn,
+            }
+        )
+        bucket = Params["Bucket"]
+        key = Params["Key"]
+        return f"https://example-presigned.local/{bucket}/{key}?expires={ExpiresIn}"
 
 
 class StorageUploadHelperTests(unittest.TestCase):
@@ -280,6 +294,39 @@ class StorageUploadHelperTests(unittest.TestCase):
 
         self.assertIn(key_tuple, idempotency_table.items)
         self.assertGreater(int(idempotency_table.items[key_tuple]["expires_at"]), now)
+
+    def test_request_fingerprint_keeps_legacy_shape_for_inline_mode(self):
+        request = app.ParsedUploadRequest(
+            quote_id="quote-123",
+            wallet_address="0x1111111111111111111111111111111111111111",
+            object_id="object-123",
+            object_id_hash="hash-123",
+            object_key="object-123",
+            provider="aws",
+            location="us-east-1",  # pragma: allowlist secret
+            mode="inline",
+            content_sha256="abc123",
+            ciphertext=None,
+            wrapped_dek="wrapped",
+            idempotency_key=None,
+            payment_header=None,
+        )
+        legacy_payload = {
+            "quote_id": request.quote_id,
+            "wallet_address": request.wallet_address,
+            "object_id": request.object_id,
+            "object_id_hash": request.object_id_hash,
+            "object_key": request.object_key,
+            "provider": request.provider,
+            "location": request.location,
+            "wrapped_dek": request.wrapped_dek,
+            "ciphertext_sha256": request.content_sha256,
+        }
+        expected_fingerprint = hashlib.sha256(
+            json.dumps(legacy_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+        self.assertEqual(app._request_fingerprint(request), expected_fingerprint)
 
 
 class StorageUploadLambdaTests(unittest.TestCase):
@@ -506,6 +553,120 @@ class StorageUploadLambdaTests(unittest.TestCase):
             duplicate_response = app.lambda_handler(event, None)
         self.assertEqual(duplicate_response["statusCode"], 200)
         self.assertEqual(json.loads(duplicate_response["body"]), body)
+
+    def test_presigned_mode_without_ciphertext_returns_upload_url(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        body = json.loads(event["body"])
+        body.pop("ciphertext", None)
+        event["body"] = json.dumps(body)
+
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xpresigned",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 200)
+        response_body = json.loads(response["body"])
+        self.assertIn("upload_url", response_body)
+        self.assertEqual(
+            response_body["upload_headers"],
+            {
+                "content-type": "application/octet-stream",
+                "x-amz-meta-wrapped-dek": base64.b64encode(b"wrapped-key").decode("ascii"),
+            },
+        )
+        self.assertEqual(response_body["trans_id"], "0xpresigned")
+        self.assertEqual(len(self.s3_client.put_calls), 0)
+        self.assertEqual(len(self.s3_client.presigned_calls), 1)
+        self.assertEqual(
+            self.s3_client.presigned_calls[0]["Params"]["Metadata"]["wrapped-dek"],
+            base64.b64encode(b"wrapped-key").decode("ascii"),
+        )
+        self.assertEqual(self.s3_client.presigned_calls[0]["Params"]["ContentLength"], 12345)
+
+    def test_presigned_idempotent_retry_returns_fresh_upload_url(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-presigned"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        body = json.loads(event["body"])
+        body.pop("ciphertext", None)
+        event["body"] = json.dumps(body)
+
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xpresigned-idem",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            first_response = app.lambda_handler(event, None)
+
+        with mock.patch.object(app, "verify_and_settle_payment", side_effect=AssertionError("must not be called")):
+            second_response = app.lambda_handler(event, None)
+
+        self.assertEqual(first_response["statusCode"], 200)
+        self.assertEqual(second_response["statusCode"], 200)
+        self.assertEqual(len(self.s3_client.presigned_calls), 2)
+        first_body = json.loads(first_response["body"])
+        second_body = json.loads(second_response["body"])
+        self.assertIn("upload_url", first_body)
+        self.assertIn("upload_url", second_body)
+        self.assertEqual(self.s3_client.presigned_calls[0]["Params"]["ContentLength"], 12345)
+        self.assertEqual(self.s3_client.presigned_calls[1]["Params"]["ContentLength"], 12345)
+        self.assertEqual(
+            self.s3_client.presigned_calls[1]["ExpiresIn"],
+            app.PRESIGNED_URL_EXPIRES_IN_SECONDS,
+        )
+
+    def test_inline_mode_uses_existing_direct_upload_path(self):
+        event = self._make_event(headers={"PAYMENT-SIGNATURE": "mock"}, mode="inline")
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xinline",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with (
+            mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result),
+            mock.patch.object(app, "_upload_ciphertext_to_s3", return_value="mnemospark-inline-bucket") as upload_mock,
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 200)
+        body = json.loads(response["body"])
+        self.assertEqual(body["bucket_name"], "mnemospark-inline-bucket")
+        self.assertNotIn("upload_url", body)
+        upload_mock.assert_called_once()
+        self.assertEqual(len(self.s3_client.presigned_calls), 0)
+
+    def test_presigned_mode_still_requires_payment_verification(self):
+        event = self._make_event(mode="presigned")
+        body = json.loads(event["body"])
+        body.pop("ciphertext", None)
+        event["body"] = json.dumps(body)
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 402)
+        parsed = json.loads(response["body"])
+        self.assertEqual(parsed["error"], "payment_required")
+        self.assertEqual(len(self.s3_client.put_calls), 0)
+        self.assertEqual(len(self.s3_client.presigned_calls), 0)
 
     def test_legacy_x_payment_header_is_accepted(self):
         event = self._make_event(headers={"x-payment": "legacy-signed-payload"})
