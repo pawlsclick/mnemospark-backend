@@ -920,6 +920,7 @@ def _request_fingerprint(request: ParsedUploadRequest) -> str:
         "object_key": request.object_key,
         "provider": request.provider,
         "location": request.location,
+        "mode": request.mode or "",
         "wrapped_dek": request.wrapped_dek,
         "ciphertext_sha256": ciphertext_sha256 or "",
     }
