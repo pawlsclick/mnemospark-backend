@@ -1055,7 +1055,10 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertIn("response_body", idem_item)
 
     def test_presigned_mode_still_requires_payment_verification(self):
-        event = self._make_event(mode="presigned")
+        event = self._make_event(
+            headers={"Idempotency-Key": "idem-presigned-payment-required"},
+            mode="presigned",
+        )
         body = json.loads(event["body"])
         body.pop("ciphertext", None)
         event["body"] = json.dumps(body)
@@ -1065,6 +1068,29 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertEqual(response["statusCode"], 402)
         parsed = json.loads(response["body"])
         self.assertEqual(parsed["error"], "payment_required")
+        self.assertEqual(len(self.s3_client.put_calls), 0)
+        self.assertEqual(len(self.s3_client.presigned_calls), 0)
+
+    def test_presigned_mode_requires_idempotency_key_header(self):
+        event = self._make_event(headers={"PAYMENT-SIGNATURE": "mock"}, mode="presigned")
+        body = json.loads(event["body"])
+        body.pop("ciphertext", None)
+        event["body"] = json.dumps(body)
+
+        with mock.patch.object(
+            app,
+            "verify_and_settle_payment",
+            side_effect=AssertionError("must not be called"),
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 400)
+        parsed = json.loads(response["body"])
+        self.assertEqual(parsed["error"], "Bad request")
+        self.assertEqual(
+            parsed["message"],
+            "Idempotency-Key header is required for presigned mode",
+        )
         self.assertEqual(len(self.s3_client.put_calls), 0)
         self.assertEqual(len(self.s3_client.presigned_calls), 0)
 

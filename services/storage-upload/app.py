@@ -486,6 +486,8 @@ def parse_input(event: dict[str, Any]) -> ParsedUploadRequest:
         raise BadRequestError("wrapped_dek must be valid base64") from exc
 
     idempotency_key = _header_value(headers, "Idempotency-Key")
+    if mode == "presigned" and not idempotency_key:
+        raise BadRequestError("Idempotency-Key header is required for presigned mode")
     payment_header: str | None = None
     for header_name in PAYMENT_SIGNATURE_HEADER_NAMES:
         header_value = _header_value(headers, header_name)
