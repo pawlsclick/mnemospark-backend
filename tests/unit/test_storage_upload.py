@@ -733,6 +733,54 @@ class StorageUploadLambdaTests(unittest.TestCase):
         idem_item = self.idempotency_table.items[(("idempotency_key", "idem-s3-runtime"),)]
         self.assertEqual(idem_item["status"], "in_progress")
 
+    def test_inline_mode_retry_with_same_idempotency_key_resumes_upload_after_207(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-s3-resume"},
+            mode="inline",
+        )
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xresume",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+        upload_error = ClientError(
+            {"Error": {"Code": "InternalError", "Message": "simulated transient put failure"}},
+            "PutObject",
+        )
+
+        with (
+            mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result) as verify_mock,
+            mock.patch.object(
+                app,
+                "_upload_ciphertext_to_s3",
+                side_effect=[upload_error, "mnemospark-inline-bucket"],
+            ) as upload_mock,
+        ):
+            first_response = app.lambda_handler(event, None)
+            # Resumed upload should not depend on quote-table re-read.
+            self.quotes_table.items.clear()
+            second_response = app.lambda_handler(event, None)
+
+        self.assertEqual(first_response["statusCode"], 207)
+        first_body = json.loads(first_response["body"])
+        self.assertTrue(first_body["upload_failed"])
+        self.assertEqual(first_body["trans_id"], "0xresume")
+
+        self.assertEqual(second_response["statusCode"], 200)
+        second_body = json.loads(second_response["body"])
+        self.assertEqual(second_body["trans_id"], "0xresume")
+        self.assertEqual(second_body["bucket_name"], "mnemospark-inline-bucket")
+        self.assertNotIn("upload_failed", second_body)
+
+        self.assertEqual(verify_mock.call_count, 1)
+        self.assertEqual(upload_mock.call_count, 2)
+        self.assertEqual(len(self.transaction_log_table.items), 1)
+
+        idem_item = self.idempotency_table.items[(("idempotency_key", "idem-s3-resume"),)]
+        self.assertEqual(idem_item["status"], "completed")
+        self.assertIn("response_body", idem_item)
+
     def test_presigned_mode_still_requires_payment_verification(self):
         event = self._make_event(mode="presigned")
         body = json.loads(event["body"])
