@@ -986,6 +986,11 @@ def _request_fingerprint(request: ParsedUploadRequest) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _is_retryable_upload_after_payment_idempotency(item: dict[str, Any]) -> bool:
+    status = str(item.get("status") or "").lower()
+    return status == "in_progress" and item.get("upload_retry_after_payment") is True
+
+
 def _fetch_existing_idempotency(
     idempotency_table: Any,
     idempotency_key: str,
@@ -1025,6 +1030,8 @@ def _fetch_existing_idempotency(
         if status == "completed":
             return item
         if status == "in_progress":
+            if _is_retryable_upload_after_payment_idempotency(item):
+                return item
             raise ConflictError("Upload is already in progress for this Idempotency-Key")
 
         raise ConflictError("Idempotency-Key is in an unknown state")
@@ -1086,6 +1093,83 @@ def _mark_idempotency_completed(
             "completed_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
             "expires_at": now + IDEMPOTENCY_TTL_SECONDS,
         }
+    )
+
+
+def _mark_idempotency_upload_retryable(
+    idempotency_table: Any,
+    idempotency_key: str,
+    request_hash: str,
+    payment_result: PaymentVerificationResult,
+    quote_context: QuoteContext,
+    now: int,
+) -> None:
+    try:
+        idempotency_table.put_item(
+            Item={
+                "idempotency_key": idempotency_key,
+                "status": "in_progress",
+                "request_hash": request_hash,
+                "upload_retry_after_payment": True,
+                "payment_trans_id": payment_result.trans_id,
+                "payment_network": payment_result.network,
+                "payment_asset": payment_result.asset,
+                "payment_amount": str(payment_result.amount),
+                "quote_storage_price": str(quote_context.storage_price),
+                "quote_provider": quote_context.provider,
+                "quote_location": quote_context.location,
+                "updated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+                "expires_at": now + IDEMPOTENCY_TTL_SECONDS,
+            },
+            ConditionExpression="attribute_not_exists(idempotency_key) OR status <> :completed_status",
+            ExpressionAttributeValues={":completed_status": "completed"},
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+
+
+def _payment_result_from_retryable_idempotency(item: dict[str, Any]) -> PaymentVerificationResult:
+    trans_id = str(item.get("payment_trans_id") or "").strip()
+    network = str(item.get("payment_network") or "").strip()
+    asset = str(item.get("payment_asset") or "").strip()
+    amount_raw = item.get("payment_amount")
+    try:
+        amount = int(amount_raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Stored retryable idempotency payment amount is invalid") from exc
+
+    if not trans_id or not network or not asset or amount <= 0:
+        raise RuntimeError("Stored retryable idempotency payment context is invalid")
+
+    return PaymentVerificationResult(
+        trans_id=trans_id,
+        network=network,
+        asset=asset,
+        amount=amount,
+    )
+
+
+def _quote_context_from_retryable_idempotency(item: dict[str, Any]) -> QuoteContext:
+    storage_price_raw = item.get("quote_storage_price")
+    provider = str(item.get("quote_provider") or "").strip()
+    location = str(item.get("quote_location") or "").strip()
+    try:
+        storage_price = Decimal(str(storage_price_raw))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise RuntimeError("Stored retryable idempotency quote storage_price is invalid") from exc
+
+    if storage_price <= 0 or not provider or not location:
+        raise RuntimeError("Stored retryable idempotency quote context is invalid")
+
+    storage_price_micro = int(
+        (storage_price * USDC_DECIMALS).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    )
+    return QuoteContext(
+        storage_price=storage_price,
+        storage_price_micro=storage_price_micro,
+        provider=provider,
+        location=location,
     )
 
 
@@ -1194,6 +1278,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     idempotency_key: str | None = None
     request_hash: str | None = None
     request: ParsedUploadRequest | None = None
+    resume_upload_after_payment = False
+    retryable_idempotency_item: dict[str, Any] | None = None
 
     try:
         now = int(time.time())
@@ -1228,33 +1314,54 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 now=now,
             )
             if existing:
-                _log_event(
-                    logging.INFO,
-                    "idempotency_cache_hit",
-                    idempotency_key=idempotency_key,
-                    message="returning cached response",
-                )
-                return _cached_success_response(existing, request=request)
+                if _is_retryable_upload_after_payment_idempotency(existing):
+                    resume_upload_after_payment = True
+                    retryable_idempotency_item = existing
+                    _log_event(
+                        logging.INFO,
+                        "idempotency_retryable_upload_resume",
+                        idempotency_key=idempotency_key,
+                        message="resuming upload after settled payment",
+                    )
+                else:
+                    _log_event(
+                        logging.INFO,
+                        "idempotency_cache_hit",
+                        idempotency_key=idempotency_key,
+                        message="returning cached response",
+                    )
+                    return _cached_success_response(existing, request=request)
 
-        quote_resp = quotes_table.get_item(
-            Key={"quote_id": request.quote_id},
-            ConsistentRead=True,
-        )
-        quote_context = _build_quote_context(quote_resp.get("Item"), request=request, now=now)
-        _log_event(
-            logging.INFO,
-            "quote_lookup_succeeded",
-            quote_id=request.quote_id,
-            storage_price=str(quote_context.storage_price),
-            storage_price_micro=quote_context.storage_price_micro,
-            provider=quote_context.provider,
-            location=quote_context.location,
-        )
+        if resume_upload_after_payment and retryable_idempotency_item:
+            quote_context = _quote_context_from_retryable_idempotency(retryable_idempotency_item)
+            _log_event(
+                logging.INFO,
+                "quote_context_restored_from_idempotency",
+                quote_id=request.quote_id,
+                idempotency_key=idempotency_key,
+                provider=quote_context.provider,
+                location=quote_context.location,
+            )
+        else:
+            quote_resp = quotes_table.get_item(
+                Key={"quote_id": request.quote_id},
+                ConsistentRead=True,
+            )
+            quote_context = _build_quote_context(quote_resp.get("Item"), request=request, now=now)
+            _log_event(
+                logging.INFO,
+                "quote_lookup_succeeded",
+                quote_id=request.quote_id,
+                storage_price=str(quote_context.storage_price),
+                storage_price_micro=quote_context.storage_price_micro,
+                provider=quote_context.provider,
+                location=quote_context.location,
+            )
 
         payment_config = _payment_config()
         requirements = _payment_requirements(quote_context, payment_config)
 
-        if idempotency_key and idempotency_table:
+        if idempotency_key and idempotency_table and not resume_upload_after_payment:
             existing = _claim_idempotency_lock(
                 idempotency_table=idempotency_table,
                 idempotency_key=idempotency_key,
@@ -1262,40 +1369,64 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 now=now,
             )
             if existing:
+                if _is_retryable_upload_after_payment_idempotency(existing):
+                    resume_upload_after_payment = True
+                    retryable_idempotency_item = existing
+                    quote_context = _quote_context_from_retryable_idempotency(existing)
+                    _log_event(
+                        logging.INFO,
+                        "idempotency_retryable_upload_resume",
+                        idempotency_key=idempotency_key,
+                        message="resuming upload after settled payment",
+                    )
+                else:
+                    _log_event(
+                        logging.INFO,
+                        "idempotency_cache_hit",
+                        idempotency_key=idempotency_key,
+                        message="returning cached response",
+                    )
+                    return _cached_success_response(existing, request=request)
+            else:
+                idempotency_lock_acquired = True
                 _log_event(
                     logging.INFO,
-                    "idempotency_cache_hit",
+                    "idempotency_lock_acquired",
                     idempotency_key=idempotency_key,
-                    message="returning cached response",
+                    message="lock acquired",
                 )
-                return _cached_success_response(existing, request=request)
-            idempotency_lock_acquired = True
+
+        if resume_upload_after_payment and retryable_idempotency_item:
+            settlement_mode = "resumed"
+            payment_result = _payment_result_from_retryable_idempotency(retryable_idempotency_item)
             _log_event(
                 logging.INFO,
-                "idempotency_lock_acquired",
+                "payment_settlement_already_confirmed",
+                trans_id=payment_result.trans_id,
+                settlement_mode=settlement_mode,
                 idempotency_key=idempotency_key,
-                message="lock acquired",
+                message="skipping payment verification and resuming upload",
             )
-
-        payment_result = verify_and_settle_payment(
-            payment_header=request.payment_header,
-            wallet_address=request.wallet_address,
-            quote_id=request.quote_id,
-            expected_amount=quote_context.storage_price_micro,
-            expected_recipient=payment_config["recipient_wallet"],
-            expected_network=payment_config["payment_network"],
-            expected_asset=payment_config["payment_asset"],
-            requirements=requirements,
-        )
-        _log_event(
-            logging.INFO,
-            "payment_verification_succeeded",
-            trans_id=payment_result.trans_id,
-            settlement_mode=settlement_mode,
-            amount=payment_result.amount,
-            network=payment_result.network,
-        )
-
+        else:
+            settlement_mode = _settlement_mode()
+            payment_result = verify_and_settle_payment(
+                payment_header=request.payment_header,
+                wallet_address=request.wallet_address,
+                quote_id=request.quote_id,
+                expected_amount=quote_context.storage_price_micro,
+                expected_recipient=payment_config["recipient_wallet"],
+                expected_network=payment_config["payment_network"],
+                expected_asset=payment_config["payment_asset"],
+                requirements=requirements,
+            )
+            _log_event(
+                logging.INFO,
+                "payment_verification_succeeded",
+                trans_id=payment_result.trans_id,
+                settlement_mode=settlement_mode,
+                amount=payment_result.amount,
+                network=payment_result.network,
+            )
         upload_url: str | None = None
         if request.mode == "presigned":
             s3_client = boto3.client("s3", region_name=quote_context.location)
@@ -1322,13 +1453,77 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         else:
             if request.ciphertext is None:
                 raise BadRequestError("ciphertext is required")
-            bucket_name = _upload_ciphertext_to_s3(
-                wallet_address=request.wallet_address,
-                object_key=request.object_key,
-                ciphertext=request.ciphertext,
-                wrapped_dek=request.wrapped_dek,
-                location=quote_context.location,
-            )
+            try:
+                bucket_name = _upload_ciphertext_to_s3(
+                    wallet_address=request.wallet_address,
+                    object_key=request.object_key,
+                    ciphertext=request.ciphertext,
+                    wrapped_dek=request.wrapped_dek,
+                    location=quote_context.location,
+                )
+            except Exception as s3_exc:
+                # Payment was already settled, so preserve the idempotency lock and
+                # surface a resumable upload response for operational recovery.
+                if idempotency_table and idempotency_key and request_hash:
+                    try:
+                        _mark_idempotency_upload_retryable(
+                            idempotency_table=idempotency_table,
+                            idempotency_key=idempotency_key,
+                            request_hash=request_hash,
+                            payment_result=payment_result,
+                            quote_context=quote_context,
+                            now=now,
+                        )
+                    except Exception as idempotency_exc:
+                        _log_event(
+                            logging.ERROR,
+                            "idempotency_mark_retryable_failed",
+                            idempotency_key=idempotency_key,
+                            quote_id=request.quote_id,
+                            trans_id=payment_result.trans_id,
+                            error_type=type(idempotency_exc).__name__,
+                            error_message=str(idempotency_exc),
+                        )
+                logger.error(
+                    json.dumps(
+                        {
+                            "event": "s3_upload_failed_after_payment",
+                            "quote_id": request.quote_id,
+                            "trans_id": payment_result.trans_id,
+                            "wallet_address": request.wallet_address,
+                            "object_key": request.object_key,
+                            "error": str(s3_exc),
+                        },
+                        default=str,
+                    )
+                )
+                response_body = {
+                    "quote_id": request.quote_id,
+                    "addr": request.wallet_address,
+                    "addr_hash": _wallet_hash(request.wallet_address),
+                    "trans_id": payment_result.trans_id,
+                    "storage_price": float(quote_context.storage_price),
+                    "object_id": request.object_id,
+                    "object_key": request.object_key,
+                    "provider": quote_context.provider,
+                    "bucket_name": _bucket_name(request.wallet_address),
+                    "location": quote_context.location,
+                    "upload_failed": True,
+                    "error": "S3 upload failed after payment settlement. Retry the upload.",
+                }
+                payment_response_header = _encode_json_base64(
+                    {
+                        "trans_id": payment_result.trans_id,
+                        "network": payment_result.network,
+                        "asset": payment_result.asset,
+                        "amount": str(payment_result.amount),
+                    }
+                )
+                return _response(
+                    207,
+                    response_body,
+                    headers=_payment_response_headers(payment_response_header),
+                )
             _log_event(
                 logging.INFO,
                 "s3_upload_succeeded",
@@ -1392,7 +1587,12 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             }
         )
 
-        if idempotency_lock_acquired and idempotency_table and idempotency_key and request_hash:
+        if (
+            idempotency_table
+            and idempotency_key
+            and request_hash
+            and (idempotency_lock_acquired or resume_upload_after_payment)
+        ):
             _mark_idempotency_completed(
                 idempotency_table=idempotency_table,
                 idempotency_key=idempotency_key,

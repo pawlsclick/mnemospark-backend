@@ -45,13 +45,30 @@ class FakeDynamoTable:
             return {}
         return {"Item": copy.deepcopy(item)}
 
-    def put_item(self, Item, ConditionExpression=None):
+    def put_item(self, Item, ConditionExpression=None, ExpressionAttributeValues=None):
         key = self._key_tuple(Item)
         if ConditionExpression == "attribute_not_exists(idempotency_key)" and key in self.items:
             raise ClientError(
                 {"Error": {"Code": "ConditionalCheckFailedException", "Message": "duplicate key"}},
                 "PutItem",
             )
+        if ConditionExpression == "attribute_not_exists(idempotency_key) OR status <> :completed_status":
+            existing_item = self.items.get(key)
+            completed_status = (
+                None
+                if ExpressionAttributeValues is None
+                else ExpressionAttributeValues.get(":completed_status")
+            )
+            if existing_item is not None and existing_item.get("status") == completed_status:
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "ConditionalCheckFailedException",
+                            "Message": "status already completed",
+                        }
+                    },
+                    "PutItem",
+                )
         self.items[key] = copy.deepcopy(Item)
         self.put_history.append(copy.deepcopy(Item))
         return {}
@@ -294,6 +311,47 @@ class StorageUploadHelperTests(unittest.TestCase):
 
         self.assertIn(key_tuple, idempotency_table.items)
         self.assertGreater(int(idempotency_table.items[key_tuple]["expires_at"]), now)
+
+    def test_mark_idempotency_upload_retryable_does_not_overwrite_completed_status(self):
+        idempotency_table = FakeDynamoTable(["idempotency_key"])
+        now = int(time.time())
+        idempotency_table.put_item(
+            Item={
+                "idempotency_key": "idem-completed",
+                "status": "completed",
+                "request_hash": "request-hash",
+                "response_body": "{}",
+                "payment_response": "encoded",
+                "completed_at": "2026-01-01T00:00:00+00:00",
+                "expires_at": now + 3600,
+            }
+        )
+        payment_result = app.PaymentVerificationResult(
+            trans_id="0xpaid",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+        quote_context = app.QuoteContext(
+            storage_price=Decimal("1.25"),
+            storage_price_micro=1_250_000,
+            provider="aws",
+            location="[REDACTED]",
+        )
+
+        app._mark_idempotency_upload_retryable(
+            idempotency_table=idempotency_table,
+            idempotency_key="idem-completed",
+            request_hash="request-hash",
+            payment_result=payment_result,
+            quote_context=quote_context,
+            now=now,
+        )
+
+        idem_item = idempotency_table.items[(("idempotency_key", "idem-completed"),)]
+        self.assertEqual(idem_item["status"], "completed")
+        self.assertIn("response_body", idem_item)
+        self.assertNotIn("upload_retry_after_payment", idem_item)
 
     def test_request_fingerprint_keeps_legacy_shape_for_inline_mode(self):
         request = app.ParsedUploadRequest(
@@ -675,6 +733,172 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertNotIn("upload_url", body)
         upload_mock.assert_called_once()
         self.assertEqual(len(self.s3_client.presigned_calls), 0)
+
+    def test_inline_mode_s3_client_error_after_payment_returns_207_and_keeps_idempotency_lock(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-s3-fail"},
+            mode="inline",
+        )
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xpaid1",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+        upload_error = ClientError(
+            {"Error": {"Code": "InternalError", "Message": "simulated put failure"}},
+            "PutObject",
+        )
+
+        with (
+            mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result),
+            mock.patch.object(app, "_upload_ciphertext_to_s3", side_effect=upload_error),
+            mock.patch.object(app, "_release_idempotency_lock") as release_lock_mock,
+            mock.patch.object(app, "_write_transaction_log") as write_log_mock,
+            mock.patch.object(app.logger, "error") as logger_error_mock,
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 207)
+        self.assertIn("PAYMENT-RESPONSE", response["headers"])
+        self.assertIn("x-payment-response", response["headers"])
+        body = json.loads(response["body"])
+        self.assertTrue(body["upload_failed"])
+        self.assertEqual(body["trans_id"], "0xpaid1")
+        self.assertEqual(body["quote_id"], self.quote_id)
+        self.assertEqual(body["object_key"], self.object_id)
+        self.assertEqual(body["bucket_name"], app._bucket_name(self.wallet_address))
+        self.assertIn("Retry the upload", body["error"])
+        release_lock_mock.assert_not_called()
+        write_log_mock.assert_not_called()
+
+        idem_item = self.idempotency_table.items[(("idempotency_key", "idem-s3-fail"),)]
+        self.assertEqual(idem_item["status"], "in_progress")
+
+        logger_error_mock.assert_called_once()
+        log_payload = json.loads(logger_error_mock.call_args.args[0])
+        self.assertEqual(log_payload["event"], "s3_upload_failed_after_payment")
+        self.assertEqual(log_payload["quote_id"], self.quote_id)
+        self.assertEqual(log_payload["trans_id"], "0xpaid1")
+        self.assertEqual(log_payload["wallet_address"], self.wallet_address)
+        self.assertEqual(log_payload["object_key"], self.object_id)
+        self.assertIn("simulated put failure", log_payload["error"])
+
+    def test_inline_mode_s3_exception_after_payment_returns_207_without_releasing_lock(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-s3-runtime"},
+            mode="inline",
+        )
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xpaid2",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with (
+            mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result),
+            mock.patch.object(app, "_upload_ciphertext_to_s3", side_effect=RuntimeError("simulated runtime failure")),
+            mock.patch.object(app, "_release_idempotency_lock") as release_lock_mock,
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 207)
+        self.assertIn("PAYMENT-RESPONSE", response["headers"])
+        body = json.loads(response["body"])
+        self.assertTrue(body["upload_failed"])
+        self.assertEqual(body["trans_id"], "0xpaid2")
+        release_lock_mock.assert_not_called()
+
+        idem_item = self.idempotency_table.items[(("idempotency_key", "idem-s3-runtime"),)]
+        self.assertEqual(idem_item["status"], "in_progress")
+
+    def test_inline_mode_idempotency_retry_marker_failure_still_returns_207(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-s3-marker-fail"},
+            mode="inline",
+        )
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xpaid3",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with (
+            mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result),
+            mock.patch.object(
+                app,
+                "_upload_ciphertext_to_s3",
+                side_effect=RuntimeError("simulated upload failure"),
+            ),
+            mock.patch.object(
+                app,
+                "_mark_idempotency_upload_retryable",
+                side_effect=RuntimeError("simulated idempotency write failure"),
+            ),
+            mock.patch.object(app, "_release_idempotency_lock") as release_lock_mock,
+            mock.patch.object(app, "_write_transaction_log") as write_log_mock,
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 207)
+        body = json.loads(response["body"])
+        self.assertTrue(body["upload_failed"])
+        self.assertEqual(body["trans_id"], "0xpaid3")
+        release_lock_mock.assert_not_called()
+        write_log_mock.assert_not_called()
+
+        idem_item = self.idempotency_table.items[(("idempotency_key", "idem-s3-marker-fail"),)]
+        self.assertEqual(idem_item["status"], "in_progress")
+
+    def test_inline_mode_retry_with_same_idempotency_key_resumes_upload_after_207(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-s3-resume"},
+            mode="inline",
+        )
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xresume",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+        upload_error = ClientError(
+            {"Error": {"Code": "InternalError", "Message": "simulated transient put failure"}},
+            "PutObject",
+        )
+
+        with (
+            mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result) as verify_mock,
+            mock.patch.object(
+                app,
+                "_upload_ciphertext_to_s3",
+                side_effect=[upload_error, "mnemospark-inline-bucket"],
+            ) as upload_mock,
+        ):
+            first_response = app.lambda_handler(event, None)
+            # Resumed upload should not depend on quote-table re-read.
+            self.quotes_table.items.clear()
+            second_response = app.lambda_handler(event, None)
+
+        self.assertEqual(first_response["statusCode"], 207)
+        first_body = json.loads(first_response["body"])
+        self.assertTrue(first_body["upload_failed"])
+        self.assertEqual(first_body["trans_id"], "0xresume")
+
+        self.assertEqual(second_response["statusCode"], 200)
+        second_body = json.loads(second_response["body"])
+        self.assertEqual(second_body["trans_id"], "0xresume")
+        self.assertEqual(second_body["bucket_name"], "mnemospark-inline-bucket")
+        self.assertNotIn("upload_failed", second_body)
+
+        self.assertEqual(verify_mock.call_count, 1)
+        self.assertEqual(upload_mock.call_count, 2)
+        self.assertEqual(len(self.transaction_log_table.items), 1)
+
+        idem_item = self.idempotency_table.items[(("idempotency_key", "idem-s3-resume"),)]
+        self.assertEqual(idem_item["status"], "completed")
+        self.assertIn("response_body", idem_item)
 
     def test_presigned_mode_still_requires_payment_verification(self):
         event = self._make_event(mode="presigned")
