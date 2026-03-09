@@ -153,6 +153,14 @@ class ParsedUploadRequest:
 
 
 @dataclass(frozen=True)
+class ParsedUploadConfirmRequest:
+    quote_id: str
+    wallet_address: str
+    object_key: str
+    idempotency_key: str
+
+
+@dataclass(frozen=True)
 class QuoteContext:
     storage_price: Decimal
     storage_price_micro: int
@@ -478,6 +486,8 @@ def parse_input(event: dict[str, Any]) -> ParsedUploadRequest:
         raise BadRequestError("wrapped_dek must be valid base64") from exc
 
     idempotency_key = _header_value(headers, "Idempotency-Key")
+    if mode == "presigned" and not idempotency_key:
+        raise BadRequestError("Idempotency-Key header is required for presigned mode")
     payment_header: str | None = None
     for header_name in PAYMENT_SIGNATURE_HEADER_NAMES:
         header_value = _header_value(headers, header_name)
@@ -500,6 +510,21 @@ def parse_input(event: dict[str, Any]) -> ParsedUploadRequest:
         idempotency_key=idempotency_key,
         payment_header=payment_header,
         content_length_bytes=content_length_bytes,
+    )
+
+
+def parse_confirm_input(event: dict[str, Any]) -> ParsedUploadConfirmRequest:
+    params = _decode_event_body(event)
+    quote_id = _require_string_field(params, "quote_id")
+    wallet_address = _normalize_address(_require_string_field(params, "wallet_address"), "wallet_address")
+    object_key = _require_string_field(params, "object_key")
+    _validate_object_key(object_key)
+    idempotency_key = _require_string_field(params, "idempotency_key")
+    return ParsedUploadConfirmRequest(
+        quote_id=quote_id,
+        wallet_address=wallet_address,
+        object_key=object_key,
+        idempotency_key=idempotency_key,
     )
 
 
@@ -986,6 +1011,20 @@ def _request_fingerprint(request: ParsedUploadRequest) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _confirm_request_fingerprint(
+    quote_id: str,
+    wallet_address: str,
+    object_key: str,
+) -> str:
+    stable_payload = {
+        "quote_id": quote_id,
+        "wallet_address": wallet_address,
+        "object_key": object_key,
+    }
+    encoded = json.dumps(stable_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _is_retryable_upload_after_payment_idempotency(item: dict[str, Any]) -> bool:
     status = str(item.get("status") or "").lower()
     return status == "in_progress" and item.get("upload_retry_after_payment") is True
@@ -1028,6 +1067,8 @@ def _fetch_existing_idempotency(
 
         status = str(item.get("status") or "").lower()
         if status == "completed":
+            return item
+        if status == "pending_confirmation":
             return item
         if status == "in_progress":
             if _is_retryable_upload_after_payment_idempotency(item):
@@ -1091,6 +1132,38 @@ def _mark_idempotency_completed(
             "response_body": json.dumps(response_body, sort_keys=True),
             "payment_response": payment_response_header,
             "completed_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+            "expires_at": now + IDEMPOTENCY_TTL_SECONDS,
+        }
+    )
+
+
+def _mark_idempotency_pending_confirmation(
+    idempotency_table: Any,
+    idempotency_key: str,
+    request_hash: str,
+    confirm_request_hash: str,
+    response_body: dict[str, Any],
+    payment_response_header: str,
+    payment_result: PaymentVerificationResult,
+    quote_context: QuoteContext,
+    now: int,
+) -> None:
+    idempotency_table.put_item(
+        Item={
+            "idempotency_key": idempotency_key,
+            "status": "pending_confirmation",
+            "request_hash": request_hash,
+            "confirm_request_hash": confirm_request_hash,
+            "response_body": json.dumps(response_body, sort_keys=True),
+            "payment_response": payment_response_header,
+            "payment_trans_id": payment_result.trans_id,
+            "payment_network": payment_result.network,
+            "payment_asset": payment_result.asset,
+            "payment_amount": str(payment_result.amount),
+            "quote_storage_price": str(quote_context.storage_price),
+            "quote_provider": quote_context.provider,
+            "quote_location": quote_context.location,
+            "updated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
             "expires_at": now + IDEMPOTENCY_TTL_SECONDS,
         }
     )
@@ -1245,28 +1318,33 @@ def _write_transaction_log(
         if isinstance(payment_result.asset, str)
         else str(payment_result.asset)
     )
-    transaction_log_table.put_item(
-        Item={
-            "quote_id": request.quote_id,
-            "trans_id": trans_id,
-            "timestamp": timestamp,
-            "payment_received_at": payment_received_at,
-            "payment_status": "confirmed",
-            "recipient_wallet": payment_config["recipient_wallet"],
-            "payment_network": payment_result.network,
-            "payment_asset": payment_asset,
-            "payment_amount": str(payment_result.amount),
-            "addr": request.wallet_address,
-            "addr_hash": _wallet_hash(request.wallet_address),
-            "storage_price": quote_context.storage_price,
-            "object_id": request.object_id,
-            "object_key": request.object_key,
-            "provider": quote_context.provider,
-            "bucket_name": bucket_name,
-            "location": quote_context.location,
-            "idempotency_key": request.idempotency_key or "",
-        }
-    )
+    try:
+        transaction_log_table.put_item(
+            Item={
+                "quote_id": request.quote_id,
+                "trans_id": trans_id,
+                "timestamp": timestamp,
+                "payment_received_at": payment_received_at,
+                "payment_status": "confirmed",
+                "recipient_wallet": payment_config["recipient_wallet"],
+                "payment_network": payment_result.network,
+                "payment_asset": payment_asset,
+                "payment_amount": str(payment_result.amount),
+                "addr": request.wallet_address,
+                "addr_hash": _wallet_hash(request.wallet_address),
+                "storage_price": quote_context.storage_price,
+                "object_id": request.object_id,
+                "object_key": request.object_key,
+                "provider": quote_context.provider,
+                "bucket_name": bucket_name,
+                "location": quote_context.location,
+                "idempotency_key": request.idempotency_key or "",
+            },
+            ConditionExpression="attribute_not_exists(quote_id)",
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -1314,6 +1392,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 now=now,
             )
             if existing:
+                existing_status = str(existing.get("status") or "").lower()
                 if _is_retryable_upload_after_payment_idempotency(existing):
                     resume_upload_after_payment = True
                     retryable_idempotency_item = existing
@@ -1323,6 +1402,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         idempotency_key=idempotency_key,
                         message="resuming upload after settled payment",
                     )
+                elif existing_status == "pending_confirmation":
+                    _log_event(
+                        logging.INFO,
+                        "idempotency_pending_confirmation_cache_hit",
+                        idempotency_key=idempotency_key,
+                        message="returning refreshed presigned response pending confirmation",
+                    )
+                    return _cached_success_response(existing, request=request)
                 else:
                     _log_event(
                         logging.INFO,
@@ -1369,6 +1456,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 now=now,
             )
             if existing:
+                existing_status = str(existing.get("status") or "").lower()
                 if _is_retryable_upload_after_payment_idempotency(existing):
                     resume_upload_after_payment = True
                     retryable_idempotency_item = existing
@@ -1379,6 +1467,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         idempotency_key=idempotency_key,
                         message="resuming upload after settled payment",
                     )
+                elif existing_status == "pending_confirmation":
+                    _log_event(
+                        logging.INFO,
+                        "idempotency_pending_confirmation_cache_hit",
+                        idempotency_key=idempotency_key,
+                        message="returning refreshed presigned response pending confirmation",
+                    )
+                    return _cached_success_response(existing, request=request)
                 else:
                     _log_event(
                         logging.INFO,
@@ -1450,6 +1546,59 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 object_key=request.object_key,
                 message="presigned URL generated",
             )
+            response_body = {
+                "quote_id": request.quote_id,
+                "addr": request.wallet_address,
+                "addr_hash": _wallet_hash(request.wallet_address),
+                "trans_id": payment_result.trans_id,
+                "storage_price": float(quote_context.storage_price),
+                "object_id": request.object_id,
+                "object_key": request.object_key,
+                "provider": quote_context.provider,
+                "bucket_name": bucket_name,
+                "location": quote_context.location,
+                "upload_url": upload_url,
+                "upload_headers": {
+                    "content-type": "application/octet-stream",
+                    "x-amz-meta-wrapped-dek": request.wrapped_dek,
+                },
+                "confirmation_required": True,
+            }
+            payment_response_header = _encode_json_base64(
+                {
+                    "trans_id": payment_result.trans_id,
+                    "network": payment_result.network,
+                    "asset": payment_result.asset,
+                    "amount": str(payment_result.amount),
+                }
+            )
+            if (
+                idempotency_table
+                and idempotency_key
+                and request_hash
+                and (idempotency_lock_acquired or resume_upload_after_payment)
+            ):
+                _mark_idempotency_pending_confirmation(
+                    idempotency_table=idempotency_table,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    confirm_request_hash=_confirm_request_fingerprint(
+                        quote_id=request.quote_id,
+                        wallet_address=request.wallet_address,
+                        object_key=request.object_key,
+                    ),
+                    response_body=response_body,
+                    payment_response_header=payment_response_header,
+                    payment_result=payment_result,
+                    quote_context=quote_context,
+                    now=now,
+                )
+                _log_event(
+                    logging.DEBUG,
+                    "idempotency_marked_pending_confirmation",
+                    idempotency_key=idempotency_key,
+                )
+            return _response(200, response_body, headers=_payment_response_headers(payment_response_header))
         else:
             if request.ciphertext is None:
                 raise BadRequestError("ciphertext is required")
@@ -1572,12 +1721,6 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "bucket_name": bucket_name,
             "location": quote_context.location,
         }
-        if upload_url:
-            response_body["upload_url"] = upload_url
-            response_body["upload_headers"] = {
-                "content-type": "application/octet-stream",
-                "x-amz-meta-wrapped-dek": request.wrapped_dek,
-            }
         payment_response_header = _encode_json_base64(
             {
                 "trans_id": payment_result.trans_id,
@@ -1684,4 +1827,208 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         if idempotency_lock_acquired and idempotency_table and idempotency_key:
             _release_idempotency_lock(idempotency_table, idempotency_key)
+        return _error_response(500, "Internal error", str(exc))
+
+
+def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    del context
+    request: ParsedUploadConfirmRequest | None = None
+
+    try:
+        now = int(time.time())
+        request = parse_confirm_input(event)
+        _log_event(
+            logging.INFO,
+            "confirm_request_parsed",
+            quote_id=request.quote_id,
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+            idempotency_key=request.idempotency_key,
+        )
+        _require_authorized_wallet(event, request.wallet_address)
+
+        dynamodb = boto3.resource("dynamodb")
+        quotes_table = dynamodb.Table(_require_env(QUOTES_TABLE_ENV))
+        transaction_log_table = dynamodb.Table(_require_env(UPLOAD_TRANSACTION_LOG_TABLE_ENV))
+        idempotency_table = dynamodb.Table(_require_env(UPLOAD_IDEMPOTENCY_TABLE_ENV))
+
+        idempotency_response = idempotency_table.get_item(
+            Key={"idempotency_key": request.idempotency_key},
+            ConsistentRead=True,
+        )
+        idempotency_item = idempotency_response.get("Item")
+        if not idempotency_item:
+            return _error_response(404, "not_found", "Upload confirmation idempotency record not found")
+
+        try:
+            expires_at = int(idempotency_item.get("expires_at"))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Stored pending confirmation expires_at is invalid") from exc
+        if expires_at <= now:
+            try:
+                idempotency_table.delete_item(
+                    Key={"idempotency_key": request.idempotency_key},
+                    ConditionExpression="expires_at <= :now",
+                    ExpressionAttributeValues={":now": now},
+                )
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+            return _error_response(404, "not_found", "Upload confirmation idempotency record not found")
+
+        status = str(idempotency_item.get("status") or "").lower()
+        if status not in {"completed", "pending_confirmation"}:
+            return _error_response(409, "conflict", "Upload confirmation is not pending for this Idempotency-Key")
+
+        confirm_hash = _confirm_request_fingerprint(
+            quote_id=request.quote_id,
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+        )
+        stored_confirm_hash = str(idempotency_item.get("confirm_request_hash") or "").strip()
+        if stored_confirm_hash and stored_confirm_hash != confirm_hash:
+            raise ConflictError("Idempotency-Key cannot be reused with a different confirmation payload")
+
+        response_body_raw = idempotency_item.get("response_body")
+        if not isinstance(response_body_raw, str):
+            raise RuntimeError("Stored pending confirmation response_body is invalid")
+        pending_response_body = json.loads(response_body_raw)
+        if not isinstance(pending_response_body, dict):
+            raise RuntimeError("Stored pending confirmation response_body is invalid")
+
+        if str(pending_response_body.get("quote_id") or "").strip() != request.quote_id:
+            raise ConflictError("quote_id does not match pending confirmation idempotency state")
+        if str(pending_response_body.get("object_key") or "").strip() != request.object_key:
+            raise ConflictError("object_key does not match pending confirmation idempotency state")
+        if str(pending_response_body.get("addr") or "").strip() != request.wallet_address:
+            raise ConflictError("wallet_address does not match pending confirmation idempotency state")
+
+        if status == "completed":
+            return _cached_success_response(idempotency_item)
+
+        payment_result = _payment_result_from_retryable_idempotency(idempotency_item)
+        quote_context = _quote_context_from_retryable_idempotency(idempotency_item)
+
+        bucket_name = _bucket_name(request.wallet_address)
+        s3_client = boto3.client("s3", region_name=quote_context.location)
+        try:
+            s3_client.head_object(Bucket=bucket_name, Key=request.object_key)
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code")
+            if error_code in {"404", "NotFound", "NoSuchKey", "NoSuchBucket"}:
+                return _error_response(
+                    404,
+                    "not_found",
+                    "S3 object not found. Upload the file using the presigned URL first.",
+                )
+            raise
+
+        _log_event(
+            logging.INFO,
+            "confirm_s3_object_verified",
+            quote_id=request.quote_id,
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+            bucket_name=bucket_name,
+        )
+
+        payment_config = _payment_config()
+        object_id = str(pending_response_body.get("object_id") or request.object_key).strip() or request.object_key
+        request_for_log = ParsedUploadRequest(
+            quote_id=request.quote_id,
+            wallet_address=request.wallet_address,
+            object_id=object_id,
+            object_id_hash="",
+            object_key=request.object_key,
+            provider=quote_context.provider,
+            location=quote_context.location,
+            mode="presigned",
+            content_sha256=None,
+            ciphertext=None,
+            wrapped_dek="",
+            idempotency_key=request.idempotency_key,
+            payment_header=None,
+            content_length_bytes=None,
+        )
+        _write_transaction_log(
+            transaction_log_table=transaction_log_table,
+            now=now,
+            request=request_for_log,
+            quote_context=quote_context,
+            payment_config=payment_config,
+            payment_result=payment_result,
+            trans_id=payment_result.trans_id,
+            bucket_name=bucket_name,
+        )
+        _log_event(
+            logging.INFO,
+            "confirm_transaction_log_written",
+            quote_id=request.quote_id,
+            trans_id=payment_result.trans_id,
+            idempotency_key=request.idempotency_key,
+        )
+
+        try:
+            quotes_table.delete_item(Key={"quote_id": request.quote_id})
+        except ClientError:
+            pass
+
+        completed_response_body = dict(pending_response_body)
+        completed_response_body.pop("upload_url", None)
+        completed_response_body.pop("upload_headers", None)
+        completed_response_body.pop("confirmation_required", None)
+
+        payment_response_header = str(idempotency_item.get("payment_response") or "").strip()
+        if not payment_response_header:
+            payment_response_header = _encode_json_base64(
+                {
+                    "trans_id": payment_result.trans_id,
+                    "network": payment_result.network,
+                    "asset": payment_result.asset,
+                    "amount": str(payment_result.amount),
+                }
+            )
+
+        stored_request_hash = str(idempotency_item.get("request_hash") or "").strip()
+        if not stored_request_hash:
+            raise RuntimeError("Stored pending confirmation request_hash is missing")
+
+        _mark_idempotency_completed(
+            idempotency_table=idempotency_table,
+            idempotency_key=request.idempotency_key,
+            request_hash=stored_request_hash,
+            response_body=completed_response_body,
+            payment_response_header=payment_response_header,
+            now=now,
+        )
+        _log_event(
+            logging.INFO,
+            "confirm_completed",
+            quote_id=request.quote_id,
+            trans_id=payment_result.trans_id,
+            idempotency_key=request.idempotency_key,
+        )
+
+        return _response(
+            200,
+            completed_response_body,
+            headers=_payment_response_headers(payment_response_header),
+        )
+
+    except ForbiddenError as exc:
+        return _error_response(403, "forbidden", str(exc))
+    except BadRequestError as exc:
+        return _error_response(400, "Bad request", str(exc))
+    except ConflictError as exc:
+        return _error_response(409, "conflict", str(exc))
+    except Exception as exc:
+        _log_event(
+            logging.ERROR,
+            "confirm_internal_error",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            quote_id=request.quote_id if request else None,
+            wallet_address=request.wallet_address if request else None,
+            idempotency_key=request.idempotency_key if request else None,
+        )
         return _error_response(500, "Internal error", str(exc))
