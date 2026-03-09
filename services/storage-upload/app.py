@@ -1860,7 +1860,10 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
         if not idempotency_item:
             return _error_response(404, "not_found", "Upload confirmation idempotency record not found")
 
-        expires_at = _coerce_int(idempotency_item.get("expires_at"), "idempotency.expires_at")
+        try:
+            expires_at = int(idempotency_item.get("expires_at"))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Stored pending confirmation expires_at is invalid") from exc
         if expires_at <= now:
             try:
                 idempotency_table.delete_item(
