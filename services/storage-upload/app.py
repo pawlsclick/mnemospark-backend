@@ -144,6 +144,7 @@ class ParsedUploadRequest:
     wrapped_dek: str
     idempotency_key: str | None
     payment_header: str | None
+    content_length_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -399,12 +400,17 @@ def _ensure_bucket_exists(s3_client: Any, bucket_name: str, location: str) -> No
         )
 
 
-def _presigned_put_object_params(bucket_name: str, object_key: str, wrapped_dek: str) -> dict[str, Any]:
-    return {
+def _presigned_put_object_params(
+    bucket_name: str, object_key: str, wrapped_dek: str, content_length_bytes: int | None = None
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
         "Bucket": bucket_name,
         "Key": object_key,
         "Metadata": {"wrapped-dek": wrapped_dek},
     }
+    if content_length_bytes is not None:
+        params["ContentLength"] = content_length_bytes
+    return params
 
 
 def parse_input(event: dict[str, Any]) -> ParsedUploadRequest:
@@ -436,6 +442,13 @@ def parse_input(event: dict[str, Any]) -> ParsedUploadRequest:
         if not isinstance(raw_content_sha256, str):
             raise BadRequestError("content_sha256 must be a string")
         content_sha256 = raw_content_sha256.strip() or None
+
+    content_length_bytes: int | None = None
+    raw_content_length = params.get("content_length_bytes")
+    if raw_content_length is not None:
+        content_length_bytes = _coerce_int(raw_content_length, "content_length_bytes")
+        if content_length_bytes < 0:
+            raise BadRequestError("content_length_bytes must be greater than or equal to 0")
 
     ciphertext: bytes | None = None
     has_ciphertext_field = "ciphertext" in params or "content" in params
@@ -475,6 +488,7 @@ def parse_input(event: dict[str, Any]) -> ParsedUploadRequest:
         wrapped_dek=wrapped_dek,
         idempotency_key=idempotency_key,
         payment_header=payment_header,
+        content_length_bytes=content_length_bytes,
     )
 
 
@@ -936,6 +950,8 @@ def _request_fingerprint(request: ParsedUploadRequest) -> str:
     # Keep legacy fingerprint compatibility for inline uploads.
     if normalized_mode and normalized_mode != "inline":
         stable_payload["mode"] = normalized_mode
+        if request.content_length_bytes is not None:
+            stable_payload["content_length_bytes"] = request.content_length_bytes
     encoded = json.dumps(stable_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -1067,6 +1083,7 @@ def _cached_success_response(
                 bucket_name=str(response_body.get("bucket_name") or _bucket_name(request.wallet_address)),
                 object_key=str(response_body.get("object_key") or request.object_key),
                 wrapped_dek=request.wrapped_dek,
+                content_length_bytes=request.content_length_bytes,
             ),
             ExpiresIn=PRESIGNED_URL_EXPIRES_IN_SECONDS,
         )
@@ -1210,6 +1227,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     bucket_name=bucket_name,
                     object_key=request.object_key,
                     wrapped_dek=request.wrapped_dek,
+                    content_length_bytes=request.content_length_bytes,
                 ),
                 ExpiresIn=PRESIGNED_URL_EXPIRES_IN_SECONDS,
             )

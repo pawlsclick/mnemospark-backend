@@ -592,6 +592,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
             self.s3_client.presigned_calls[0]["Params"]["Metadata"]["wrapped-dek"],
             base64.b64encode(b"wrapped-key").decode("ascii"),
         )
+        self.assertEqual(self.s3_client.presigned_calls[0]["Params"]["ContentLength"], 12345)
 
     def test_presigned_idempotent_retry_returns_fresh_upload_url(self):
         event = self._make_event(
@@ -624,6 +625,8 @@ class StorageUploadLambdaTests(unittest.TestCase):
         second_body = json.loads(second_response["body"])
         self.assertIn("upload_url", first_body)
         self.assertIn("upload_url", second_body)
+        self.assertEqual(self.s3_client.presigned_calls[0]["Params"]["ContentLength"], 12345)
+        self.assertEqual(self.s3_client.presigned_calls[1]["Params"]["ContentLength"], 12345)
         self.assertEqual(
             self.s3_client.presigned_calls[1]["ExpiresIn"],
             app.PRESIGNED_URL_EXPIRES_IN_SECONDS,
