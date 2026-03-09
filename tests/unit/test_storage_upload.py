@@ -52,6 +52,11 @@ class FakeDynamoTable:
                 {"Error": {"Code": "ConditionalCheckFailedException", "Message": "duplicate key"}},
                 "PutItem",
             )
+        if ConditionExpression == "attribute_not_exists(quote_id)" and key in self.items:
+            raise ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "duplicate key"}},
+                "PutItem",
+            )
         if ConditionExpression == "attribute_not_exists(idempotency_key) OR status <> :completed_status":
             existing_item = self.items.get(key)
             completed_status = (
@@ -101,6 +106,7 @@ class FakeDynamoResource:
 class FakeS3Client:
     def __init__(self):
         self.buckets = set()
+        self.objects = set()
         self.created_buckets = []
         self.put_calls = []
         self.presigned_calls = []
@@ -126,6 +132,7 @@ class FakeS3Client:
                 {"Error": {"Code": "NoSuchBucket", "Message": "bucket does not exist"}},
                 "PutObject",
             )
+        self.objects.add((Bucket, Key))
         self.put_calls.append(
             {
                 "Bucket": Bucket,
@@ -147,6 +154,19 @@ class FakeS3Client:
         bucket = Params["Bucket"]
         key = Params["Key"]
         return f"https://example-presigned.local/{bucket}/{key}?expires={ExpiresIn}"
+
+    def head_object(self, Bucket, Key):
+        if Bucket not in self.buckets:
+            raise ClientError(
+                {"Error": {"Code": "NoSuchBucket", "Message": "bucket does not exist"}},
+                "HeadObject",
+            )
+        if (Bucket, Key) not in self.objects:
+            raise ClientError(
+                {"Error": {"Code": "404", "Message": "object does not exist"}},
+                "HeadObject",
+            )
+        return {}
 
 
 class StorageUploadHelperTests(unittest.TestCase):
@@ -495,6 +515,32 @@ class StorageUploadLambdaTests(unittest.TestCase):
             }
         return event
 
+    def _make_confirm_event(
+        self,
+        idempotency_key,
+        object_key=None,
+        wallet_address=None,
+        quote_id=None,
+        include_authorizer=True,
+        authorizer_wallet=None,
+        **body_updates,
+    ):
+        body = {
+            "quote_id": quote_id or self.quote_id,
+            "wallet_address": wallet_address or self.wallet_address,
+            "object_key": object_key or self.object_id,
+            "idempotency_key": idempotency_key,
+        }
+        body.update(body_updates)
+        event = {"body": json.dumps(body), "headers": {}}
+        if include_authorizer:
+            event["requestContext"] = {
+                "authorizer": {
+                    "walletAddress": authorizer_wallet or body["wallet_address"],
+                }
+            }
+        return event
+
     def test_missing_authorizer_wallet_context_returns_403(self):
         event = self._make_event(include_authorizer=False)
 
@@ -636,7 +682,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
 
     def test_presigned_mode_without_ciphertext_returns_upload_url(self):
         event = self._make_event(
-            headers={"PAYMENT-SIGNATURE": "mock"},
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-presigned-confirm"},
             mode="presigned",
             content_sha256="abcd1234",
             content_length_bytes=12345,
@@ -665,9 +711,14 @@ class StorageUploadLambdaTests(unittest.TestCase):
                 "x-amz-meta-wrapped-dek": base64.b64encode(b"wrapped-key").decode("ascii"),
             },
         )
+        self.assertTrue(response_body["confirmation_required"])
         self.assertEqual(response_body["trans_id"], "0xpresigned")
         self.assertEqual(len(self.s3_client.put_calls), 0)
         self.assertEqual(len(self.s3_client.presigned_calls), 1)
+        self.assertEqual(len(self.transaction_log_table.items), 0)
+        self.assertIn((("quote_id", self.quote_id),), self.quotes_table.items)
+        idem_item = self.idempotency_table.items[(("idempotency_key", "idem-presigned-confirm"),)]
+        self.assertEqual(idem_item["status"], "pending_confirmation")
         self.assertEqual(
             self.s3_client.presigned_calls[0]["Params"]["Metadata"]["wrapped-dek"],
             base64.b64encode(b"wrapped-key").decode("ascii"),
@@ -705,12 +756,217 @@ class StorageUploadLambdaTests(unittest.TestCase):
         second_body = json.loads(second_response["body"])
         self.assertIn("upload_url", first_body)
         self.assertIn("upload_url", second_body)
+        self.assertTrue(first_body["confirmation_required"])
+        self.assertTrue(second_body["confirmation_required"])
         self.assertEqual(self.s3_client.presigned_calls[0]["Params"]["ContentLength"], 12345)
         self.assertEqual(self.s3_client.presigned_calls[1]["Params"]["ContentLength"], 12345)
         self.assertEqual(
             self.s3_client.presigned_calls[1]["ExpiresIn"],
             app.PRESIGNED_URL_EXPIRES_IN_SECONDS,
         )
+        self.assertEqual(len(self.transaction_log_table.items), 0)
+        self.assertIn((("quote_id", self.quote_id),), self.quotes_table.items)
+        idem_item = self.idempotency_table.items[(("idempotency_key", "idem-presigned"),)]
+        self.assertEqual(idem_item["status"], "pending_confirmation")
+
+    def test_confirm_upload_succeeds_when_s3_object_exists(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-confirm-success"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        body = json.loads(event["body"])
+        body.pop("ciphertext", None)
+        event["body"] = json.dumps(body)
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xconfirm-ok",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            first_response = app.lambda_handler(event, None)
+        first_body = json.loads(first_response["body"])
+        self.s3_client.objects.add((first_body["bucket_name"], first_body["object_key"]))
+
+        confirm_event = self._make_confirm_event(idempotency_key="idem-confirm-success")
+        response = app.confirm_upload_handler(confirm_event, None)
+
+        self.assertEqual(response["statusCode"], 200)
+        response_body = json.loads(response["body"])
+        self.assertEqual(response_body["quote_id"], self.quote_id)
+        self.assertEqual(response_body["trans_id"], "0xconfirm-ok")
+        self.assertNotIn("upload_url", response_body)
+        self.assertNotIn("upload_headers", response_body)
+        self.assertNotIn("confirmation_required", response_body)
+        self.assertEqual(len(self.transaction_log_table.items), 1)
+        self.assertNotIn((("quote_id", self.quote_id),), self.quotes_table.items)
+        idem_item = self.idempotency_table.items[(("idempotency_key", "idem-confirm-success"),)]
+        self.assertEqual(idem_item["status"], "completed")
+
+    def test_confirm_upload_returns_404_when_s3_object_missing(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-confirm-404"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        body = json.loads(event["body"])
+        body.pop("ciphertext", None)
+        event["body"] = json.dumps(body)
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xconfirm-missing",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            app.lambda_handler(event, None)
+
+        confirm_event = self._make_confirm_event(idempotency_key="idem-confirm-404")
+        response = app.confirm_upload_handler(confirm_event, None)
+
+        self.assertEqual(response["statusCode"], 404)
+        response_body = json.loads(response["body"])
+        self.assertEqual(
+            response_body["error"],
+            "not_found",
+        )
+        self.assertEqual(len(self.transaction_log_table.items), 0)
+        self.assertIn((("quote_id", self.quote_id),), self.quotes_table.items)
+        idem_item = self.idempotency_table.items[(("idempotency_key", "idem-confirm-404"),)]
+        self.assertEqual(idem_item["status"], "pending_confirmation")
+
+    def test_confirm_upload_returns_cached_success_when_already_completed(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-confirm-complete"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        body = json.loads(event["body"])
+        body.pop("ciphertext", None)
+        event["body"] = json.dumps(body)
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xconfirm-complete",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            first_response = app.lambda_handler(event, None)
+        first_body = json.loads(first_response["body"])
+        self.s3_client.objects.add((first_body["bucket_name"], first_body["object_key"]))
+
+        confirm_event = self._make_confirm_event(idempotency_key="idem-confirm-complete")
+        first_confirm = app.confirm_upload_handler(confirm_event, None)
+        second_confirm = app.confirm_upload_handler(confirm_event, None)
+
+        self.assertEqual(first_confirm["statusCode"], 200)
+        self.assertEqual(second_confirm["statusCode"], 200)
+        self.assertEqual(json.loads(first_confirm["body"]), json.loads(second_confirm["body"]))
+        self.assertEqual(len(self.transaction_log_table.items), 1)
+
+    def test_confirm_upload_completed_rejects_wallet_mismatch(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-confirm-wallet-mismatch"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        body = json.loads(event["body"])
+        body.pop("ciphertext", None)
+        event["body"] = json.dumps(body)
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xconfirm-wallet-mismatch",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            first_response = app.lambda_handler(event, None)
+        first_body = json.loads(first_response["body"])
+        self.s3_client.objects.add((first_body["bucket_name"], first_body["object_key"]))
+
+        confirm_event = self._make_confirm_event(idempotency_key="idem-confirm-wallet-mismatch")
+        first_confirm = app.confirm_upload_handler(confirm_event, None)
+        self.assertEqual(first_confirm["statusCode"], 200)
+
+        attacker_wallet = "0x2222222222222222222222222222222222222222"
+        mismatched_wallet_event = self._make_confirm_event(
+            idempotency_key="idem-confirm-wallet-mismatch",
+            wallet_address=attacker_wallet,
+            authorizer_wallet=attacker_wallet,
+        )
+        mismatched_wallet_response = app.confirm_upload_handler(mismatched_wallet_event, None)
+
+        self.assertEqual(mismatched_wallet_response["statusCode"], 409)
+        self.assertEqual(json.loads(mismatched_wallet_response["body"])["error"], "conflict")
+
+    def test_confirm_retry_after_idempotency_completion_failure_does_not_overwrite_log_timestamp(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-confirm-retry-log"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        body = json.loads(event["body"])
+        body.pop("ciphertext", None)
+        event["body"] = json.dumps(body)
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xconfirm-retry",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            first_response = app.lambda_handler(event, None)
+        first_body = json.loads(first_response["body"])
+        self.s3_client.objects.add((first_body["bucket_name"], first_body["object_key"]))
+
+        original_mark_completed = app._mark_idempotency_completed
+        mark_attempts = 0
+
+        def fail_once_then_mark(*, idempotency_table, idempotency_key, request_hash, response_body, payment_response_header, now):
+            nonlocal mark_attempts
+            mark_attempts += 1
+            if mark_attempts == 1:
+                raise RuntimeError("simulated idempotency completion failure")
+            return original_mark_completed(
+                idempotency_table=idempotency_table,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+                response_body=response_body,
+                payment_response_header=payment_response_header,
+                now=now,
+            )
+
+        confirm_event = self._make_confirm_event(idempotency_key="idem-confirm-retry-log")
+        with (
+            mock.patch.object(
+                app.time,
+                "time",
+                side_effect=range(1_700_000_100, 1_700_000_300),
+            ),
+            mock.patch.object(app, "_mark_idempotency_completed", side_effect=fail_once_then_mark),
+        ):
+            first_confirm = app.confirm_upload_handler(confirm_event, None)
+            first_log_item = next(iter(self.transaction_log_table.items.values())).copy()
+            second_confirm = app.confirm_upload_handler(confirm_event, None)
+
+        self.assertEqual(first_confirm["statusCode"], 500)
+        self.assertEqual(second_confirm["statusCode"], 200)
+        self.assertEqual(mark_attempts, 2)
+        self.assertEqual(len(self.transaction_log_table.put_history), 1)
+        log_item = next(iter(self.transaction_log_table.items.values()))
+        self.assertEqual(log_item["timestamp"], first_log_item["timestamp"])
+        self.assertEqual(log_item["payment_received_at"], first_log_item["payment_received_at"])
 
     def test_inline_mode_uses_existing_direct_upload_path(self):
         event = self._make_event(headers={"PAYMENT-SIGNATURE": "mock"}, mode="inline")
@@ -901,7 +1157,10 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertIn("response_body", idem_item)
 
     def test_presigned_mode_still_requires_payment_verification(self):
-        event = self._make_event(mode="presigned")
+        event = self._make_event(
+            headers={"Idempotency-Key": "idem-presigned-payment-required"},
+            mode="presigned",
+        )
         body = json.loads(event["body"])
         body.pop("ciphertext", None)
         event["body"] = json.dumps(body)
@@ -911,6 +1170,29 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertEqual(response["statusCode"], 402)
         parsed = json.loads(response["body"])
         self.assertEqual(parsed["error"], "payment_required")
+        self.assertEqual(len(self.s3_client.put_calls), 0)
+        self.assertEqual(len(self.s3_client.presigned_calls), 0)
+
+    def test_presigned_mode_requires_idempotency_key_header(self):
+        event = self._make_event(headers={"PAYMENT-SIGNATURE": "mock"}, mode="presigned")
+        body = json.loads(event["body"])
+        body.pop("ciphertext", None)
+        event["body"] = json.dumps(body)
+
+        with mock.patch.object(
+            app,
+            "verify_and_settle_payment",
+            side_effect=AssertionError("must not be called"),
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 400)
+        parsed = json.loads(response["body"])
+        self.assertEqual(parsed["error"], "Bad request")
+        self.assertEqual(
+            parsed["message"],
+            "Idempotency-Key header is required for presigned mode",
+        )
         self.assertEqual(len(self.s3_client.put_calls), 0)
         self.assertEqual(len(self.s3_client.presigned_calls), 0)
 

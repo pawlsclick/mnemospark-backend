@@ -233,6 +233,8 @@ Resources:
                 Action:
                   - s3:CreateBucket
                   - s3:HeadBucket
+                  - s3:HeadObject
+                  - s3:GetObject
                   - s3:PutObject
                 Resource:
                   - !Sub "arn:aws:s3:::mnemospark-*"
@@ -406,6 +408,22 @@ Resources:
             provider:
               type: string
             location:
+              type: string
+        UploadConfirmRequest:
+          type: object
+          required:
+            - wallet_address
+            - object_key
+            - idempotency_key
+            - quote_id
+          properties:
+            wallet_address:
+              type: string
+            object_key:
+              type: string
+            idempotency_key:
+              type: string
+            quote_id:
               type: string
         StorageObjectRequest:
           type: object
@@ -588,6 +606,49 @@ Resources:
                   Required: false
                   Caching: false
               - method.request.header.X-PAYMENT:
+                  Required: false
+                  Caching: false
+
+  StorageUploadConfirmFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.confirm_upload_handler
+      CodeUri: services/storage-upload
+      Role: !GetAtt UploadLambdaRole.Arn
+      Environment:
+        Variables:
+          QUOTES_TABLE_NAME: !Ref QuotesTable
+          UPLOAD_TRANSACTION_LOG_TABLE_NAME: !Ref UploadTransactionLogTable
+          UPLOAD_IDEMPOTENCY_TABLE_NAME: !Ref UploadIdempotencyTable
+          MNEMOSPARK_RECIPIENT_WALLET: !Ref MnemosparkRecipientWallet
+          MNEMOSPARK_PAYMENT_NETWORK: !Ref PaymentNetwork
+          MNEMOSPARK_PAYMENT_ASSET: !Ref PaymentAssetAddress
+          MNEMOSPARK_PAYMENT_SETTLEMENT_MODE: !Ref PaymentSettlementMode
+          MNEMOSPARK_BASE_RPC_URL: !Ref BaseRpcUrl
+          # Secret value is created out-of-band by operator/pipeline in Secrets Manager.
+          MNEMOSPARK_RELAYER_SECRET_ID: mnemospark/relayer-private-key
+      Events:
+        StorageUploadConfirmPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/upload/confirm
+            Method: POST
+            Auth:
+              Authorizer: WalletRequestAuthorizer
+            RequestModel:
+              Model: UploadConfirmRequest
+              Required: true
+              ValidateBody: true
+              ValidateParameters: true
+            RequestParameters:
+              - method.request.header.Idempotency-Key:
+                  Required: false
+                  Caching: false
+              - method.request.header.X-Wallet-Signature:
+                  Required: false
+                  Caching: false
+              - method.request.header.x-wallet-signature:
                   Required: false
                   Caching: false
 
