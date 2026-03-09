@@ -546,7 +546,10 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertIn("upload_url", response_body)
         self.assertEqual(
             response_body["upload_headers"],
-            {"content-type": "application/octet-stream"},
+            {
+                "content-type": "application/octet-stream",
+                "x-amz-meta-wrapped-dek": base64.b64encode(b"wrapped-key").decode("ascii"),
+            },
         )
         self.assertEqual(response_body["trans_id"], "0xpresigned")
         self.assertEqual(len(self.s3_client.put_calls), 0)

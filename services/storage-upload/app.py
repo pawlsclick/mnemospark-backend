@@ -139,7 +139,6 @@ class ParsedUploadRequest:
     location: str
     mode: str | None
     content_sha256: str | None
-    content_length_bytes: int | None
     ciphertext: bytes | None
     wrapped_dek: str
     idempotency_key: str | None
@@ -429,13 +428,6 @@ def parse_input(event: dict[str, Any]) -> ParsedUploadRequest:
             raise BadRequestError("content_sha256 must be a string")
         content_sha256 = raw_content_sha256.strip() or None
 
-    content_length_bytes: int | None = None
-    raw_content_length_bytes = params.get("content_length_bytes")
-    if raw_content_length_bytes not in (None, ""):
-        content_length_bytes = _coerce_int(raw_content_length_bytes, "content_length_bytes")
-        if content_length_bytes < 0:
-            raise BadRequestError("content_length_bytes must be non-negative")
-
     ciphertext: bytes | None = None
     has_ciphertext_field = "ciphertext" in params or "content" in params
     if mode == "inline" or has_ciphertext_field:
@@ -470,7 +462,6 @@ def parse_input(event: dict[str, Any]) -> ParsedUploadRequest:
         location=location,
         mode=mode,
         content_sha256=content_sha256,
-        content_length_bytes=content_length_bytes,
         ciphertext=ciphertext,
         wrapped_dek=wrapped_dek,
         idempotency_key=idempotency_key,
@@ -1236,7 +1227,10 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         }
         if upload_url:
             response_body["upload_url"] = upload_url
-            response_body["upload_headers"] = {"content-type": "application/octet-stream"}
+            response_body["upload_headers"] = {
+                "content-type": "application/octet-stream",
+                "x-amz-meta-wrapped-dek": request.wrapped_dek,
+            }
         payment_response_header = _encode_json_base64(
             {
                 "trans_id": payment_result.trans_id,
