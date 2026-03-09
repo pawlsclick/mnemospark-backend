@@ -5,7 +5,7 @@ Flow:
 1. Parse request and optional Idempotency-Key.
 2. Lookup and validate quote in DynamoDB.
 3. Verify payment authorization (EIP-712 TransferWithAuthorization).
-4. Settle payment (mock tx id by default; optional on-chain mode).
+4. Settle payment (on-chain by default; optional mock mode for testing).
 5. Upload ciphertext to wallet-scoped S3 bucket with wrapped DEK metadata.
 6. Write upload transaction log row in DynamoDB.
 """
@@ -49,6 +49,7 @@ UPLOAD_IDEMPOTENCY_TABLE_ENV = "UPLOAD_IDEMPOTENCY_TABLE_NAME"
 RELAYER_SECRET_ID_ENV = "MNEMOSPARK_RELAYER_SECRET_ID"
 
 _RELAYER_PRIVATE_KEY_CACHE: str | None = None
+_MOCK_SETTLEMENT_WARNING_EMITTED = False
 
 # Headers are normalized to lowercase by _normalize_headers, so keep only unique keys here.
 PAYMENT_SIGNATURE_HEADER_NAMES = (
@@ -792,7 +793,22 @@ def _mock_settlement_tx_id(quote_id: str, authorization: TransferAuthorization) 
 
 
 def _settlement_mode() -> str:
-    return os.environ.get("MNEMOSPARK_PAYMENT_SETTLEMENT_MODE", "mock").strip().lower() or "mock"
+    return os.environ.get("MNEMOSPARK_PAYMENT_SETTLEMENT_MODE", "onchain").strip().lower() or "onchain"
+
+
+def _emit_mock_settlement_warning_once(settlement_mode: str) -> None:
+    global _MOCK_SETTLEMENT_WARNING_EMITTED
+    if settlement_mode != "mock" or _MOCK_SETTLEMENT_WARNING_EMITTED:
+        return
+    _log_event(
+        logging.WARNING,
+        "mock_settlement_mode_active",
+        message=(
+            "Payment settlement is in MOCK mode. No real USDC transfers will occur. "
+            "Set MNEMOSPARK_PAYMENT_SETTLEMENT_MODE=onchain for production."
+        ),
+    )
+    _MOCK_SETTLEMENT_WARNING_EMITTED = True
 
 
 def _onchain_settle_payment(authorization: TransferAuthorization) -> str:
@@ -1249,6 +1265,8 @@ def _write_transaction_log(
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     del context
+    settlement_mode = _settlement_mode()
+    _emit_mock_settlement_warning_once(settlement_mode)
     idempotency_lock_acquired = False
     idempotency_table: Any | None = None
     idempotency_key: str | None = None
@@ -1403,7 +1421,6 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 amount=payment_result.amount,
                 network=payment_result.network,
             )
-
         upload_url: str | None = None
         if request.mode == "presigned":
             s3_client = boto3.client("s3", region_name=quote_context.location)

@@ -36,11 +36,14 @@ Parameters:
     Description: USDC token contract address for payment verification
   PaymentSettlementMode:
     Type: String
-    Default: mock
+    Default: onchain
     AllowedValues:
       - mock
       - onchain
-    Description: Payment settlement mode for upload flow
+    Description: >-
+      Payment settlement mode for upload flow. Default is onchain (real USDC
+      transfers on Base). Set to mock only for testing/development (generates
+      deterministic pseudo-tx IDs, no on-chain transaction).
   BaseRpcUrl:
     Type: String
     Default: ""
