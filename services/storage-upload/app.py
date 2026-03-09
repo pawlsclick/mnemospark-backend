@@ -791,6 +791,10 @@ def _mock_settlement_tx_id(quote_id: str, authorization: TransferAuthorization) 
     return f"0x{digest[:64]}"
 
 
+def _settlement_mode() -> str:
+    return os.environ.get("MNEMOSPARK_PAYMENT_SETTLEMENT_MODE", "mock").strip().lower() or "mock"
+
+
 def _onchain_settle_payment(authorization: TransferAuthorization) -> str:
     try:
         from eth_account import Account
@@ -924,7 +928,7 @@ def verify_and_settle_payment(
             requirements=requirements,
         )
 
-    settlement_mode = os.environ.get("MNEMOSPARK_PAYMENT_SETTLEMENT_MODE", "mock").strip().lower() or "mock"
+    settlement_mode = _settlement_mode()
     if settlement_mode == "mock":
         trans_id = _mock_settlement_tx_id(quote_id, authorization)
     elif settlement_mode == "onchain":
@@ -1255,7 +1259,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 message="lock acquired",
             )
 
-        settlement_mode = os.environ.get("MNEMOSPARK_PAYMENT_SETTLEMENT_MODE", "mock").strip().lower() or "mock"
+        settlement_mode = _settlement_mode()
         payment_result = verify_and_settle_payment(
             payment_header=request.payment_header,
             wallet_address=request.wallet_address,
