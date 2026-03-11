@@ -31,6 +31,297 @@ class FakeDynamoDbClient:
         return {}
 
 
+class FakePricingClient:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def get_products(self, **kwargs):
+        self.calls.append(kwargs)
+        if not self.responses:
+            return {"PriceList": []}
+        return self.responses.pop(0)
+
+
+class PricingHelpersTests(unittest.TestCase):
+    @staticmethod
+    def _price_list_entry(
+        *,
+        product_family,
+        usagetype,
+        unit=None,
+        usd=None,
+        region="[REDACTED]",
+        volume_type="Standard",
+        transfer_type="AWS Outbound",
+        location_type="AWS Region",
+        price_dimensions=None,
+    ):
+        if price_dimensions is None:
+            price_dimensions = [
+                {
+                    "unit": unit,
+                    "pricePerUnit": {"USD": str(usd)},
+                    "beginRange": "0",
+                    "endRange": "Inf",
+                }
+            ]
+        return json.dumps(
+            {
+                "product": {
+                    "productFamily": product_family,
+                    "attributes": {
+                        "regionCode": region,
+                        "locationType": location_type,
+                        "usagetype": usagetype,
+                        "volumeType": volume_type,
+                        "transferType": transfer_type,
+                    }
+                },
+                "terms": {
+                    "OnDemand": {
+                        "ondemand.1": {
+                            "priceDimensions": {
+                                f"dim.{index + 1}": dimension for index, dimension in enumerate(price_dimensions)
+                            }
+                        }
+                    }
+                },
+            }
+        )
+
+    def test_get_s3_storage_price_per_gb_month_uses_lowest_positive_ondemand_rate(self):
+        client = FakePricingClient(
+            responses=[
+                {
+                    "PriceList": [
+                        self._price_list_entry(
+                            product_family="Storage",
+                            usagetype="USE1-TimedStorage-ByteHrs",
+                            unit="GB-Mo",
+                            usd="0.023",
+                        ),
+                        self._price_list_entry(
+                            product_family="Storage",
+                            usagetype="USE1-TimedStorage-ByteHrs",
+                            unit="GB-Mo",
+                            usd="0.021",
+                        ),
+                    ]
+                }
+            ]
+        )
+
+        price = app.get_s3_storage_price_per_gb_month(region="[REDACTED]", client=client)
+
+        self.assertEqual(price, 0.021)
+        self.assertEqual(client.calls[0]["ServiceCode"], "AmazonS3")
+
+    def test_get_data_transfer_out_price_per_gb_uses_matching_usage_type(self):
+        client = FakePricingClient(
+            responses=[
+                {
+                    "PriceList": [
+                        self._price_list_entry(
+                            product_family="Data Transfer",
+                            usagetype="USE1-DataTransfer-Regional-Bytes",
+                            unit="GB",
+                            usd="0.01",
+                        ),
+                        self._price_list_entry(
+                            product_family="Data Transfer",
+                            usagetype="USE1-DataTransfer-Out-Bytes",
+                            unit="GB",
+                            usd="0.09",
+                        ),
+                    ]
+                }
+            ]
+        )
+
+        price = app.get_data_transfer_out_price_per_gb(region="[REDACTED]", client=client)
+
+        self.assertEqual(price, 0.09)
+        self.assertEqual(client.calls[0]["ServiceCode"], "AmazonS3")
+
+    def test_get_data_transfer_in_price_per_gb_returns_zero_without_lookup(self):
+        client = FakePricingClient(responses=[])
+
+        price = app.get_data_transfer_out_price_per_gb(region="[REDACTED]", client=client, direction="in")
+
+        self.assertEqual(price, 0.0)
+        self.assertEqual(client.calls, [])
+
+    def test_get_s3_storage_price_per_gb_month_selects_tier_for_usage(self):
+        client = FakePricingClient(
+            responses=[
+                {
+                    "PriceList": [
+                        self._price_list_entry(
+                            product_family="Storage",
+                            usagetype="USE1-TimedStorage-ByteHrs",
+                            price_dimensions=[
+                                {
+                                    "unit": "GB-Mo",
+                                    "pricePerUnit": {"USD": "0.023"},
+                                    "beginRange": "0",
+                                    "endRange": "50",
+                                },
+                                {
+                                    "unit": "GB-Mo",
+                                    "pricePerUnit": {"USD": "0.021"},
+                                    "beginRange": "50",
+                                    "endRange": "Inf",
+                                },
+                            ],
+                        ),
+                    ]
+                }
+            ]
+        )
+
+        price = app.get_s3_storage_price_per_gb_month(region="[REDACTED]", usage_gb=60, client=client)
+
+        self.assertEqual(price, 0.021)
+
+    def test_get_data_transfer_out_price_per_gb_selects_tier_for_usage(self):
+        client = FakePricingClient(
+            responses=[
+                {
+                    "PriceList": [
+                        self._price_list_entry(
+                            product_family="Data Transfer",
+                            usagetype="USE1-DataTransfer-Out-Bytes",
+                            transfer_type="AWS Outbound",
+                            price_dimensions=[
+                                {
+                                    "unit": "GB",
+                                    "pricePerUnit": {"USD": "0.090"},
+                                    "beginRange": "0",
+                                    "endRange": "10",
+                                },
+                                {
+                                    "unit": "GB",
+                                    "pricePerUnit": {"USD": "0.085"},
+                                    "beginRange": "10",
+                                    "endRange": "Inf",
+                                },
+                            ],
+                        )
+                    ]
+                }
+            ]
+        )
+
+        price = app.get_data_transfer_out_price_per_gb(region="[REDACTED]", usage_gb=25, client=client)
+
+        self.assertEqual(price, 0.085)
+
+    def test_get_s3_storage_price_per_gb_month_raises_when_no_matching_sku(self):
+        client = FakePricingClient(
+            responses=[
+                {
+                    "PriceList": [
+                        self._price_list_entry(
+                            product_family="Storage",
+                            usagetype="USE1-TimedStorage-ByteHrs",
+                            unit="GB-Mo",
+                            usd="0.023",
+                            volume_type="Standard - Infrequent Access",
+                        ),
+                    ]
+                }
+            ]
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "No S3 Standard storage SKU found"):
+            app.get_s3_storage_price_per_gb_month(region="[REDACTED]", client=client)
+
+    def test_estimate_storage_cost_applies_cumulative_tiers(self):
+        client = FakePricingClient(
+            responses=[
+                {
+                    "PriceList": [
+                        self._price_list_entry(
+                            product_family="Storage",
+                            usagetype="USE1-TimedStorage-ByteHrs",
+                            price_dimensions=[
+                                {
+                                    "unit": "GB-Mo",
+                                    "pricePerUnit": {"USD": "0.023"},
+                                    "beginRange": "0",
+                                    "endRange": "50",
+                                },
+                                {
+                                    "unit": "GB-Mo",
+                                    "pricePerUnit": {"USD": "0.022"},
+                                    "beginRange": "50",
+                                    "endRange": "Inf",
+                                },
+                            ],
+                        )
+                    ]
+                }
+            ]
+        )
+
+        with mock.patch.object(app, "get_pricing_client", return_value=client):
+            cost = app.estimate_storage_cost(gb=100, region="[REDACTED]", rate_type="BEFORE_DISCOUNTS")
+
+        self.assertEqual(cost, 2.25)
+
+    def test_estimate_transfer_cost_applies_cumulative_tiers(self):
+        client = FakePricingClient(
+            responses=[
+                {
+                    "PriceList": [
+                        self._price_list_entry(
+                            product_family="Data Transfer",
+                            usagetype="USE1-DataTransfer-Out-Bytes",
+                            transfer_type="AWS Outbound",
+                            price_dimensions=[
+                                {
+                                    "unit": "GB",
+                                    "pricePerUnit": {"USD": "0.090"},
+                                    "beginRange": "0",
+                                    "endRange": "10",
+                                },
+                                {
+                                    "unit": "GB",
+                                    "pricePerUnit": {"USD": "0.085"},
+                                    "beginRange": "10",
+                                    "endRange": "Inf",
+                                },
+                            ],
+                        )
+                    ]
+                }
+            ]
+        )
+
+        with mock.patch.object(app, "get_pricing_client", return_value=client):
+            cost = app.estimate_transfer_cost(
+                gb=25,
+                region="[REDACTED]",
+                direction="out",
+                rate_type="BEFORE_DISCOUNTS",
+            )
+
+        self.assertEqual(cost, 2.175)
+
+    def test_estimate_transfer_cost_direction_in_returns_zero(self):
+        with mock.patch.object(app, "get_pricing_client") as get_pricing_client_mock:
+            cost = app.estimate_transfer_cost(
+                gb=25,
+                region="[REDACTED]",
+                direction="in",
+                rate_type="BEFORE_DISCOUNTS",
+            )
+
+        self.assertEqual(cost, 0.0)
+        get_pricing_client_mock.assert_not_called()
+
+
 class ParseInputTests(unittest.TestCase):
     def test_parse_input_happy_path(self):
         event = {
@@ -241,3 +532,25 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertEqual(body["error"], "Internal error")
         self.assertEqual(body["message"], "Failed to process price-storage request")
         self.assertEqual(body["details"], "throttled")
+
+    def test_lambda_handler_returns_internal_error_shape_on_pricing_failure(self):
+        event = self._valid_event()
+
+        with (
+            mock.patch.object(app, "estimate_storage_cost", side_effect=RuntimeError("pricing lookup failed")),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "PRICE_STORAGE_MARKUP_PERCENT": "10",
+                    "PRICE_STORAGE_TRANSFER_DIRECTION": "out",
+                    "PRICE_STORAGE_RATE_TYPE": "BEFORE_DISCOUNTS",
+                },
+                clear=False,
+            ),
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 500)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "Internal error")
+        self.assertEqual(body["message"], "pricing lookup failed")
