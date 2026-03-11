@@ -406,6 +406,11 @@ def _ensure_bucket_exists(s3_client: Any, bucket_name: str, location: str) -> No
     except ClientError as exc:
         error_code = exc.response.get("Error", {}).get("Code", "")
         if error_code not in {"404", "NotFound", "NoSuchBucket"}:
+            if error_code in {"403", "Forbidden"}:
+                logger.warning(
+                    "HeadBucket 403 for %s: ensure bucket is in this account and Lambda role has s3:HeadBucket on mnemospark-*",
+                    bucket_name,
+                )
             raise
 
     normalized_location = (location or "").strip()
