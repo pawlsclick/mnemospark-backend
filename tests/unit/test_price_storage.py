@@ -217,6 +217,39 @@ class PricingHelpersTests(unittest.TestCase):
 
         self.assertEqual(price, 0.085)
 
+    def test_get_data_transfer_out_price_per_gb_ignores_zero_price_tier_in_rate_lookup(self):
+        client = FakePricingClient(
+            responses=[
+                {
+                    "PriceList": [
+                        self._price_list_entry(
+                            product_family="Data Transfer",
+                            usagetype="USE1-DataTransfer-Out-Bytes",
+                            transfer_type="AWS Outbound",
+                            price_dimensions=[
+                                {
+                                    "unit": "GB",
+                                    "pricePerUnit": {"USD": "0.000"},
+                                    "beginRange": "0",
+                                    "endRange": "1",
+                                },
+                                {
+                                    "unit": "GB",
+                                    "pricePerUnit": {"USD": "0.090"},
+                                    "beginRange": "1",
+                                    "endRange": "Inf",
+                                },
+                            ],
+                        )
+                    ]
+                }
+            ]
+        )
+
+        price = app.get_data_transfer_out_price_per_gb(region="[REDACTED]", usage_gb=0.5, client=client)
+
+        self.assertEqual(price, 0.09)
+
     def test_get_s3_storage_price_per_gb_month_raises_when_no_matching_sku(self):
         client = FakePricingClient(
             responses=[
@@ -371,13 +404,13 @@ class ParseInputTests(unittest.TestCase):
 
 
 class MarkupConfigTests(unittest.TestCase):
-    def test_markup_accepts_percent_string(self):
-        with mock.patch.dict(os.environ, {"PRICE_STORAGE_MARKUP_PERCENT": "15"}, clear=False):
+    def test_markup_uses_percent_from_environment(self):
+        with mock.patch.dict(os.environ, {"PRICE_STORAGE_MARKUP_PERCENT": "10"}, clear=False):
             markup = app._get_markup_multiplier()
-        self.assertEqual(markup, 0.15)
+        self.assertEqual(markup, 0.1)
 
-    def test_markup_accepts_fraction_string(self):
-        with mock.patch.dict(os.environ, {"PRICE_STORAGE_MARKUP_PERCENT": "0.2"}, clear=False):
+    def test_markup_defaults_to_twenty_percent_when_unset(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
             markup = app._get_markup_multiplier()
         self.assertEqual(markup, 0.2)
 
@@ -415,7 +448,36 @@ class QuoteWriteTests(unittest.TestCase):
         self.assertEqual(put_item_call["Item"]["quote_id"]["S"], "quote-123")
         self.assertEqual(put_item_call["Item"]["storage_price"]["N"], "3.45")
         self.assertEqual(put_item_call["Item"]["provider"]["S"], "aws")
+        self.assertEqual(put_item_call["Item"]["pre_markup_subtotal"]["N"], "3.000000")
         self.assertEqual(put_item_call["Item"]["expires_at"]["N"], str(int(now.timestamp()) + 3600))
+
+    def test_write_quote_persists_floored_pre_markup_subtotal(self):
+        fake_dynamodb = FakeDynamoDbClient()
+        quote = {
+            "timestamp": "2026-01-01 12:00:00",
+            "quote_id": "quote-123",
+            "storage_price": 2.4,
+            "addr": "0xabc123",
+            "object_id": "backup.tar.gz",
+            "object_id_hash": "hash-value",
+            "object_size_gb": 5.0,
+            "provider": "aws",
+            "location": "[REDACTED]",
+        }
+
+        app.write_quote(
+            quote=quote,
+            storage_cost=0.6,
+            transfer_cost=0.3,
+            markup_multiplier=0.2,
+            dynamodb_client=fake_dynamodb,
+            table_name="quotes-table",
+            ttl_seconds=3600,
+        )
+
+        self.assertEqual(len(fake_dynamodb.put_item_calls), 1)
+        put_item_call = fake_dynamodb.put_item_calls[0]
+        self.assertEqual(put_item_call["Item"]["pre_markup_subtotal"]["N"], "2.000000")
 
 
 class LambdaHandlerTests(unittest.TestCase):
@@ -443,7 +505,6 @@ class LambdaHandlerTests(unittest.TestCase):
             mock.patch.dict(
                 os.environ,
                 {
-                    "PRICE_STORAGE_MARKUP_PERCENT": "10",
                     "PRICE_STORAGE_TRANSFER_DIRECTION": "out",
                     "PRICE_STORAGE_RATE_TYPE": "BEFORE_DISCOUNTS",
                 },
@@ -454,7 +515,7 @@ class LambdaHandlerTests(unittest.TestCase):
 
         self.assertEqual(response["statusCode"], 200)
         body = json.loads(response["body"])
-        self.assertEqual(body["storage_price"], 3.3)
+        self.assertEqual(body["storage_price"], 3.6)
         self.assertEqual(body["addr"], "0xabc123")
         self.assertEqual(body["object_id"], "backup.tar.gz")
         self.assertEqual(body["provider"], "aws")
@@ -462,6 +523,28 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertIn("quote_id", body)
         self.assertIn("timestamp", body)
         write_quote_mock.assert_called_once()
+
+    def test_lambda_handler_applies_pre_markup_floor_before_twenty_percent_markup(self):
+        event = self._valid_event()
+
+        with (
+            mock.patch.object(app, "estimate_storage_cost", return_value=0.6),
+            mock.patch.object(app, "estimate_transfer_cost", return_value=0.3),
+            mock.patch.object(app, "write_quote"),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "PRICE_STORAGE_TRANSFER_DIRECTION": "out",
+                    "PRICE_STORAGE_RATE_TYPE": "BEFORE_DISCOUNTS",
+                },
+                clear=False,
+            ),
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 200)
+        body = json.loads(response["body"])
+        self.assertEqual(body["storage_price"], 2.4)
 
     def test_lambda_handler_reads_authorizer_wallet_context(self):
         event = self._valid_event()
