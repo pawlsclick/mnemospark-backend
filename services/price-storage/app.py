@@ -21,7 +21,8 @@ import botocore.exceptions
 DEFAULT_QUOTE_TTL_SECONDS = 3600
 DEFAULT_TRANSFER_DIRECTION = "out"
 DEFAULT_RATE_TYPE = "BEFORE_DISCOUNTS"
-DEFAULT_MARKUP_PERCENT = "0"
+MIN_PRE_MARKUP_SUBTOTAL = 2.0
+QUOTE_MARKUP_MULTIPLIER = 0.20
 VALID_PROVIDERS = {"aws"}
 VALID_RATE_TYPES = (
     "BEFORE_DISCOUNTS",
@@ -208,20 +209,19 @@ def _get_transfer_direction() -> str:
 
 
 def _get_markup_multiplier() -> float:
-    raw_markup = os.getenv(
-        "PRICE_STORAGE_MARKUP_PERCENT",
-        os.getenv("PRICE_MARKUP_PERCENT", DEFAULT_MARKUP_PERCENT),
-    )
+    raw_markup_percent = (os.getenv("PRICE_STORAGE_MARKUP_PERCENT") or "").strip()
+    if not raw_markup_percent:
+        return QUOTE_MARKUP_MULTIPLIER
+
     try:
-        markup = float(raw_markup)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError("PRICE_STORAGE_MARKUP_PERCENT must be numeric") from exc
+        markup_percent = float(raw_markup_percent)
+    except ValueError as exc:
+        raise RuntimeError("PRICE_STORAGE_MARKUP_PERCENT must be a number") from exc
 
-    if markup < 0:
-        raise RuntimeError("PRICE_STORAGE_MARKUP_PERCENT must be non-negative")
+    if markup_percent < 0:
+        raise RuntimeError("PRICE_STORAGE_MARKUP_PERCENT must be greater than or equal to 0")
 
-    # Allow "0.15" (15%) or "15" (15%).
-    return markup / 100.0 if markup >= 1 else markup
+    return markup_percent / 100.0
 
 
 def get_pricing_client() -> Any:
@@ -263,7 +263,9 @@ def _extract_positive_ondemand_gb_rates(product: dict[str, Any]) -> list[float]:
     return [amount for _, amount in _iter_positive_ondemand_gb_dimensions(product)]
 
 
-def _iter_positive_ondemand_gb_dimensions(product: dict[str, Any]) -> list[tuple[dict[str, Any], float]]:
+def _iter_ondemand_gb_dimensions(
+    product: dict[str, Any], *, include_zero: bool
+) -> list[tuple[dict[str, Any], float]]:
     terms = product.get("terms", {})
     on_demand = terms.get("OnDemand", {})
     if not isinstance(on_demand, dict):
@@ -287,14 +289,25 @@ def _iter_positive_ondemand_gb_dimensions(product: dict[str, Any]) -> list[tuple
                 amount = float(usd)
             except (TypeError, ValueError):
                 continue
-            if amount > 0:
+            if amount > 0 or (include_zero and amount == 0):
                 dimensions_with_prices.append((dimension, amount))
     return dimensions_with_prices
 
 
-def _extract_ondemand_gb_price_dimensions(product: dict[str, Any]) -> list[dict[str, float]]:
+def _iter_positive_ondemand_gb_dimensions(product: dict[str, Any]) -> list[tuple[dict[str, Any], float]]:
+    return _iter_ondemand_gb_dimensions(product, include_zero=False)
+
+
+def _iter_all_ondemand_gb_dimensions(product: dict[str, Any]) -> list[tuple[dict[str, Any], float]]:
+    return _iter_ondemand_gb_dimensions(product, include_zero=True)
+
+
+def _extract_ondemand_gb_price_dimensions(
+    product: dict[str, Any], *, include_zero: bool = False
+) -> list[dict[str, float]]:
     dimensions: list[dict[str, float]] = []
-    for dimension, amount in _iter_positive_ondemand_gb_dimensions(product):
+    iterator = _iter_all_ondemand_gb_dimensions if include_zero else _iter_positive_ondemand_gb_dimensions
+    for dimension, amount in iterator(product):
         begin_raw = str(dimension.get("beginRange", "0")).strip()
         end_raw = str(dimension.get("endRange", "Inf")).strip()
         try:
@@ -378,7 +391,7 @@ def _pick_lowest_tiered_cost(
     for product in products:
         if not product_matcher(product):
             continue
-        dimensions = _extract_ondemand_gb_price_dimensions(product)
+        dimensions = _extract_ondemand_gb_price_dimensions(product, include_zero=True)
         if dimensions:
             try:
                 candidate_costs.append(_calculate_tiered_cost(dimensions=dimensions, usage_gb=usage_gb))
@@ -462,16 +475,19 @@ def _is_data_transfer_product(product: dict[str, Any], *, direction: str) -> boo
 
 
 def _build_data_transfer_primary_filters(region: str) -> list[dict[str, str]]:
+    """Build GetProducts filters for S3 outbound data transfer; matches working script."""
     location = REGION_TO_S3_LOCATION.get(region)
     if location:
         return [
             {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Data Transfer"},
             {"Type": "TERM_MATCH", "Field": "fromLocation", "Value": location},
+            {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
         ]
     return [
         {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Data Transfer"},
         {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
         {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
+        {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
     ]
 
 
@@ -582,6 +598,7 @@ def write_quote(
     resolved_table_name = table_name or _get_quotes_table_name()
     resolved_ttl_seconds = ttl_seconds if ttl_seconds is not None else _get_quote_ttl_seconds()
     expires_at = int(resolved_now.timestamp()) + resolved_ttl_seconds
+    pre_markup_subtotal = max(storage_cost + transfer_cost, MIN_PRE_MARKUP_SUBTOTAL)
 
     item = {
         "quote_id": {"S": quote["quote_id"]},
@@ -596,6 +613,7 @@ def write_quote(
         "expires_at": {"N": str(expires_at)},
         "storage_cost": {"N": f"{storage_cost:.6f}"},
         "transfer_cost": {"N": f"{transfer_cost:.6f}"},
+        "pre_markup_subtotal": {"N": f"{pre_markup_subtotal:.6f}"},
         "markup_multiplier": {"N": f"{markup_multiplier:.6f}"},
     }
 
@@ -644,7 +662,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             direction=direction,
             rate_type=rate_type,
         )
-        storage_price = round((storage_cost + transfer_cost) * (1 + markup_multiplier), 2)
+        pre_markup_subtotal = max(storage_cost + transfer_cost, MIN_PRE_MARKUP_SUBTOTAL)
+        storage_price = round(pre_markup_subtotal * (1 + markup_multiplier), 2)
 
         quote = _build_quote_response(request=request, storage_price=storage_price)
         write_quote(
