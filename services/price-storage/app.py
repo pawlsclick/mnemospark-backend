@@ -292,9 +292,39 @@ def _iter_positive_ondemand_gb_dimensions(product: dict[str, Any]) -> list[tuple
     return dimensions_with_prices
 
 
+def _iter_all_ondemand_gb_dimensions(product: dict[str, Any]) -> list[tuple[dict[str, Any], float]]:
+    """Like _iter_positive_ondemand_gb_dimensions but includes zero-price tiers for tiered cost."""
+    terms = product.get("terms", {})
+    on_demand = terms.get("OnDemand", {})
+    if not isinstance(on_demand, dict):
+        return []
+
+    out: list[tuple[dict[str, Any], float]] = []
+    for term in on_demand.values():
+        if not isinstance(term, dict):
+            continue
+        dimensions = term.get("priceDimensions", {})
+        if not isinstance(dimensions, dict):
+            continue
+        for dimension in dimensions.values():
+            if not isinstance(dimension, dict):
+                continue
+            unit = str(dimension.get("unit", "")).upper()
+            if "GB" not in unit:
+                continue
+            usd = (dimension.get("pricePerUnit") or {}).get("USD")
+            try:
+                amount = float(usd)
+            except (TypeError, ValueError):
+                continue
+            if amount >= 0:
+                out.append((dimension, amount))
+    return out
+
+
 def _extract_ondemand_gb_price_dimensions(product: dict[str, Any]) -> list[dict[str, float]]:
     dimensions: list[dict[str, float]] = []
-    for dimension, amount in _iter_positive_ondemand_gb_dimensions(product):
+    for dimension, amount in _iter_all_ondemand_gb_dimensions(product):
         begin_raw = str(dimension.get("beginRange", "0")).strip()
         end_raw = str(dimension.get("endRange", "Inf")).strip()
         try:
@@ -462,16 +492,19 @@ def _is_data_transfer_product(product: dict[str, Any], *, direction: str) -> boo
 
 
 def _build_data_transfer_primary_filters(region: str) -> list[dict[str, str]]:
+    """Build GetProducts filters for S3 outbound data transfer; matches working script."""
     location = REGION_TO_S3_LOCATION.get(region)
     if location:
         return [
             {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Data Transfer"},
             {"Type": "TERM_MATCH", "Field": "fromLocation", "Value": location},
+            {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
         ]
     return [
         {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Data Transfer"},
         {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
         {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
+        {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
     ]
 
 
