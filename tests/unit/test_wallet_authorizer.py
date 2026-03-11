@@ -5,6 +5,7 @@ import sys
 import time
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from eth_account import Account
 from eth_account.messages import encode_typed_data
@@ -248,3 +249,26 @@ class WalletAuthorizerTests(unittest.TestCase):
 
         self.assertEqual(_policy_effect(response), "Allow")
         self.assertEqual(response.get("context"), {"walletAddress": self.wallet_address.lower()})
+
+    def test_debug_log_reports_dict_body_length(self):
+        wallet_header = _build_wallet_header(
+            method="POST",
+            path="/storage/upload",
+            wallet_address=self.wallet_address,
+            private_key=self.signer.key,
+        )
+        event = _make_request_event(
+            method="POST",
+            path="/storage/upload",
+            wallet_header=wallet_header,
+        )
+        event["body"] = {"wallet_address": self.wallet_address}
+
+        with patch.object(app.logger, "info") as log_info:
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(_policy_effect(response), "Allow")
+        self.assertTrue(log_info.called)
+        _, body_present, body_len, *_ = log_info.call_args[0]
+        self.assertTrue(body_present)
+        self.assertGreater(body_len, 0)
