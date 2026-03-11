@@ -459,6 +459,11 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     try:
         method, path = _resolve_method_and_path(event)
         route_mode = _classify_route(method, path)
+        print(
+            "authorizer_debug_enter method=%s path=%s route=%s"
+            % (method, path, route_mode),
+            flush=True,
+        )
         if route_mode == "unsupported":
             return _deny(resource_arn)
 
