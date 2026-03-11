@@ -209,7 +209,19 @@ def _get_transfer_direction() -> str:
 
 
 def _get_markup_multiplier() -> float:
-    return QUOTE_MARKUP_MULTIPLIER
+    raw_markup_percent = (os.getenv("PRICE_STORAGE_MARKUP_PERCENT") or "").strip()
+    if not raw_markup_percent:
+        return QUOTE_MARKUP_MULTIPLIER
+
+    try:
+        markup_percent = float(raw_markup_percent)
+    except ValueError as exc:
+        raise RuntimeError("PRICE_STORAGE_MARKUP_PERCENT must be a number") from exc
+
+    if markup_percent < 0:
+        raise RuntimeError("PRICE_STORAGE_MARKUP_PERCENT must be greater than or equal to 0")
+
+    return markup_percent / 100.0
 
 
 def get_pricing_client() -> Any:

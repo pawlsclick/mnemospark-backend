@@ -404,8 +404,13 @@ class ParseInputTests(unittest.TestCase):
 
 
 class MarkupConfigTests(unittest.TestCase):
-    def test_markup_is_fixed_to_twenty_percent(self):
+    def test_markup_uses_percent_from_environment(self):
         with mock.patch.dict(os.environ, {"PRICE_STORAGE_MARKUP_PERCENT": "10"}, clear=False):
+            markup = app._get_markup_multiplier()
+        self.assertEqual(markup, 0.1)
+
+    def test_markup_defaults_to_twenty_percent_when_unset(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
             markup = app._get_markup_multiplier()
         self.assertEqual(markup, 0.2)
 
