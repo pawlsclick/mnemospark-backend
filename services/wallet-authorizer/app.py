@@ -463,6 +463,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             return _deny(resource_arn)
 
         wallet_header = _extract_wallet_header(event)
+        logger.info(
+            "authorizer_debug_start method=%s path=%s route=%s has_header=%s body_present=%s",
+            method,
+            path,
+            route_mode,
+            wallet_header is not None,
+            event.get("body") is not None,
+        )
         if route_mode == "price_optional" and wallet_header is None:
             return _allow(resource_arn, wallet_address=None)
         if wallet_header is None:
@@ -490,7 +498,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             return _deny(resource_arn)
 
         return _allow(resource_arn, wallet_address=signer_wallet)
-    except AuthError:
+    except AuthError as e:
+        logger.warning("authorizer_debug AuthError: %s", e)
         return _deny(resource_arn)
-    except Exception:
+    except Exception as e:
+        logger.warning("authorizer_debug Exception: %s: %s", type(e).__name__, e)
         return _deny(resource_arn)
