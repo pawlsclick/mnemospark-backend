@@ -313,10 +313,14 @@ def _pick_lowest_positive_rate(
 
 
 def _is_s3_standard_storage_product(product: dict[str, Any]) -> bool:
-    if str(product.get("productFamily", "")).lower() != "storage":
+    product_data = product.get("product", {})
+    if not isinstance(product_data, dict):
         return False
 
-    attributes = product.get("product", {}).get("attributes", {})
+    if str(product_data.get("productFamily", "")).lower() != "storage":
+        return False
+
+    attributes = product_data.get("attributes", {})
     if not isinstance(attributes, dict):
         return False
 
@@ -342,10 +346,14 @@ def _is_s3_standard_storage_product(product: dict[str, Any]) -> bool:
 
 
 def _is_data_transfer_product(product: dict[str, Any], *, direction: str) -> bool:
-    if str(product.get("productFamily", "")).lower() != "data transfer":
+    product_data = product.get("product", {})
+    if not isinstance(product_data, dict):
         return False
 
-    attributes = product.get("product", {}).get("attributes", {})
+    if str(product_data.get("productFamily", "")).lower() != "data transfer":
+        return False
+
+    attributes = product_data.get("attributes", {})
     if not isinstance(attributes, dict):
         return False
 

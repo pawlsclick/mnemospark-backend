@@ -68,8 +68,8 @@ class PricingHelpersTests(unittest.TestCase):
             ]
         return json.dumps(
             {
-                "productFamily": product_family,
                 "product": {
+                    "productFamily": product_family,
                     "attributes": {
                         "regionCode": region,
                         "locationType": location_type,
