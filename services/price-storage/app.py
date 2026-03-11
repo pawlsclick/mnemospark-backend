@@ -40,7 +40,7 @@ REGION_TO_S3_LOCATION: dict[str, str] = {
     "us-west-1": "US West (N. California)",
     "us-west-2": "US West (Oregon)",
     "ca-central-1": "Canada (Central)",
-    "sa-east-1": "South America (São Paulo)",
+    "sa-east-1": "South America (Sao Paulo)",
     # Europe
     "eu-west-1": "EU (Ireland)",
     "eu-west-2": "EU (London)",
