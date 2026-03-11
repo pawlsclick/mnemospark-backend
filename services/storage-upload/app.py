@@ -643,13 +643,15 @@ def _encode_json_base64(payload: dict[str, Any]) -> str:
 
 
 def _payment_requirements(quote_context: QuoteContext, payment_config: dict[str, str]) -> dict[str, Any]:
-    return {
+    """Build x402 Payment-Required payload. Client expects { accepts: [ PaymentOption ] }."""
+    option: dict[str, Any] = {
         "scheme": "exact",
         "network": payment_config["payment_network"],
         "asset": payment_config["payment_asset"],
         "payTo": payment_config["recipient_wallet"],
         "amount": str(quote_context.storage_price_micro),
     }
+    return {"accepts": [option]}
 
 
 def _payment_required_headers(requirements: dict[str, Any]) -> dict[str, str]:
