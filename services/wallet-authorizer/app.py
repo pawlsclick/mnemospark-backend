@@ -465,47 +465,64 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             flush=True,
         )
         if route_mode == "unsupported":
+            print("authorizer_debug_deny reason=unsupported_route", flush=True)
             return _deny(resource_arn)
 
         wallet_header = _extract_wallet_header(event)
-        logger.info(
-            "authorizer_debug_start method=%s path=%s route=%s has_header=%s body_present=%s",
-            method,
-            path,
-            route_mode,
-            wallet_header is not None,
-            event.get("body") is not None,
+        body_present = event.get("body") is not None
+        print(
+            "authorizer_debug_after_header has_header=%s body_present=%s"
+            % (wallet_header is not None, body_present),
+            flush=True,
         )
         if route_mode == "price_optional" and wallet_header is None:
+            print("authorizer_debug_allow reason=price_optional_no_header", flush=True)
             return _allow(resource_arn, wallet_address=None)
         if wallet_header is None:
+            print("authorizer_debug_deny reason=no_wallet_header", flush=True)
             return _deny(resource_arn)
 
+        print("authorizer_debug_verify_proof_start", flush=True)
         signer_wallet = _verify_wallet_proof(wallet_header, method=method, path=path)
         request_wallet = _extract_request_wallet(event)
-
         body_raw = event.get("body")
-        logger.info(
-            "authorizer_debug body_present=%s body_len=%s request_wallet=%s signer_wallet=%s route=%s",
-            body_raw is not None,
-            _debug_body_length(body_raw),
-            request_wallet,
-            signer_wallet,
-            route_mode,
+        print(
+            "authorizer_debug_after_verify request_wallet=%s signer_wallet=%s body_present=%s"
+            % (request_wallet, signer_wallet, body_raw is not None),
+            flush=True,
         )
 
         if route_mode == "storage_required":
             if request_wallet is None:
+                print(
+                    "authorizer_debug_deny reason=request_wallet_none storage_required",
+                    flush=True,
+                )
                 return _deny(resource_arn)
             if request_wallet != signer_wallet:
+                print(
+                    "authorizer_debug_deny reason=wallet_mismatch request=%s signer=%s"
+                    % (request_wallet, signer_wallet),
+                    flush=True,
+                )
                 return _deny(resource_arn)
         elif request_wallet is not None and request_wallet != signer_wallet:
+            print(
+                "authorizer_debug_deny reason=wallet_mismatch_other request=%s signer=%s"
+                % (request_wallet, signer_wallet),
+                flush=True,
+            )
             return _deny(resource_arn)
 
+        print("authorizer_debug_allow signer_wallet=%s" % signer_wallet, flush=True)
         return _allow(resource_arn, wallet_address=signer_wallet)
     except AuthError as e:
-        logger.warning("authorizer_debug AuthError: %s", e)
+        print("authorizer_debug_deny reason=AuthError message=%s" % (e,), flush=True)
         return _deny(resource_arn)
     except Exception as e:
-        logger.warning("authorizer_debug Exception: %s: %s", type(e).__name__, e)
+        print(
+            "authorizer_debug_deny reason=Exception %s: %s"
+            % (type(e).__name__, e),
+            flush=True,
+        )
         return _deny(resource_arn)
