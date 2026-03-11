@@ -1,4 +1,5 @@
 import base64
+import io
 import importlib.util
 import json
 import sys
@@ -264,11 +265,10 @@ class WalletAuthorizerTests(unittest.TestCase):
         )
         event["body"] = {"wallet_address": self.wallet_address}
 
-        with patch.object(app.logger, "info") as log_info:
+        with patch("sys.stdout", new_callable=io.StringIO) as stdout:
             response = app.lambda_handler(event, None)
 
         self.assertEqual(_policy_effect(response), "Allow")
-        self.assertTrue(log_info.called)
-        _, body_present, body_len, *_ = log_info.call_args[0]
-        self.assertTrue(body_present)
-        self.assertGreater(body_len, 0)
+        out = stdout.getvalue()
+        self.assertIn("authorizer_debug_after_verify", out)
+        self.assertIn("body_present=True", out)
