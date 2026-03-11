@@ -144,6 +144,14 @@ class PricingHelpersTests(unittest.TestCase):
         self.assertEqual(price, 0.09)
         self.assertEqual(client.calls[0]["ServiceCode"], "AmazonS3")
 
+    def test_get_data_transfer_in_price_per_gb_returns_zero_without_lookup(self):
+        client = FakePricingClient(responses=[])
+
+        price = app.get_data_transfer_out_price_per_gb(region="[REDACTED]", client=client, direction="in")
+
+        self.assertEqual(price, 0.0)
+        self.assertEqual(client.calls, [])
+
     def test_get_s3_storage_price_per_gb_month_selects_tier_for_usage(self):
         client = FakePricingClient(
             responses=[
@@ -228,6 +236,90 @@ class PricingHelpersTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "No S3 Standard storage SKU found"):
             app.get_s3_storage_price_per_gb_month(region="[REDACTED]", client=client)
+
+    def test_estimate_storage_cost_applies_cumulative_tiers(self):
+        client = FakePricingClient(
+            responses=[
+                {
+                    "PriceList": [
+                        self._price_list_entry(
+                            product_family="Storage",
+                            usagetype="USE1-TimedStorage-ByteHrs",
+                            price_dimensions=[
+                                {
+                                    "unit": "GB-Mo",
+                                    "pricePerUnit": {"USD": "0.023"},
+                                    "beginRange": "0",
+                                    "endRange": "50",
+                                },
+                                {
+                                    "unit": "GB-Mo",
+                                    "pricePerUnit": {"USD": "0.022"},
+                                    "beginRange": "50",
+                                    "endRange": "Inf",
+                                },
+                            ],
+                        )
+                    ]
+                }
+            ]
+        )
+
+        with mock.patch.object(app, "get_pricing_client", return_value=client):
+            cost = app.estimate_storage_cost(gb=100, region="[REDACTED]", rate_type="BEFORE_DISCOUNTS")
+
+        self.assertEqual(cost, 2.25)
+
+    def test_estimate_transfer_cost_applies_cumulative_tiers(self):
+        client = FakePricingClient(
+            responses=[
+                {
+                    "PriceList": [
+                        self._price_list_entry(
+                            product_family="Data Transfer",
+                            usagetype="USE1-DataTransfer-Out-Bytes",
+                            transfer_type="AWS Outbound",
+                            price_dimensions=[
+                                {
+                                    "unit": "GB",
+                                    "pricePerUnit": {"USD": "0.090"},
+                                    "beginRange": "0",
+                                    "endRange": "10",
+                                },
+                                {
+                                    "unit": "GB",
+                                    "pricePerUnit": {"USD": "0.085"},
+                                    "beginRange": "10",
+                                    "endRange": "Inf",
+                                },
+                            ],
+                        )
+                    ]
+                }
+            ]
+        )
+
+        with mock.patch.object(app, "get_pricing_client", return_value=client):
+            cost = app.estimate_transfer_cost(
+                gb=25,
+                region="[REDACTED]",
+                direction="out",
+                rate_type="BEFORE_DISCOUNTS",
+            )
+
+        self.assertEqual(cost, 2.175)
+
+    def test_estimate_transfer_cost_direction_in_returns_zero(self):
+        with mock.patch.object(app, "get_pricing_client") as get_pricing_client_mock:
+            cost = app.estimate_transfer_cost(
+                gb=25,
+                region="[REDACTED]",
+                direction="in",
+                rate_type="BEFORE_DISCOUNTS",
+            )
+
+        self.assertEqual(cost, 0.0)
+        get_pricing_client_mock.assert_not_called()
 
 
 class ParseInputTests(unittest.TestCase):

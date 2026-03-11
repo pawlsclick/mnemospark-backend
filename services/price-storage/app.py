@@ -287,6 +287,30 @@ def _pick_tier_rate(dimensions: list[dict[str, float]], usage_gb: float) -> floa
     raise RuntimeError(f"No matching price tier found for usage={usage_gb}")
 
 
+def _calculate_tiered_cost(dimensions: list[dict[str, float]], usage_gb: float) -> float:
+    sorted_dimensions = sorted(dimensions, key=lambda item: (item["begin"], item["end"]))
+    total_cost = 0.0
+    covered_usage = 0.0
+
+    for dimension in sorted_dimensions:
+        tier_begin = max(dimension["begin"], 0.0)
+        tier_end = dimension["end"]
+        if usage_gb <= tier_begin:
+            break
+
+        billable_start = max(tier_begin, covered_usage)
+        billable_end = min(usage_gb, tier_end)
+        if billable_end <= billable_start:
+            continue
+
+        total_cost += (billable_end - billable_start) * dimension["price"]
+        covered_usage = max(covered_usage, billable_end)
+        if covered_usage >= usage_gb:
+            return total_cost
+
+    raise RuntimeError(f"No matching cumulative price tiers found for usage={usage_gb}")
+
+
 def _pick_lowest_positive_rate(
     products: list[dict[str, Any]],
     product_matcher: Any,
@@ -310,6 +334,34 @@ def _pick_lowest_positive_rate(
         raise RuntimeError(error_message)
 
     return min(candidate_rates)
+
+
+def _pick_lowest_tiered_cost(
+    products: list[dict[str, Any]],
+    product_matcher: Any,
+    usage_gb: float,
+    error_message: str,
+) -> float:
+    candidate_costs: list[float] = []
+    for product in products:
+        if not product_matcher(product):
+            continue
+        dimensions = _extract_ondemand_gb_price_dimensions(product)
+        if dimensions:
+            try:
+                candidate_costs.append(_calculate_tiered_cost(dimensions=dimensions, usage_gb=usage_gb))
+                continue
+            except RuntimeError:
+                pass
+
+        rates = _extract_positive_ondemand_gb_rates(product)
+        if rates:
+            candidate_costs.append(min(rates) * usage_gb)
+
+    if not candidate_costs:
+        raise RuntimeError(error_message)
+
+    return min(candidate_costs)
 
 
 def _is_s3_standard_storage_product(product: dict[str, Any]) -> bool:
@@ -399,6 +451,9 @@ def get_data_transfer_out_price_per_gb(
     client: Any | None = None,
     direction: str = "out",
 ) -> float:
+    if direction == "in":
+        return 0.0
+
     primary_filters = [
         {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
         {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
@@ -422,12 +477,46 @@ def get_data_transfer_out_price_per_gb(
 
 def estimate_storage_cost(gb: float, region: str, rate_type: str) -> float:
     del rate_type
-    return get_s3_storage_price_per_gb_month(region=region, usage_gb=gb) * gb
+    primary_filters = [
+        {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
+        {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
+    ]
+    products = _get_products(service_code="AmazonS3", filters=primary_filters)
+    if not products:
+        products = _get_products(
+            service_code="AmazonS3",
+            filters=[{"Type": "TERM_MATCH", "Field": "regionCode", "Value": region}],
+        )
+    return _pick_lowest_tiered_cost(
+        products=products,
+        product_matcher=_is_s3_standard_storage_product,
+        usage_gb=gb,
+        error_message=f"No S3 Standard storage SKU found for region {region}",
+    )
 
 
 def estimate_transfer_cost(gb: float, region: str, direction: str, rate_type: str) -> float:
     del rate_type
-    return get_data_transfer_out_price_per_gb(region=region, usage_gb=gb, direction=direction) * gb
+    if direction == "in":
+        return 0.0
+
+    primary_filters = [
+        {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
+        {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
+        {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
+    ]
+    products = _get_products(service_code="AmazonS3", filters=primary_filters)
+    if not products:
+        products = _get_products(
+            service_code="AmazonS3",
+            filters=[{"Type": "TERM_MATCH", "Field": "regionCode", "Value": region}],
+        )
+    return _pick_lowest_tiered_cost(
+        products=products,
+        product_matcher=lambda product: _is_data_transfer_product(product, direction=direction),
+        usage_gb=gb,
+        error_message=f"No data transfer SKU found for region {region} and direction {direction}",
+    )
 
 
 def _build_quote_response(request: dict[str, Any], storage_price: float, now: datetime | None = None) -> dict[str, Any]:
