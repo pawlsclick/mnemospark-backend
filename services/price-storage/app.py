@@ -33,6 +33,40 @@ PRICING_PAGE_SIZE = 100
 STORAGE_USAGE_TYPE_TOKEN = "TimedStorage-ByteHrs"
 TRANSFER_OUT_USAGE_TYPE_TOKEN = "DataTransfer-Out-Bytes"
 TRANSFER_IN_USAGE_TYPE_TOKEN = "DataTransfer-Regional-Bytes"
+REGION_TO_S3_LOCATION: dict[str, str] = {
+    # Americas
+    "us-east-1": "US East (N. Virginia)",
+    "us-east-2": "US East (Ohio)",
+    "us-west-1": "US West (N. California)",
+    "us-west-2": "US West (Oregon)",
+    "ca-central-1": "Canada (Central)",
+    "sa-east-1": "South America (São Paulo)",
+    # Europe
+    "eu-west-1": "EU (Ireland)",
+    "eu-west-2": "EU (London)",
+    "eu-west-3": "EU (Paris)",
+    "eu-central-1": "EU (Frankfurt)",
+    "eu-central-2": "EU (Zurich)",
+    "eu-north-1": "EU (Stockholm)",
+    "eu-south-1": "EU (Milan)",
+    "eu-south-2": "EU (Spain)",
+    "il-central-1": "Israel (Tel Aviv)",
+    # Asia Pacific
+    "ap-south-1": "Asia Pacific (Mumbai)",
+    "ap-south-2": "Asia Pacific (Hyderabad)",
+    "ap-northeast-1": "Asia Pacific (Tokyo)",
+    "ap-northeast-2": "Asia Pacific (Seoul)",
+    "ap-northeast-3": "Asia Pacific (Osaka)",
+    "ap-southeast-1": "Asia Pacific (Singapore)",
+    "ap-southeast-2": "Asia Pacific (Sydney)",
+    "ap-southeast-3": "Asia Pacific (Jakarta)",
+    "ap-southeast-4": "Asia Pacific (Melbourne)",
+    "ap-east-1": "Asia Pacific (Hong Kong)",
+    # Middle East and Africa
+    "me-south-1": "Middle East (Bahrain)",
+    "me-central-1": "Middle East (UAE)",
+    "af-south-1": "Africa (Cape Town)",
+}
 
 
 class BadRequestError(ValueError):
@@ -408,8 +442,12 @@ def _is_data_transfer_product(product: dict[str, Any], *, direction: str) -> boo
         return False
 
     transfer_type = str(attributes.get("transferType", "")).lower()
-    if direction == "out" and transfer_type != "aws outbound":
-        return False
+    to_location_type = str(attributes.get("toLocationType", "")).lower()
+
+    if direction == "out":
+        # Accept any outbound-to-internet style transfer, not just an exact match.
+        if "outbound" not in transfer_type and "internet" not in to_location_type:
+            return False
 
     usage_type = str(attributes.get("usagetype", ""))
     expected_token = TRANSFER_OUT_USAGE_TYPE_TOKEN if direction == "out" else TRANSFER_IN_USAGE_TYPE_TOKEN
@@ -452,19 +490,16 @@ def get_data_transfer_out_price_per_gb(
     if direction == "in":
         return 0.0
 
+    location = REGION_TO_S3_LOCATION.get(region)
+    if not location:
+        raise RuntimeError(f"Unsupported region for S3 pricing: {region}")
+
     primary_filters = [
-        {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
-        {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
+        {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Data Transfer"},
+        {"Type": "TERM_MATCH", "Field": "fromLocation", "Value": location},
+        {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
     ]
-    if direction == "out":
-        primary_filters.append({"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"})
     products = _get_products(service_code="AmazonS3", filters=primary_filters, client=client)
-    if not products:
-        products = _get_products(
-            service_code="AmazonS3",
-            filters=[{"Type": "TERM_MATCH", "Field": "regionCode", "Value": region}],
-            client=client,
-        )
     return _pick_lowest_positive_rate(
         products=products,
         product_matcher=lambda product: _is_data_transfer_product(product, direction=direction),
@@ -498,17 +533,16 @@ def estimate_transfer_cost(gb: float, region: str, direction: str, rate_type: st
     if direction == "in":
         return 0.0
 
+    location = REGION_TO_S3_LOCATION.get(region)
+    if not location:
+        raise RuntimeError(f"Unsupported region for S3 pricing: {region}")
+
     primary_filters = [
-        {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
-        {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
+        {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Data Transfer"},
+        {"Type": "TERM_MATCH", "Field": "fromLocation", "Value": location},
         {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
     ]
     products = _get_products(service_code="AmazonS3", filters=primary_filters)
-    if not products:
-        products = _get_products(
-            service_code="AmazonS3",
-            filters=[{"Type": "TERM_MATCH", "Field": "regionCode", "Value": region}],
-        )
     return _pick_lowest_tiered_cost(
         products=products,
         product_matcher=lambda product: _is_data_transfer_product(product, direction=direction),
