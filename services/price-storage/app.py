@@ -1,11 +1,9 @@
 """
 Lambda handler for mnemospark /price-storage.
 
-POST /price-storage orchestrates:
-  1) /estimate/storage
-  2) /estimate/transfer
-  3) configurable markup
-  4) quote persistence in DynamoDB with TTL
+POST /price-storage calculates storage + transfer costs from the AWS Price
+List Query API, applies configurable markup, and persists quotes in DynamoDB
+with TTL.
 """
 
 from __future__ import annotations
