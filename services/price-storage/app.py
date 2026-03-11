@@ -461,6 +461,17 @@ def _is_data_transfer_product(product: dict[str, Any], *, direction: str) -> boo
     return "cloudfront" not in searchable
 
 
+def _build_data_transfer_primary_filters(region: str) -> list[dict[str, str]]:
+    location = REGION_TO_S3_LOCATION.get(region)
+    if not location:
+        raise RuntimeError(f"Unsupported region for S3 pricing: {region}")
+    return [
+        {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Data Transfer"},
+        {"Type": "TERM_MATCH", "Field": "fromLocation", "Value": location},
+        {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
+    ]
+
+
 def get_s3_storage_price_per_gb_month(region: str, usage_gb: float = 1.0, client: Any | None = None) -> float:
     primary_filters = [
         {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
@@ -490,15 +501,7 @@ def get_data_transfer_out_price_per_gb(
     if direction == "in":
         return 0.0
 
-    location = REGION_TO_S3_LOCATION.get(region)
-    if not location:
-        raise RuntimeError(f"Unsupported region for S3 pricing: {region}")
-
-    primary_filters = [
-        {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Data Transfer"},
-        {"Type": "TERM_MATCH", "Field": "fromLocation", "Value": location},
-        {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
-    ]
+    primary_filters = _build_data_transfer_primary_filters(region)
     products = _get_products(service_code="AmazonS3", filters=primary_filters, client=client)
     return _pick_lowest_positive_rate(
         products=products,
@@ -533,15 +536,7 @@ def estimate_transfer_cost(gb: float, region: str, direction: str, rate_type: st
     if direction == "in":
         return 0.0
 
-    location = REGION_TO_S3_LOCATION.get(region)
-    if not location:
-        raise RuntimeError(f"Unsupported region for S3 pricing: {region}")
-
-    primary_filters = [
-        {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Data Transfer"},
-        {"Type": "TERM_MATCH", "Field": "fromLocation", "Value": location},
-        {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
-    ]
+    primary_filters = _build_data_transfer_primary_filters(region)
     products = _get_products(service_code="AmazonS3", filters=primary_filters)
     return _pick_lowest_tiered_cost(
         products=products,
