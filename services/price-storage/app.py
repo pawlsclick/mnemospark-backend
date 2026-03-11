@@ -463,11 +463,15 @@ def _is_data_transfer_product(product: dict[str, Any], *, direction: str) -> boo
 
 def _build_data_transfer_primary_filters(region: str) -> list[dict[str, str]]:
     location = REGION_TO_S3_LOCATION.get(region)
-    if not location:
-        raise RuntimeError(f"Unsupported region for S3 pricing: {region}")
+    if location:
+        return [
+            {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Data Transfer"},
+            {"Type": "TERM_MATCH", "Field": "fromLocation", "Value": location},
+        ]
     return [
         {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Data Transfer"},
-        {"Type": "TERM_MATCH", "Field": "fromLocation", "Value": location},
+        {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
+        {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
     ]
 
 
