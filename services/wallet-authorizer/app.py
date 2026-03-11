@@ -493,13 +493,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
 
         if route_mode == "storage_required":
+            # API Gateway REST API REQUEST authorizers do not receive the request body
+            # (see https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-lambda-authorizer-input.html).
+            # When request_wallet is None, allow and pass signer_wallet in context; the
+            # integration Lambda (e.g. storage-upload) receives the body and enforces
+            # body.wallet_address == authorizer context via _require_authorized_wallet.
             if request_wallet is None:
                 print(
-                    "authorizer_debug_deny reason=request_wallet_none storage_required",
+                    "authorizer_debug_allow storage_required body_not_in_event relying_on_integration signer_wallet=%s"
+                    % signer_wallet,
                     flush=True,
                 )
-                return _deny(resource_arn)
-            if request_wallet != signer_wallet:
+            elif request_wallet != signer_wallet:
                 print(
                     "authorizer_debug_deny reason=wallet_mismatch request=%s signer=%s"
                     % (request_wallet, signer_wallet),
