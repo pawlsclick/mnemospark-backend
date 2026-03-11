@@ -586,6 +586,7 @@ def write_quote(
     resolved_table_name = table_name or _get_quotes_table_name()
     resolved_ttl_seconds = ttl_seconds if ttl_seconds is not None else _get_quote_ttl_seconds()
     expires_at = int(resolved_now.timestamp()) + resolved_ttl_seconds
+    pre_markup_subtotal = max(storage_cost + transfer_cost, MIN_PRE_MARKUP_SUBTOTAL)
 
     item = {
         "quote_id": {"S": quote["quote_id"]},
@@ -600,6 +601,7 @@ def write_quote(
         "expires_at": {"N": str(expires_at)},
         "storage_cost": {"N": f"{storage_cost:.6f}"},
         "transfer_cost": {"N": f"{transfer_cost:.6f}"},
+        "pre_markup_subtotal": {"N": f"{pre_markup_subtotal:.6f}"},
         "markup_multiplier": {"N": f"{markup_multiplier:.6f}"},
     }
 

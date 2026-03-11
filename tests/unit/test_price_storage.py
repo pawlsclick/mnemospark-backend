@@ -443,7 +443,36 @@ class QuoteWriteTests(unittest.TestCase):
         self.assertEqual(put_item_call["Item"]["quote_id"]["S"], "quote-123")
         self.assertEqual(put_item_call["Item"]["storage_price"]["N"], "3.45")
         self.assertEqual(put_item_call["Item"]["provider"]["S"], "aws")
+        self.assertEqual(put_item_call["Item"]["pre_markup_subtotal"]["N"], "3.000000")
         self.assertEqual(put_item_call["Item"]["expires_at"]["N"], str(int(now.timestamp()) + 3600))
+
+    def test_write_quote_persists_floored_pre_markup_subtotal(self):
+        fake_dynamodb = FakeDynamoDbClient()
+        quote = {
+            "timestamp": "2026-01-01 12:00:00",
+            "quote_id": "quote-123",
+            "storage_price": 2.4,
+            "addr": "0xabc123",
+            "object_id": "backup.tar.gz",
+            "object_id_hash": "hash-value",
+            "object_size_gb": 5.0,
+            "provider": "aws",
+            "location": "[REDACTED]",
+        }
+
+        app.write_quote(
+            quote=quote,
+            storage_cost=0.6,
+            transfer_cost=0.3,
+            markup_multiplier=0.2,
+            dynamodb_client=fake_dynamodb,
+            table_name="quotes-table",
+            ttl_seconds=3600,
+        )
+
+        self.assertEqual(len(fake_dynamodb.put_item_calls), 1)
+        put_item_call = fake_dynamodb.put_item_calls[0]
+        self.assertEqual(put_item_call["Item"]["pre_markup_subtotal"]["N"], "2.000000")
 
 
 class LambdaHandlerTests(unittest.TestCase):
