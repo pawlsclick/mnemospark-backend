@@ -167,6 +167,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
+                  - pricing:GetProducts
                   - bcm-pricing-calculator:CreateWorkloadEstimate
                   - bcm-pricing-calculator:GetWorkloadEstimate
                   - bcm-pricing-calculator:DeleteWorkloadEstimate
