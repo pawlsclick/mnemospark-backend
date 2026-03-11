@@ -256,15 +256,73 @@ def _extract_positive_ondemand_gb_rates(product: dict[str, Any]) -> list[float]:
     return prices
 
 
+def _extract_ondemand_gb_price_dimensions(product: dict[str, Any]) -> list[dict[str, float]]:
+    terms = product.get("terms", {})
+    on_demand = terms.get("OnDemand", {})
+    if not isinstance(on_demand, dict):
+        return []
+
+    dimensions: list[dict[str, float]] = []
+    for term in on_demand.values():
+        if not isinstance(term, dict):
+            continue
+        price_dimensions = term.get("priceDimensions", {})
+        if not isinstance(price_dimensions, dict):
+            continue
+        for dimension in price_dimensions.values():
+            if not isinstance(dimension, dict):
+                continue
+            unit = str(dimension.get("unit", "")).upper()
+            if "GB" not in unit:
+                continue
+            usd = (dimension.get("pricePerUnit") or {}).get("USD")
+            try:
+                amount = float(usd)
+            except (TypeError, ValueError):
+                continue
+            if amount <= 0:
+                continue
+            begin_raw = str(dimension.get("beginRange", "0")).strip()
+            end_raw = str(dimension.get("endRange", "Inf")).strip()
+            try:
+                begin = float(begin_raw)
+            except ValueError:
+                begin = 0.0
+            if end_raw.lower() == "inf":
+                end = float("inf")
+            else:
+                try:
+                    end = float(end_raw)
+                except ValueError:
+                    end = float("inf")
+            dimensions.append({"price": amount, "begin": begin, "end": end})
+    return dimensions
+
+
+def _pick_tier_rate(dimensions: list[dict[str, float]], usage_gb: float) -> float:
+    for dimension in sorted(dimensions, key=lambda item: (item["begin"], item["end"])):
+        if usage_gb >= dimension["begin"] and usage_gb < dimension["end"]:
+            return dimension["price"]
+    raise RuntimeError(f"No matching price tier found for usage={usage_gb}")
+
+
 def _pick_lowest_positive_rate(
     products: list[dict[str, Any]],
     product_matcher: Any,
+    usage_gb: float,
     error_message: str,
 ) -> float:
     candidate_rates: list[float] = []
     for product in products:
         if not product_matcher(product):
             continue
+        dimensions = _extract_ondemand_gb_price_dimensions(product)
+        if dimensions:
+            try:
+                candidate_rates.append(_pick_tier_rate(dimensions=dimensions, usage_gb=usage_gb))
+                continue
+            except RuntimeError:
+                pass
         candidate_rates.extend(_extract_positive_ondemand_gb_rates(product))
 
     if not candidate_rates:
@@ -310,6 +368,10 @@ def _is_data_transfer_product(product: dict[str, Any], *, direction: str) -> boo
     if not isinstance(attributes, dict):
         return False
 
+    transfer_type = str(attributes.get("transferType", "")).lower()
+    if direction == "out" and transfer_type != "aws outbound":
+        return False
+
     usage_type = str(attributes.get("usagetype", ""))
     expected_token = TRANSFER_OUT_USAGE_TYPE_TOKEN if direction == "out" else TRANSFER_IN_USAGE_TYPE_TOKEN
     if expected_token not in usage_type:
@@ -322,7 +384,7 @@ def _is_data_transfer_product(product: dict[str, Any], *, direction: str) -> boo
     return "cloudfront" not in searchable
 
 
-def get_s3_storage_price_per_gb_month(region: str, client: Any | None = None) -> float:
+def get_s3_storage_price_per_gb_month(region: str, usage_gb: float = 1.0, client: Any | None = None) -> float:
     primary_filters = [
         {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
         {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
@@ -337,37 +399,45 @@ def get_s3_storage_price_per_gb_month(region: str, client: Any | None = None) ->
     return _pick_lowest_positive_rate(
         products=products,
         product_matcher=_is_s3_standard_storage_product,
+        usage_gb=usage_gb,
         error_message=f"No S3 Standard storage SKU found for region {region}",
     )
 
 
-def get_data_transfer_out_price_per_gb(region: str, client: Any | None = None, direction: str = "out") -> float:
+def get_data_transfer_out_price_per_gb(
+    region: str,
+    usage_gb: float = 1.0,
+    client: Any | None = None,
+    direction: str = "out",
+) -> float:
     primary_filters = [
         {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
         {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
+        {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
     ]
-    products = _get_products(service_code="AmazonEC2", filters=primary_filters, client=client)
+    products = _get_products(service_code="AmazonS3", filters=primary_filters, client=client)
     if not products:
         products = _get_products(
-            service_code="AmazonEC2",
+            service_code="AmazonS3",
             filters=[{"Type": "TERM_MATCH", "Field": "regionCode", "Value": region}],
             client=client,
         )
     return _pick_lowest_positive_rate(
         products=products,
         product_matcher=lambda product: _is_data_transfer_product(product, direction=direction),
+        usage_gb=usage_gb,
         error_message=f"No data transfer SKU found for region {region} and direction {direction}",
     )
 
 
 def estimate_storage_cost(gb: float, region: str, rate_type: str) -> float:
     del rate_type
-    return get_s3_storage_price_per_gb_month(region=region) * gb
+    return get_s3_storage_price_per_gb_month(region=region, usage_gb=gb) * gb
 
 
 def estimate_transfer_cost(gb: float, region: str, direction: str, rate_type: str) -> float:
     del rate_type
-    return get_data_transfer_out_price_per_gb(region=region, direction=direction) * gb
+    return get_data_transfer_out_price_per_gb(region=region, usage_gb=gb, direction=direction) * gb
 
 
 def _build_quote_response(request: dict[str, Any], storage_price: float, now: datetime | None = None) -> dict[str, Any]:

@@ -49,13 +49,23 @@ class PricingHelpersTests(unittest.TestCase):
         *,
         product_family,
         usagetype,
-        unit,
-        usd,
+        unit=None,
+        usd=None,
         region="[REDACTED]",
         volume_type="Standard",
         transfer_type="AWS Outbound",
         location_type="AWS Region",
+        price_dimensions=None,
     ):
+        if price_dimensions is None:
+            price_dimensions = [
+                {
+                    "unit": unit,
+                    "pricePerUnit": {"USD": str(usd)},
+                    "beginRange": "0",
+                    "endRange": "Inf",
+                }
+            ]
         return json.dumps(
             {
                 "productFamily": product_family,
@@ -72,10 +82,7 @@ class PricingHelpersTests(unittest.TestCase):
                     "OnDemand": {
                         "ondemand.1": {
                             "priceDimensions": {
-                                "dim.1": {
-                                    "unit": unit,
-                                    "pricePerUnit": {"USD": str(usd)},
-                                }
+                                f"dim.{index + 1}": dimension for index, dimension in enumerate(price_dimensions)
                             }
                         }
                     }
@@ -135,7 +142,72 @@ class PricingHelpersTests(unittest.TestCase):
         price = app.get_data_transfer_out_price_per_gb(region="[REDACTED]", client=client)
 
         self.assertEqual(price, 0.09)
-        self.assertEqual(client.calls[0]["ServiceCode"], "AmazonEC2")
+        self.assertEqual(client.calls[0]["ServiceCode"], "AmazonS3")
+
+    def test_get_s3_storage_price_per_gb_month_selects_tier_for_usage(self):
+        client = FakePricingClient(
+            responses=[
+                {
+                    "PriceList": [
+                        self._price_list_entry(
+                            product_family="Storage",
+                            usagetype="USE1-TimedStorage-ByteHrs",
+                            price_dimensions=[
+                                {
+                                    "unit": "GB-Mo",
+                                    "pricePerUnit": {"USD": "0.023"},
+                                    "beginRange": "0",
+                                    "endRange": "50",
+                                },
+                                {
+                                    "unit": "GB-Mo",
+                                    "pricePerUnit": {"USD": "0.021"},
+                                    "beginRange": "50",
+                                    "endRange": "Inf",
+                                },
+                            ],
+                        ),
+                    ]
+                }
+            ]
+        )
+
+        price = app.get_s3_storage_price_per_gb_month(region="[REDACTED]", usage_gb=60, client=client)
+
+        self.assertEqual(price, 0.021)
+
+    def test_get_data_transfer_out_price_per_gb_selects_tier_for_usage(self):
+        client = FakePricingClient(
+            responses=[
+                {
+                    "PriceList": [
+                        self._price_list_entry(
+                            product_family="Data Transfer",
+                            usagetype="USE1-DataTransfer-Out-Bytes",
+                            transfer_type="AWS Outbound",
+                            price_dimensions=[
+                                {
+                                    "unit": "GB",
+                                    "pricePerUnit": {"USD": "0.090"},
+                                    "beginRange": "0",
+                                    "endRange": "10",
+                                },
+                                {
+                                    "unit": "GB",
+                                    "pricePerUnit": {"USD": "0.085"},
+                                    "beginRange": "10",
+                                    "endRange": "Inf",
+                                },
+                            ],
+                        )
+                    ]
+                }
+            ]
+        )
+
+        price = app.get_data_transfer_out_price_per_gb(region="[REDACTED]", usage_gb=25, client=client)
+
+        self.assertEqual(price, 0.085)
 
     def test_get_s3_storage_price_per_gb_month_raises_when_no_matching_sku(self):
         client = FakePricingClient(
