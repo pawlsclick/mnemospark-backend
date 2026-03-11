@@ -228,12 +228,16 @@ def _get_products(service_code: str, filters: list[dict[str, str]], client: Any 
 
 
 def _extract_positive_ondemand_gb_rates(product: dict[str, Any]) -> list[float]:
+    return [amount for _, amount in _iter_positive_ondemand_gb_dimensions(product)]
+
+
+def _iter_positive_ondemand_gb_dimensions(product: dict[str, Any]) -> list[tuple[dict[str, Any], float]]:
     terms = product.get("terms", {})
     on_demand = terms.get("OnDemand", {})
     if not isinstance(on_demand, dict):
         return []
 
-    prices: list[float] = []
+    dimensions_with_prices: list[tuple[dict[str, Any], float]] = []
     for term in on_demand.values():
         if not isinstance(term, dict):
             continue
@@ -252,50 +256,27 @@ def _extract_positive_ondemand_gb_rates(product: dict[str, Any]) -> list[float]:
             except (TypeError, ValueError):
                 continue
             if amount > 0:
-                prices.append(amount)
-    return prices
+                dimensions_with_prices.append((dimension, amount))
+    return dimensions_with_prices
 
 
 def _extract_ondemand_gb_price_dimensions(product: dict[str, Any]) -> list[dict[str, float]]:
-    terms = product.get("terms", {})
-    on_demand = terms.get("OnDemand", {})
-    if not isinstance(on_demand, dict):
-        return []
-
     dimensions: list[dict[str, float]] = []
-    for term in on_demand.values():
-        if not isinstance(term, dict):
-            continue
-        price_dimensions = term.get("priceDimensions", {})
-        if not isinstance(price_dimensions, dict):
-            continue
-        for dimension in price_dimensions.values():
-            if not isinstance(dimension, dict):
-                continue
-            unit = str(dimension.get("unit", "")).upper()
-            if "GB" not in unit:
-                continue
-            usd = (dimension.get("pricePerUnit") or {}).get("USD")
+    for dimension, amount in _iter_positive_ondemand_gb_dimensions(product):
+        begin_raw = str(dimension.get("beginRange", "0")).strip()
+        end_raw = str(dimension.get("endRange", "Inf")).strip()
+        try:
+            begin = float(begin_raw)
+        except ValueError:
+            begin = 0.0
+        if end_raw.lower() == "inf":
+            end = float("inf")
+        else:
             try:
-                amount = float(usd)
-            except (TypeError, ValueError):
-                continue
-            if amount <= 0:
-                continue
-            begin_raw = str(dimension.get("beginRange", "0")).strip()
-            end_raw = str(dimension.get("endRange", "Inf")).strip()
-            try:
-                begin = float(begin_raw)
+                end = float(end_raw)
             except ValueError:
-                begin = 0.0
-            if end_raw.lower() == "inf":
                 end = float("inf")
-            else:
-                try:
-                    end = float(end_raw)
-                except ValueError:
-                    end = float("inf")
-            dimensions.append({"price": amount, "begin": begin, "end": end})
+        dimensions.append({"price": amount, "begin": begin, "end": end})
     return dimensions
 
 
@@ -413,8 +394,9 @@ def get_data_transfer_out_price_per_gb(
     primary_filters = [
         {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
         {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
-        {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
     ]
+    if direction == "out":
+        primary_filters.append({"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"})
     products = _get_products(service_code="AmazonS3", filters=primary_filters, client=client)
     if not products:
         products = _get_products(
