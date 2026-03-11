@@ -15,11 +15,14 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 import os
 import re
 import time
 from dataclasses import dataclass
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Canonical EIP-712 types: bytes32/uint256 align with Solidity and OpenZeppelin EIP712.
 # Must match mnemospark client (mnemospark-request-sign.ts) for verification.
@@ -454,6 +457,16 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
         signer_wallet = _verify_wallet_proof(wallet_header, method=method, path=path)
         request_wallet = _extract_request_wallet(event)
+
+        body_raw = event.get("body")
+        logger.info(
+            "authorizer_debug body_present=%s body_len=%s request_wallet=%s signer_wallet=%s route=%s",
+            body_raw is not None,
+            len(body_raw) if isinstance(body_raw, str) else 0,
+            request_wallet,
+            signer_wallet,
+            route_mode,
+        )
 
         if route_mode == "storage_required":
             if request_wallet is None:
