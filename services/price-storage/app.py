@@ -468,7 +468,6 @@ def _build_data_transfer_primary_filters(region: str) -> list[dict[str, str]]:
     return [
         {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Data Transfer"},
         {"Type": "TERM_MATCH", "Field": "fromLocation", "Value": location},
-        {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
     ]
 
 
