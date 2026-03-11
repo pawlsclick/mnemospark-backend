@@ -324,31 +324,6 @@ Resources:
         AllowHeaders: "'Content-Type,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,X-PAYMENT,x-payment,x-payment-required,x-payment-response'"
         AllowOrigin: "'*'"
       Models:
-        EstimateStorageRequest:
-          type: object
-          required:
-            - gb
-          properties:
-            gb:
-              type: number
-            region:
-              type: string
-            rateType:
-              type: string
-        EstimateTransferRequest:
-          type: object
-          properties:
-            direction:
-              type: string
-              enum:
-                - in
-                - out
-            gb:
-              type: number
-            region:
-              type: string
-            rateType:
-              type: string
         PriceStorageRequest:
           type: object
           required:
@@ -432,103 +407,6 @@ Resources:
               type: string
             location:
               type: string
-
-  EstimateStorageFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: app.lambda_handler
-      CodeUri: services/estimate-storage
-      Events:
-        EstimateStorageGet:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MnemosparkBackendApi
-            Path: /estimate/storage
-            Method: GET
-            RequestParameters:
-              - method.request.querystring.gb:
-                  Required: true
-                  Caching: false
-              - method.request.querystring.region:
-                  Required: false
-                  Caching: false
-              - method.request.querystring.rateType:
-                  Required: false
-                  Caching: false
-        EstimateStoragePost:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MnemosparkBackendApi
-            Path: /estimate/storage
-            Method: POST
-            RequestModel:
-              Model: EstimateStorageRequest
-              Required: true
-              ValidateBody: true
-              ValidateParameters: true
-      Policies:
-        - Version: "2012-10-17"
-          Statement:
-            - Effect: Allow
-              Action:
-                - bcm-pricing-calculator:CreateWorkloadEstimate
-                - bcm-pricing-calculator:GetWorkloadEstimate
-                - bcm-pricing-calculator:DeleteWorkloadEstimate
-                - bcm-pricing-calculator:CreateWorkloadEstimateUsage
-              Resource: "*"
-            - Effect: Allow
-              Action: sts:GetCallerIdentity
-              Resource: "*"
-
-  EstimateTransferFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: estimate_transfer_entry.lambda_handler
-      CodeUri: services
-      Events:
-        EstimateTransferGet:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MnemosparkBackendApi
-            Path: /estimate/transfer
-            Method: GET
-            RequestParameters:
-              - method.request.querystring.direction:
-                  Required: false
-                  Caching: false
-              - method.request.querystring.gb:
-                  Required: false
-                  Caching: false
-              - method.request.querystring.region:
-                  Required: false
-                  Caching: false
-              - method.request.querystring.rateType:
-                  Required: false
-                  Caching: false
-        EstimateTransferPost:
-          Type: Api
-          Properties:
-            RestApiId: !Ref MnemosparkBackendApi
-            Path: /estimate/transfer
-            Method: POST
-            RequestModel:
-              Model: EstimateTransferRequest
-              Required: true
-              ValidateBody: true
-              ValidateParameters: true
-      Policies:
-        - Version: "2012-10-17"
-          Statement:
-            - Effect: Allow
-              Action:
-                - bcm-pricing-calculator:CreateWorkloadEstimate
-                - bcm-pricing-calculator:GetWorkloadEstimate
-                - bcm-pricing-calculator:DeleteWorkloadEstimate
-                - bcm-pricing-calculator:CreateWorkloadEstimateUsage
-              Resource: "*"
-            - Effect: Allow
-              Action: sts:GetCallerIdentity
-              Resource: "*"
 
   PriceStorageFunction:
     Type: AWS::Serverless::Function
@@ -845,24 +723,6 @@ Resources:
       Principal: events.amazonaws.com
       SourceArn: !GetAtt StorageHousekeepingScheduleRule.Arn
 
-  EstimateStorageFunctionLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${EstimateStorageFunction}"
-      RetentionInDays: !Ref ObservabilityLogRetentionDays
-      Tags:
-        - Key: Project
-          Value: mnemospark
-
-  EstimateTransferFunctionLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${EstimateTransferFunction}"
-      RetentionInDays: !Ref ObservabilityLogRetentionDays
-      Tags:
-        - Key: Project
-          Value: mnemospark
-
   PriceStorageFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -1122,16 +982,6 @@ Outputs:
     Value: !GetAtt UploadLambdaRole.Arn
     Export:
       Name: !Sub "${AWS::StackName}-UploadLambdaRoleArn"
-  ApiUrl:
-    Description: REST API endpoint URL for storage estimate route
-    Value: !Sub "https://${MnemosparkBackendApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/estimate/storage"
-    Export:
-      Name: !Sub "${AWS::StackName}-ApiUrl"
-  TransferApiUrl:
-    Description: REST API endpoint URL for transfer estimate route
-    Value: !Sub "https://${MnemosparkBackendApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/estimate/transfer"
-    Export:
-      Name: !Sub "${AWS::StackName}-TransferApiUrl"
   ApiGatewayAccessLogGroupName:
     Description: CloudWatch Logs group for API Gateway access logs
     Value: !Ref ApiGatewayAccessLogsLogGroup
@@ -1141,12 +991,6 @@ Outputs:
   CloudTrailLogBucketName:
     Description: S3 bucket name storing CloudTrail logs
     Value: !Ref CloudTrailLogBucket
-  EstimateStorageFunctionArn:
-    Description: Lambda function ARN for /estimate/storage
-    Value: !GetAtt EstimateStorageFunction.Arn
-  EstimateTransferFunctionArn:
-    Description: Lambda function ARN for /estimate/transfer
-    Value: !GetAtt EstimateTransferFunction.Arn
   PriceStorageFunctionArn:
     Description: Lambda function ARN for /price-storage
     Value: !GetAtt PriceStorageFunction.Arn

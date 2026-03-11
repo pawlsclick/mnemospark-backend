@@ -3,8 +3,7 @@ Entry point for the price-storage Lambda.
 
 Loads the real handler from price-storage/app.py (directory name has a hyphen
 and cannot be used as a Python module) so that when that module runs, its
-__file__ is under /var/task/price-storage/ and it can find sibling
-estimate-storage and estimate-transfer via Path(__file__).parents[1].
+__file__ is under /var/task/price-storage/.
 """
 from __future__ import annotations
 

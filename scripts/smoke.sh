@@ -7,26 +7,27 @@ if [[ -z "$BASE_URL" ]]; then
   exit 2
 fi
 
-check() {
+check_any() {
   local path="$1"
-  local expected="${2:-200}"
-  local method="${3:-GET}"
-  local body="${4:-}"
+  local method="$2"
+  shift 2
+  local expected_codes=("$@")
   local code
-  if [[ -n "$body" ]]; then
-    code=$(curl -sS -o /dev/null -w "%{http_code}" -X "$method" -H "Content-Type: application/json" --data "$body" "$BASE_URL$path")
-  else
-    code=$(curl -sS -o /dev/null -w "%{http_code}" -X "$method" "$BASE_URL$path")
-  fi
+  code=$(curl -sS -o /dev/null -w "%{http_code}" -X "$method" "$BASE_URL$path")
   echo "$method $path => $code"
-  if [[ "$code" != "$expected" ]]; then
-    echo "Smoke check failed for $method $path (expected $expected, got $code)"
-    exit 1
-  fi
+  for expected in "${expected_codes[@]}"; do
+    if [[ "$code" == "$expected" ]]; then
+      return 0
+    fi
+  done
+  echo "Smoke check failed for $method $path (expected one of: ${expected_codes[*]}, got $code)"
+  exit 1
 }
 
-# Existing routes should reject malformed requests with 400 (request validation).
-check "/estimate/storage" 400 GET
-check "/estimate/storage" 400 POST '{}'
+# Decommissioned estimate routes should no longer exist.
+check_any "/estimate/storage" GET 403 404
+check_any "/estimate/storage" POST 403 404
+check_any "/estimate/transfer" GET 403 404
+check_any "/estimate/transfer" POST 403 404
 
 echo "Smoke checks passed."
