@@ -7,24 +7,6 @@ if [[ -z "$BASE_URL" ]]; then
   exit 2
 fi
 
-check() {
-  local path="$1"
-  local expected="${2:-200}"
-  local method="${3:-GET}"
-  local body="${4:-}"
-  local code
-  if [[ -n "$body" ]]; then
-    code=$(curl -sS -o /dev/null -w "%{http_code}" -X "$method" -H "Content-Type: application/json" --data "$body" "$BASE_URL$path")
-  else
-    code=$(curl -sS -o /dev/null -w "%{http_code}" -X "$method" "$BASE_URL$path")
-  fi
-  echo "$method $path => $code"
-  if [[ "$code" != "$expected" ]]; then
-    echo "Smoke check failed for $method $path (expected $expected, got $code)"
-    exit 1
-  fi
-}
-
 check_any() {
   local path="$1"
   local method="$2"
