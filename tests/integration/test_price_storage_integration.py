@@ -51,8 +51,8 @@ class PriceStorageIntegrationTests(unittest.TestCase):
         }
 
         with (
-            mock.patch.object(app, "estimate_storage_cost", return_value=1.25),
-            mock.patch.object(app, "estimate_transfer_cost", return_value=0.75),
+            mock.patch.object(app, "get_s3_storage_price_per_gb_month", return_value=0.15625),
+            mock.patch.object(app, "get_data_transfer_out_price_per_gb", return_value=0.09375),
             mock.patch.object(app, "get_dynamodb_client", return_value=fake_dynamodb),
             mock.patch.dict(
                 os.environ,

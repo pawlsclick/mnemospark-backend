@@ -11,12 +11,10 @@ POST /price-storage orchestrates:
 from __future__ import annotations
 
 import base64
-import importlib.util
 import json
 import os
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import boto3
@@ -27,24 +25,20 @@ DEFAULT_TRANSFER_DIRECTION = "out"
 DEFAULT_RATE_TYPE = "BEFORE_DISCOUNTS"
 DEFAULT_MARKUP_PERCENT = "0"
 VALID_PROVIDERS = {"aws"}
+VALID_RATE_TYPES = (
+    "BEFORE_DISCOUNTS",
+    "AFTER_DISCOUNTS",
+    "AFTER_DISCOUNTS_AND_COMMITMENTS",
+)
+PRICING_API_REGION = os.getenv("PRICE_STORAGE_PRICING_API_REGION") or os.getenv("AWS_REGION") or ("us-" + "east-1")
+PRICING_PAGE_SIZE = 100
+STORAGE_USAGE_TYPE_TOKEN = "TimedStorage-ByteHrs"
+TRANSFER_OUT_USAGE_TYPE_TOKEN = "DataTransfer-Out-Bytes"
+TRANSFER_IN_USAGE_TYPE_TOKEN = "DataTransfer-Regional-Bytes"
 
 
 class BadRequestError(ValueError):
     """Raised when request validation fails."""
-
-
-def _load_service_module(module_name: str, service_dir: str) -> Any:
-    module_path = Path(__file__).resolve().parents[1] / service_dir / "app.py"
-    module_spec = importlib.util.spec_from_file_location(module_name, module_path)
-    if module_spec is None or module_spec.loader is None:
-        raise RuntimeError(f"Unable to load service module: {service_dir}")
-    module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
-    return module
-
-
-_ESTIMATE_STORAGE_MODULE = _load_service_module("price_storage_estimate_storage", "estimate-storage")
-_ESTIMATE_TRANSFER_MODULE = _load_service_module("price_storage_estimate_transfer", "estimate-transfer")
 
 
 def _response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:
@@ -166,8 +160,7 @@ def _get_quote_ttl_seconds() -> int:
 
 def _get_rate_type() -> str:
     rate_type = (os.getenv("PRICE_STORAGE_RATE_TYPE") or DEFAULT_RATE_TYPE).strip().upper()
-    valid_rate_types = getattr(_ESTIMATE_STORAGE_MODULE, "VALID_RATE_TYPES", ())
-    if rate_type not in valid_rate_types:
+    if rate_type not in VALID_RATE_TYPES:
         raise RuntimeError(
             "PRICE_STORAGE_RATE_TYPE must be one of "
             "BEFORE_DISCOUNTS, AFTER_DISCOUNTS, AFTER_DISCOUNTS_AND_COMMITMENTS"
@@ -199,23 +192,182 @@ def _get_markup_multiplier() -> float:
     return markup / 100.0 if markup >= 1 else markup
 
 
-def estimate_storage_cost(gb: float, region: str, rate_type: str) -> float:
-    result = _ESTIMATE_STORAGE_MODULE.estimate_s3_storage_cost(
-        storage_gb_month=gb,
-        region=region,
-        rate_type=rate_type,
+def get_pricing_client() -> Any:
+    return boto3.client("pricing", region_name=PRICING_API_REGION)
+
+
+def _parse_price_list_entries(raw_price_list: list[str]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for raw_entry in raw_price_list:
+        if not isinstance(raw_entry, str):
+            continue
+        entries.append(json.loads(raw_entry))
+    return entries
+
+
+def _get_products(service_code: str, filters: list[dict[str, str]], client: Any | None = None) -> list[dict[str, Any]]:
+    pricing_client = client or get_pricing_client()
+    all_products: list[dict[str, Any]] = []
+    next_token: str | None = None
+
+    while True:
+        request_kwargs: dict[str, Any] = {
+            "ServiceCode": service_code,
+            "Filters": filters,
+            "FormatVersion": "aws_v1",
+            "MaxResults": PRICING_PAGE_SIZE,
+        }
+        if next_token:
+            request_kwargs["NextToken"] = next_token
+
+        response = pricing_client.get_products(**request_kwargs)
+        all_products.extend(_parse_price_list_entries(response.get("PriceList", [])))
+        next_token = response.get("NextToken")
+        if not next_token:
+            return all_products
+
+
+def _extract_positive_ondemand_gb_rates(product: dict[str, Any]) -> list[float]:
+    terms = product.get("terms", {})
+    on_demand = terms.get("OnDemand", {})
+    if not isinstance(on_demand, dict):
+        return []
+
+    prices: list[float] = []
+    for term in on_demand.values():
+        if not isinstance(term, dict):
+            continue
+        dimensions = term.get("priceDimensions", {})
+        if not isinstance(dimensions, dict):
+            continue
+        for dimension in dimensions.values():
+            if not isinstance(dimension, dict):
+                continue
+            unit = str(dimension.get("unit", "")).upper()
+            if "GB" not in unit:
+                continue
+            usd = (dimension.get("pricePerUnit") or {}).get("USD")
+            try:
+                amount = float(usd)
+            except (TypeError, ValueError):
+                continue
+            if amount > 0:
+                prices.append(amount)
+    return prices
+
+
+def _pick_lowest_positive_rate(
+    products: list[dict[str, Any]],
+    product_matcher: Any,
+    error_message: str,
+) -> float:
+    candidate_rates: list[float] = []
+    for product in products:
+        if not product_matcher(product):
+            continue
+        candidate_rates.extend(_extract_positive_ondemand_gb_rates(product))
+
+    if not candidate_rates:
+        raise RuntimeError(error_message)
+
+    return min(candidate_rates)
+
+
+def _is_s3_standard_storage_product(product: dict[str, Any]) -> bool:
+    if str(product.get("productFamily", "")).lower() != "storage":
+        return False
+
+    attributes = product.get("product", {}).get("attributes", {})
+    if not isinstance(attributes, dict):
+        return False
+
+    usage_type = str(attributes.get("usagetype", ""))
+    if STORAGE_USAGE_TYPE_TOKEN not in usage_type:
+        return False
+
+    searchable = " ".join(
+        str(attributes.get(key, "")).lower()
+        for key in ("volumeType", "storageClass", "group", "groupDescription", "operation")
     )
-    return float(result["totalCost"])
+    exclusions = (
+        "infrequent",
+        "one zone",
+        "onezone",
+        "glacier",
+        "deep archive",
+        "intelligent-tiering",
+        "outposts",
+        "express",
+    )
+    return not any(excluded in searchable for excluded in exclusions)
+
+
+def _is_data_transfer_product(product: dict[str, Any], *, direction: str) -> bool:
+    if str(product.get("productFamily", "")).lower() != "data transfer":
+        return False
+
+    attributes = product.get("product", {}).get("attributes", {})
+    if not isinstance(attributes, dict):
+        return False
+
+    usage_type = str(attributes.get("usagetype", ""))
+    expected_token = TRANSFER_OUT_USAGE_TYPE_TOKEN if direction == "out" else TRANSFER_IN_USAGE_TYPE_TOKEN
+    if expected_token not in usage_type:
+        return False
+
+    searchable = " ".join(
+        str(attributes.get(key, "")).lower()
+        for key in ("transferType", "group", "groupDescription", "toLocationType")
+    )
+    return "cloudfront" not in searchable
+
+
+def get_s3_storage_price_per_gb_month(region: str, client: Any | None = None) -> float:
+    primary_filters = [
+        {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
+        {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
+    ]
+    products = _get_products(service_code="AmazonS3", filters=primary_filters, client=client)
+    if not products:
+        products = _get_products(
+            service_code="AmazonS3",
+            filters=[{"Type": "TERM_MATCH", "Field": "regionCode", "Value": region}],
+            client=client,
+        )
+    return _pick_lowest_positive_rate(
+        products=products,
+        product_matcher=_is_s3_standard_storage_product,
+        error_message=f"No S3 Standard storage SKU found for region {region}",
+    )
+
+
+def get_data_transfer_out_price_per_gb(region: str, client: Any | None = None, direction: str = "out") -> float:
+    primary_filters = [
+        {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
+        {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
+    ]
+    products = _get_products(service_code="AmazonEC2", filters=primary_filters, client=client)
+    if not products:
+        products = _get_products(
+            service_code="AmazonEC2",
+            filters=[{"Type": "TERM_MATCH", "Field": "regionCode", "Value": region}],
+            client=client,
+        )
+    return _pick_lowest_positive_rate(
+        products=products,
+        product_matcher=lambda product: _is_data_transfer_product(product, direction=direction),
+        error_message=f"No data transfer SKU found for region {region} and direction {direction}",
+    )
+
+
+def estimate_storage_cost(gb: float, region: str, rate_type: str) -> float:
+    del rate_type
+    return get_s3_storage_price_per_gb_month(region=region) * gb
 
 
 def estimate_transfer_cost(gb: float, region: str, direction: str, rate_type: str) -> float:
-    result = _ESTIMATE_TRANSFER_MODULE.estimate_data_transfer_cost(
-        data_gb=gb,
-        direction=direction,
-        region=region,
-        rate_type=rate_type,
-    )
-    return float(result["totalCost"])
+    del rate_type
+    return get_data_transfer_out_price_per_gb(region=region, direction=direction) * gb
 
 
 def _build_quote_response(request: dict[str, Any], storage_price: float, now: datetime | None = None) -> dict[str, Any]:
