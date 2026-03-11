@@ -252,6 +252,19 @@ def _decode_event_body(event: dict[str, Any]) -> dict[str, Any]:
     return _parse_json_object(raw_body, "body")
 
 
+def _debug_body_length(body: Any) -> int:
+    if body is None:
+        return 0
+    if isinstance(body, str):
+        return len(body)
+    if isinstance(body, dict):
+        try:
+            return len(json.dumps(body, separators=(",", ":")))
+        except (TypeError, ValueError):
+            return len(body)
+    return 0
+
+
 def _collect_request_params(event: dict[str, Any]) -> dict[str, Any]:
     params: dict[str, Any] = {}
 
@@ -462,7 +475,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         logger.info(
             "authorizer_debug body_present=%s body_len=%s request_wallet=%s signer_wallet=%s route=%s",
             body_raw is not None,
-            len(body_raw) if isinstance(body_raw, str) else 0,
+            _debug_body_length(body_raw),
             request_wallet,
             signer_wallet,
             route_mode,
