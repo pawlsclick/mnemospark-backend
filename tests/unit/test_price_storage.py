@@ -558,7 +558,7 @@ class LambdaHandlerTests(unittest.TestCase):
             mock.patch.object(app, "estimate_storage_cost", return_value=2.0),
             mock.patch.object(app, "estimate_transfer_cost", return_value=1.0),
             mock.patch.object(app, "write_quote"),
-            mock.patch("builtins.print") as print_mock,
+            mock.patch.object(app, "_log_event") as log_event_mock,
             mock.patch.dict(
                 os.environ,
                 {
@@ -572,7 +572,9 @@ class LambdaHandlerTests(unittest.TestCase):
             response = app.lambda_handler(event, None)
 
         self.assertEqual(response["statusCode"], 200)
-        print_mock.assert_called()
+        self.assertTrue(
+            any(call.args[1] == "price_authorizer_wallet_context" for call in log_event_mock.call_args_list)
+        )
 
     def test_lambda_handler_returns_bad_request_shape(self):
         response = app.lambda_handler({"body": json.dumps({"wallet_address": "0xabc123"})}, None)
