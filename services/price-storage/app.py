@@ -659,7 +659,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         authorizer_wallet = _extract_authorizer_wallet(event)
         if authorizer_wallet:
             _log_event(
-                logging.DEBUG,
+                logging.INFO,
                 "price_authorizer_wallet_context",
                 wallet_address=authorizer_wallet,
                 request_wallet_address=request["wallet_address"],
