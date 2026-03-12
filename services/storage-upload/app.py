@@ -405,7 +405,10 @@ def _ensure_bucket_exists(s3_client: Any, bucket_name: str, location: str) -> No
         return
     except ClientError as exc:
         error_code = exc.response.get("Error", {}).get("Code", "")
-        if error_code not in {"404", "NotFound", "NoSuchBucket"}:
+        # Treat 400/BadRequest the same as 404-style "bucket does not exist" responses so we
+        # can proceed to create the bucket. This is observed when a previously deleted bucket
+        # name is probed shortly after deletion.
+        if error_code not in {"404", "NotFound", "NoSuchBucket", "400", "BadRequest"}:
             if error_code in {"403", "Forbidden"}:
                 logger.warning(
                     "HeadBucket 403 for %s: ensure bucket is in this account and Lambda role has s3:HeadBucket on mnemospark-*",
