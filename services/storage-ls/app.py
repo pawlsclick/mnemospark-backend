@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -22,6 +23,9 @@ from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 US_EAST_1_REGION = "us-" + "east-1"
 DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
@@ -64,6 +68,12 @@ class ParsedLsRequest:
     wallet_address: str
     object_key: str
     location: str
+
+
+def _log_event(level: int, event_name: str, **fields: Any) -> None:
+    payload: dict[str, Any] = {"event": event_name}
+    payload.update({key: value for key, value in fields.items() if value is not None})
+    logger.log(level, json.dumps(payload, default=str, separators=(",", ":")))
 
 
 def _response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:
@@ -229,9 +239,23 @@ def parse_input(event: dict[str, Any]) -> ParsedLsRequest:
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     del context
+    request: ParsedLsRequest | None = None
+    bucket_name: str | None = None
     try:
         request = parse_input(event)
+        _log_event(
+            logging.INFO,
+            "storage_ls_request_parsed",
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+            location=request.location,
+        )
         _require_authorized_wallet(event, request.wallet_address)
+        _log_event(
+            logging.DEBUG,
+            "storage_ls_authorized_wallet_confirmed",
+            wallet_address=request.wallet_address,
+        )
         s3_client = boto3.client("s3", region_name=request.location)
         bucket_name = _bucket_name(request.wallet_address)
 
@@ -242,6 +266,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
         _assert_bucket_access(s3_client, bucket_name)
         object_size = _get_object_size(s3_client, bucket_name, request.object_key)
+        _log_event(
+            logging.INFO,
+            "storage_ls_succeeded",
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+            bucket_name=bucket_name,
+            size_bytes=object_size,
+        )
 
         return _response(
             200,
@@ -253,10 +285,44 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             },
         )
     except ForbiddenError as exc:
+        _log_event(
+            logging.WARNING,
+            "storage_ls_forbidden",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         return _error_response(403, "forbidden", str(exc))
     except BadRequestError as exc:
+        _log_event(
+            logging.WARNING,
+            "storage_ls_bad_request",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         return _error_response(400, "Bad request", str(exc))
     except NotFoundError as exc:
+        _log_event(
+            logging.WARNING,
+            "storage_ls_not_found",
+            error_type=type(exc).__name__,
+            error_message=exc.message,
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+            bucket_name=bucket_name,
+        )
         return _error_response(404, exc.error, exc.message)
     except Exception as exc:
+        _log_event(
+            logging.ERROR,
+            "storage_ls_internal_error",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+            bucket_name=bucket_name,
+        )
         return _error_response(500, "Internal error", str(exc))

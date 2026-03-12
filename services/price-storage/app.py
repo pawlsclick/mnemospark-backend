@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -17,6 +18,9 @@ from typing import Any
 
 import boto3
 import botocore.exceptions
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 DEFAULT_QUOTE_TTL_SECONDS = 3600
 DEFAULT_TRANSFER_DIRECTION = "out"
@@ -72,6 +76,12 @@ REGION_TO_S3_LOCATION: dict[str, str] = {
 
 class BadRequestError(ValueError):
     """Raised when request validation fails."""
+
+
+def _log_event(level: int, event_name: str, **fields: Any) -> None:
+    payload: dict[str, Any] = {"event": event_name}
+    payload.update({key: value for key, value in fields.items() if value is not None})
+    logger.log(level, json.dumps(payload, default=str, separators=(",", ":")))
 
 
 def _response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:
@@ -636,16 +646,23 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     del context
     try:
         request = parse_input(event)
+        _log_event(
+            logging.INFO,
+            "price_request_parsed",
+            wallet_address=request["wallet_address"],
+            object_id=request["object_id"],
+            object_id_hash=request["object_id_hash"],
+            gb=request["gb"],
+            provider=request["provider"],
+            region=request["region"],
+        )
         authorizer_wallet = _extract_authorizer_wallet(event)
         if authorizer_wallet:
-            print(
-                "price-storage authorizer wallet context",
-                json.dumps(
-                    {
-                        "walletAddress": authorizer_wallet,
-                        "request_wallet_address": request["wallet_address"],
-                    }
-                ),
+            _log_event(
+                logging.DEBUG,
+                "price_authorizer_wallet_context",
+                wallet_address=authorizer_wallet,
+                request_wallet_address=request["wallet_address"],
             )
         rate_type = _get_rate_type()
         direction = _get_transfer_direction()
@@ -664,6 +681,19 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         pre_markup_subtotal = max(storage_cost + transfer_cost, MIN_PRE_MARKUP_SUBTOTAL)
         storage_price = round(pre_markup_subtotal * (1 + markup_multiplier), 2)
+        _log_event(
+            logging.INFO,
+            "price_costs_computed",
+            object_id=request["object_id"],
+            region=request["region"],
+            rate_type=rate_type,
+            transfer_direction=direction,
+            storage_cost=storage_cost,
+            transfer_cost=transfer_cost,
+            pre_markup_subtotal=pre_markup_subtotal,
+            markup_multiplier=markup_multiplier,
+            storage_price=storage_price,
+        )
 
         quote = _build_quote_response(request=request, storage_price=storage_price)
         write_quote(
@@ -672,11 +702,39 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             transfer_cost=transfer_cost,
             markup_multiplier=markup_multiplier,
         )
+        _log_event(
+            logging.INFO,
+            "price_quote_written",
+            quote_id=quote["quote_id"],
+            object_id=quote["object_id"],
+            wallet_address=quote["addr"],
+            storage_price=quote["storage_price"],
+            provider=quote["provider"],
+            location=quote["location"],
+        )
         return _response(200, quote)
     except BadRequestError as exc:
+        _log_event(
+            logging.WARNING,
+            "price_bad_request",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         return _error_response(400, "Bad request", str(exc))
     except botocore.exceptions.ClientError as exc:
         error_message = exc.response.get("Error", {}).get("Message", str(exc))
+        _log_event(
+            logging.ERROR,
+            "price_client_error",
+            error_type=type(exc).__name__,
+            error_message=error_message,
+        )
         return _error_response(500, "Internal error", "Failed to process price-storage request", error_message)
     except Exception as exc:
+        _log_event(
+            logging.ERROR,
+            "price_internal_error",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         return _error_response(500, "Internal error", str(exc))
