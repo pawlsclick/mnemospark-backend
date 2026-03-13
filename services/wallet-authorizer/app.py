@@ -5,9 +5,13 @@ Supported flow:
 - Reads `X-Wallet-Signature` (or legacy lowercase header) from request authorizer events.
 - Reads `authorizationToken` from token authorizer events.
 - Validates wallet proof payload format and EIP-712 signature.
-- Enforces route-specific behavior:
-  * POST /price-storage: wallet proof optional.
-  * Storage routes: wallet proof required + signer must match request wallet_address.
+- Enforces wallet-proof auth for all supported public routes:
+  * POST /price-storage
+  * POST /storage/upload
+  * POST /storage/upload/confirm
+  * GET,POST /storage/ls
+  * GET,POST /storage/download
+  * POST,DELETE /storage/delete
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,17 +50,23 @@ ADDRESS_PATTERN = re.compile(r"^0x[a-fA-F0-9]{40}$")
 NONCE_PATTERN = re.compile(r"^0x[a-fA-F0-9]{64}$")
 SIGNATURE_PATTERN = re.compile(r"^0x[a-fA-F0-9]{130}$")
 
-PRICE_STORAGE_ROUTE = ("POST", "/price-storage")
-STORAGE_ROUTE_METHODS: dict[str, set[str]] = {
+PUBLIC_ROUTE_METHODS: dict[str, set[str]] = {
+    "/price-storage": {"POST"},
     "/storage/upload": {"POST"},
+    "/storage/upload/confirm": {"POST"},
     "/storage/ls": {"GET", "POST"},
     "/storage/download": {"GET", "POST"},
     "/storage/delete": {"POST", "DELETE"},
 }
+DEFAULT_AUTH_EVENT_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days
 
 
 class AuthError(ValueError):
     """Raised when request authorization cannot be validated."""
+
+    def __init__(self, message: str, reason: str = "auth_error"):
+        super().__init__(message)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -308,12 +319,9 @@ def _extract_wallet_header(event: dict[str, Any]) -> str | None:
 
 
 def _classify_route(method: str, path: str) -> str:
-    if (method, path) == PRICE_STORAGE_ROUTE:
-        return "price_optional"
-
-    allowed_methods = STORAGE_ROUTE_METHODS.get(path)
+    allowed_methods = PUBLIC_ROUTE_METHODS.get(path)
     if allowed_methods and method in allowed_methods:
-        return "storage_required"
+        return "wallet_proof_required"
 
     return "unsupported"
 
@@ -398,30 +406,147 @@ def _recover_signer(proof: WalletProof) -> str:
         if recovered == proof.declared_address:
             return recovered
 
-    raise AuthError("EIP-712 signature verification failed")
+    raise AuthError("EIP-712 signature verification failed", reason="invalid_signature")
 
 
 def _verify_wallet_proof(header_value: str, method: str, path: str) -> str:
     proof = _parse_wallet_proof(header_value)
 
     if proof.method.upper() != method:
-        raise AuthError("signed method does not match request method")
+        raise AuthError("signed method does not match request method", reason="signed_request_mismatch")
     if proof.path != path:
-        raise AuthError("signed path does not match request path")
+        raise AuthError("signed path does not match request path", reason="signed_request_mismatch")
 
     now = int(time.time())
     if proof.timestamp < now - MAX_SIGNATURE_AGE_SECONDS:
-        raise AuthError("wallet signature has expired")
+        raise AuthError("wallet signature has expired", reason="expired_signature")
     if proof.timestamp > now + MAX_SIGNATURE_FUTURE_SKEW_SECONDS:
-        raise AuthError("wallet signature timestamp is too far in the future")
+        raise AuthError("wallet signature timestamp is too far in the future", reason="future_signature")
 
     signer = _recover_signer(proof)
     if signer != proof.declared_address:
-        raise AuthError("signature signer does not match declared address")
+        raise AuthError("signature signer does not match declared address", reason="wallet_mismatch")
     if signer != proof.wallet_address:
-        raise AuthError("signature signer does not match payload walletAddress")
+        raise AuthError("signature signer does not match payload walletAddress", reason="wallet_mismatch")
 
     return signer
+
+
+def _reason_from_auth_error(error: AuthError) -> str:
+    explicit_reason = _safe_str(getattr(error, "reason", ""))
+    if explicit_reason and explicit_reason != "auth_error":
+        return explicit_reason
+
+    message = str(error).lower()
+    if "wallet signature has expired" in message:
+        return "expired_signature"
+    if "too far in the future" in message:
+        return "future_signature"
+    if "signed method does not match" in message or "signed path does not match" in message:
+        return "signed_request_mismatch"
+    if "signature signer does not match" in message or "wallet_address values in request do not match" in message:
+        return "wallet_mismatch"
+    if "verification failed" in message:
+        return "invalid_signature"
+    if (
+        "x-wallet-signature" in message
+        or "payloadb64" in message
+        or "base64" in message
+        or "must contain valid json" in message
+    ):
+        return "malformed_wallet_header"
+    return "auth_error"
+
+
+def _log_authorizer_debug(event_name: str, **details: Any) -> None:
+    payload = {"event": f"authorizer_debug_{event_name}", **details}
+    print(
+        "authorizer_debug_%s %s" % (event_name, json.dumps(payload, separators=(",", ":"), sort_keys=True)),
+        flush=True,
+    )
+
+
+def _auth_events_table_name() -> str | None:
+    value = _safe_str(os.environ.get("WALLET_AUTH_EVENTS_TABLE_NAME"))
+    return value or None
+
+
+def _auth_event_ttl_seconds() -> int:
+    raw = _safe_str(os.environ.get("WALLET_AUTH_EVENTS_TTL_SECONDS")) or str(DEFAULT_AUTH_EVENT_TTL_SECONDS)
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_AUTH_EVENT_TTL_SECONDS
+    return parsed if parsed > 0 else DEFAULT_AUTH_EVENT_TTL_SECONDS
+
+
+def _dynamodb_client() -> Any:
+    import boto3  # pylint: disable=import-outside-toplevel
+
+    return boto3.client("dynamodb")
+
+
+def _to_dynamodb_attr(value: Any) -> dict[str, Any]:
+    if isinstance(value, bool):
+        return {"BOOL": value}
+    if isinstance(value, int):
+        return {"N": str(value)}
+    return {"S": str(value)}
+
+
+def _write_auth_event(
+    *,
+    method: str,
+    path: str,
+    route_classification: str,
+    result: str,
+    reason: str,
+    wallet_header_present: bool,
+    recovered_wallet: str | None,
+    resource_arn: str,
+) -> None:
+    table_name = _auth_events_table_name()
+    if not table_name:
+        _log_authorizer_debug(
+            "auth_event_skip",
+            reason="wallet_auth_events_table_not_configured",
+            method=method,
+            path=path,
+            route_classification=route_classification,
+            result=result,
+        )
+        return
+
+    now = int(time.time())
+    ttl_seconds = _auth_event_ttl_seconds()
+    item: dict[str, dict[str, Any]] = {
+        "event_id": _to_dynamodb_attr(str(uuid.uuid4())),
+        "event_ts": _to_dynamodb_attr(now),
+        "expires_at": _to_dynamodb_attr(now + ttl_seconds),
+        "method": _to_dynamodb_attr(method),
+        "path": _to_dynamodb_attr(path),
+        "route_classification": _to_dynamodb_attr(route_classification),
+        "wallet_header_present": _to_dynamodb_attr(wallet_header_present),
+        "result": _to_dynamodb_attr(result),
+        "reason": _to_dynamodb_attr(reason),
+        "resource_arn": _to_dynamodb_attr(resource_arn or "*"),
+    }
+    if recovered_wallet:
+        item["wallet_address"] = _to_dynamodb_attr(recovered_wallet)
+
+    try:
+        _dynamodb_client().put_item(TableName=table_name, Item=item)
+    except Exception as error:  # pragma: no cover - best-effort path
+        _log_authorizer_debug(
+            "auth_event_write_failed",
+            error_type=type(error).__name__,
+            error_message=str(error),
+            table_name=table_name,
+            result=result,
+            reason=reason,
+            method=method,
+            path=path,
+        )
 
 
 def _build_policy(effect: str, resource_arn: str, principal_id: str, wallet_address: str | None = None) -> dict[str, Any]:
@@ -455,79 +580,103 @@ def _deny(resource_arn: str) -> dict[str, Any]:
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     del context
     resource_arn = _resource_arn(event)
+    method = "UNKNOWN"
+    path = "UNKNOWN"
+    route_mode = "unresolved"
+    wallet_header_present = False
+    signer_wallet: str | None = None
+
+    def _finalize(result: str, reason: str, validation_outcome: str) -> dict[str, Any]:
+        _log_authorizer_debug(
+            "decision",
+            method=method,
+            path=path,
+            route_classification=route_mode,
+            result=result,
+            reason=reason,
+            wallet_header_present=wallet_header_present,
+            validation_outcome=validation_outcome,
+            recovered_wallet=signer_wallet,
+            resource_arn=resource_arn,
+        )
+        _write_auth_event(
+            method=method,
+            path=path,
+            route_classification=route_mode,
+            result=result,
+            reason=reason,
+            wallet_header_present=wallet_header_present,
+            recovered_wallet=signer_wallet,
+            resource_arn=resource_arn,
+        )
+        if result == "allow":
+            return _allow(resource_arn, wallet_address=signer_wallet)
+        return _deny(resource_arn)
 
     try:
         method, path = _resolve_method_and_path(event)
         route_mode = _classify_route(method, path)
-        print(
-            "authorizer_debug_enter method=%s path=%s route=%s"
-            % (method, path, route_mode),
-            flush=True,
+        _log_authorizer_debug(
+            "enter",
+            method=method,
+            path=path,
+            route_classification=route_mode,
+            resource_arn=resource_arn,
         )
         if route_mode == "unsupported":
-            print("authorizer_debug_deny reason=unsupported_route", flush=True)
-            return _deny(resource_arn)
+            return _finalize("deny", "unsupported_route", validation_outcome="unsupported_route")
 
         wallet_header = _extract_wallet_header(event)
-        body_present = event.get("body") is not None
-        print(
-            "authorizer_debug_after_header has_header=%s body_present=%s"
-            % (wallet_header is not None, body_present),
-            flush=True,
+        wallet_header_present = wallet_header is not None
+        _log_authorizer_debug(
+            "after_header",
+            method=method,
+            path=path,
+            route_classification=route_mode,
+            wallet_header_present=wallet_header_present,
+            body_present=event.get("body") is not None,
         )
-        if route_mode == "price_optional" and wallet_header is None:
-            print("authorizer_debug_allow reason=price_optional_no_header", flush=True)
-            return _allow(resource_arn, wallet_address=None)
         if wallet_header is None:
-            print("authorizer_debug_deny reason=no_wallet_header", flush=True)
-            return _deny(resource_arn)
+            return _finalize("deny", "missing_wallet_header", validation_outcome="header_missing")
 
-        print("authorizer_debug_verify_proof_start", flush=True)
+        _log_authorizer_debug("verify_proof_start", method=method, path=path)
         signer_wallet = _verify_wallet_proof(wallet_header, method=method, path=path)
         request_wallet = _extract_request_wallet(event)
-        body_raw = event.get("body")
-        print(
-            "authorizer_debug_after_verify request_wallet=%s signer_wallet=%s body_present=%s"
-            % (request_wallet, signer_wallet, body_raw is not None),
-            flush=True,
+        _log_authorizer_debug(
+            "after_verify",
+            method=method,
+            path=path,
+            route_classification=route_mode,
+            request_wallet=request_wallet,
+            recovered_wallet=signer_wallet,
+            validation_outcome="wallet_proof_valid",
         )
 
-        if route_mode == "storage_required":
-            # API Gateway REST API REQUEST authorizers do not receive the request body
-            # (see https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-lambda-authorizer-input.html).
-            # When request_wallet is None, allow and pass signer_wallet in context; the
-            # integration Lambda (e.g. storage-upload) receives the body and enforces
-            # body.wallet_address == authorizer context via _require_authorized_wallet.
-            if request_wallet is None:
-                print(
-                    "authorizer_debug_allow storage_required body_not_in_event relying_on_integration signer_wallet=%s"
-                    % signer_wallet,
-                    flush=True,
-                )
-            elif request_wallet != signer_wallet:
-                print(
-                    "authorizer_debug_deny reason=wallet_mismatch request=%s signer=%s"
-                    % (request_wallet, signer_wallet),
-                    flush=True,
-                )
-                return _deny(resource_arn)
-        elif request_wallet is not None and request_wallet != signer_wallet:
-            print(
-                "authorizer_debug_deny reason=wallet_mismatch_other request=%s signer=%s"
-                % (request_wallet, signer_wallet),
-                flush=True,
-            )
-            return _deny(resource_arn)
+        # API Gateway REST API REQUEST authorizers do not reliably include request body.
+        # If request wallet is present, enforce strict equality with recovered signer.
+        if request_wallet is not None and request_wallet != signer_wallet:
+            return _finalize("deny", "wallet_mismatch", validation_outcome="request_wallet_mismatch")
 
-        print("authorizer_debug_allow signer_wallet=%s" % signer_wallet, flush=True)
-        return _allow(resource_arn, wallet_address=signer_wallet)
-    except AuthError as e:
-        print("authorizer_debug_deny reason=AuthError message=%s" % (e,), flush=True)
-        return _deny(resource_arn)
-    except Exception as e:
-        print(
-            "authorizer_debug_deny reason=Exception %s: %s"
-            % (type(e).__name__, e),
-            flush=True,
+        return _finalize("allow", "wallet_proof_valid", validation_outcome="authorized")
+    except AuthError as error:
+        reason = _reason_from_auth_error(error)
+        _log_authorizer_debug(
+            "auth_error",
+            method=method,
+            path=path,
+            route_classification=route_mode,
+            reason=reason,
+            error_message=str(error),
         )
-        return _deny(resource_arn)
+        return _finalize("deny", reason, validation_outcome="auth_error")
+    except Exception as error:
+        _log_authorizer_debug(
+            "exception",
+            method=method,
+            path=path,
+            route_classification=route_mode,
+            reason="internal_error",
+            error_type=type(error).__name__,
+            error_message=str(error),
+        )
+        return _finalize("deny", "internal_error", validation_outcome="exception")
