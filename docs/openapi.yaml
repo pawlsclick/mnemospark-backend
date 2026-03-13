@@ -430,7 +430,7 @@ components:
         gb:
           type: number
           minimum: 0
-          exclusiveMinimum: true
+          exclusiveMinimum: 0
         provider:
           type: string
           description: Currently expected as "aws".
