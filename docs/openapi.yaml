@@ -1,0 +1,638 @@
+openapi: "3.2.0"
+info:
+  title: mnemospark-backend API
+  version: "0.1.0"
+  description: >
+    Descriptive OpenAPI skeleton for currently deployed mnemospark-backend
+    public endpoints. Paths are unversioned today, but treated as v1 semantics.
+servers:
+  - url: https://{api_id}.execute-api.{region}.amazonaws.com/{stage}
+    description: API Gateway invoke URL placeholder
+    variables:
+      api_id:
+        default: your-api-id
+      region:
+        default: your-region
+      stage:
+        default: prod
+security:
+  - walletProof: []
+tags:
+  - name: pricing
+    description: Storage price quote operations
+  - name: storage
+    description: Wallet-scoped storage object operations
+paths:
+  /price-storage:
+    post:
+      tags: [pricing]
+      summary: Create a storage price quote
+      description: >
+        Calculates storage pricing and returns a quote for a wallet-scoped object.
+      operationId: postPriceStorage
+      security:
+        - walletProof: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PriceStorageRequest"
+      responses:
+        "200":
+          description: Quote created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PriceStorageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /storage/upload:
+    post:
+      tags: [storage]
+      summary: Upload object ciphertext or request presigned upload URL
+      description: >
+        Accepts encrypted payload metadata and either uploads inline ciphertext
+        or returns a presigned URL flow depending on mode.
+      operationId: postStorageUpload
+      security:
+        - walletProof: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+        - $ref: "#/components/parameters/PaymentSignatureHeader"
+        - $ref: "#/components/parameters/XPaymentHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StorageUploadRequest"
+      responses:
+        "200":
+          description: Upload accepted or completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageUploadResponse"
+        "207":
+          description: Payment settled but upload needs retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageUploadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "402":
+          $ref: "#/components/responses/PaymentRequiredError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /storage/upload/confirm:
+    post:
+      tags: [storage]
+      summary: Confirm presigned upload completion
+      description: Confirms presigned upload object existence and finalizes transaction state.
+      operationId: postStorageUploadConfirm
+      security:
+        - walletProof: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadConfirmRequest"
+      responses:
+        "200":
+          description: Upload confirmation finalized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageUploadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /storage/ls:
+    get:
+      tags: [storage]
+      summary: Get object metadata
+      description: Retrieves metadata for a wallet-scoped object key.
+      operationId: getStorageLs
+      security:
+        - walletProof: []
+      parameters:
+        - $ref: "#/components/parameters/WalletAddressQuery"
+        - $ref: "#/components/parameters/ObjectKeyQuery"
+        - $ref: "#/components/parameters/LocationQuery"
+      responses:
+        "200":
+          description: Object metadata found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    post:
+      tags: [storage]
+      summary: Get object metadata (JSON body variant)
+      description: POST variant of /storage/ls using JSON body payload.
+      operationId: postStorageLs
+      security:
+        - walletProof: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StorageObjectRequest"
+      responses:
+        "200":
+          description: Object metadata found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /storage/download:
+    get:
+      tags: [storage]
+      summary: Create presigned download URL
+      description: Generates a short-lived presigned URL for object download.
+      operationId: getStorageDownload
+      security:
+        - walletProof: []
+      parameters:
+        - $ref: "#/components/parameters/WalletAddressQuery"
+        - $ref: "#/components/parameters/ObjectKeyQuery"
+        - $ref: "#/components/parameters/LocationQuery"
+        - $ref: "#/components/parameters/ExpiresInSecondsQuery"
+      responses:
+        "200":
+          description: Presigned download URL created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageDownloadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    post:
+      tags: [storage]
+      summary: Create presigned download URL (JSON body variant)
+      description: POST variant of /storage/download using JSON body payload.
+      operationId: postStorageDownload
+      security:
+        - walletProof: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/StorageObjectRequest"
+                - type: object
+                  properties:
+                    expires_in_seconds:
+                      type: integer
+                      minimum: 1
+                      maximum: 3600
+      responses:
+        "200":
+          description: Presigned download URL created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageDownloadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /storage/delete:
+    delete:
+      tags: [storage]
+      summary: Delete object from wallet bucket
+      description: Deletes object and removes bucket when it becomes empty.
+      operationId: deleteStorageObject
+      security:
+        - walletProof: []
+      parameters:
+        - $ref: "#/components/parameters/WalletAddressQuery"
+        - $ref: "#/components/parameters/ObjectKeyQuery"
+        - $ref: "#/components/parameters/LocationQuery"
+      responses:
+        "200":
+          description: Object deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageDeleteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    post:
+      tags: [storage]
+      summary: Delete object (JSON body variant)
+      description: POST variant of /storage/delete using JSON body payload.
+      operationId: postStorageDelete
+      security:
+        - walletProof: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StorageObjectRequest"
+      responses:
+        "200":
+          description: Object deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageDeleteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+components:
+  securitySchemes:
+    walletProof:
+      type: apiKey
+      in: header
+      name: X-Wallet-Signature
+      description: >
+        Placeholder security scheme for wallet proof authentication.
+        Current backend verifies signed wallet proofs in a custom header envelope.
+        This model is intentionally high-level and will be refined in later tasks.
+
+  parameters:
+    WalletAddressQuery:
+      name: wallet_address
+      in: query
+      required: true
+      schema:
+        type: string
+      description: Wallet address that scopes access to object operations.
+    ObjectKeyQuery:
+      name: object_key
+      in: query
+      required: true
+      schema:
+        type: string
+      description: Wallet-scoped object key (single path segment).
+    LocationQuery:
+      name: location
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Optional AWS region/location override.
+    ExpiresInSecondsQuery:
+      name: expires_in_seconds
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 3600
+      description: Presigned download URL TTL in seconds.
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Optional idempotency key for upload request deduplication.
+    PaymentSignatureHeader:
+      name: PAYMENT-SIGNATURE
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Optional payment authorization envelope.
+    XPaymentHeader:
+      name: x-payment
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Optional payment authorization envelope alternate header.
+
+  responses:
+    BadRequestError:
+      description: Request validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ForbiddenError:
+      description: Wallet proof validation or authorization failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFoundError:
+      description: Referenced quote, bucket, or object not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ConflictError:
+      description: Idempotency or state conflict.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    PaymentRequiredError:
+      description: Payment authorization is required or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalServerError:
+      description: Unhandled internal error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    PriceStorageRequest:
+      type: object
+      required:
+        - wallet_address
+        - object_id
+        - object_id_hash
+        - gb
+        - provider
+        - region
+      properties:
+        wallet_address:
+          type: string
+        object_id:
+          type: string
+        object_id_hash:
+          type: string
+        gb:
+          type: number
+          minimum: 0
+          exclusiveMinimum: 0
+        provider:
+          type: string
+          description: Currently expected as "aws".
+        region:
+          type: string
+
+    StorageUploadRequest:
+      type: object
+      required:
+        - quote_id
+        - wallet_address
+        - object_id
+        - object_id_hash
+        - wrapped_dek
+      properties:
+        quote_id:
+          type: string
+        wallet_address:
+          type: string
+        object_id:
+          type: string
+        object_id_hash:
+          type: string
+        object_key:
+          type: string
+          description: Optional override for object_id.
+        mode:
+          type: string
+          enum: [inline, presigned]
+          description: Inline uploads include ciphertext; presigned returns upload URL.
+        ciphertext:
+          type: string
+          description: Base64-encoded encrypted content for inline mode.
+        wrapped_dek:
+          type: string
+          description: Base64-encoded wrapped DEK metadata.
+        content_sha256:
+          type: string
+        content_length_bytes:
+          type: integer
+          minimum: 0
+        provider:
+          type: string
+        location:
+          type: string
+
+    UploadConfirmRequest:
+      type: object
+      required:
+        - wallet_address
+        - object_key
+        - idempotency_key
+        - quote_id
+      properties:
+        wallet_address:
+          type: string
+        object_key:
+          type: string
+        idempotency_key:
+          type: string
+        quote_id:
+          type: string
+
+    StorageObjectRequest:
+      type: object
+      required:
+        - wallet_address
+        - object_key
+      properties:
+        wallet_address:
+          type: string
+        object_key:
+          type: string
+        location:
+          type: string
+
+    PriceStorageResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+        quote_id:
+          type: string
+        storage_price:
+          type: number
+        addr:
+          type: string
+        object_id:
+          type: string
+        object_id_hash:
+          type: string
+        object_size_gb:
+          type: number
+        provider:
+          type: string
+        location:
+          type: string
+      required:
+        - quote_id
+        - storage_price
+        - addr
+        - object_id
+        - provider
+        - location
+
+    StorageUploadResponse:
+      type: object
+      properties:
+        quote_id:
+          type: string
+        addr:
+          type: string
+        addr_hash:
+          type: string
+        trans_id:
+          type: string
+        storage_price:
+          type: number
+        object_id:
+          type: string
+        object_key:
+          type: string
+        provider:
+          type: string
+        bucket_name:
+          type: string
+        location:
+          type: string
+        upload_url:
+          type: string
+          format: uri
+        upload_headers:
+          type: object
+          additionalProperties:
+            type: string
+        confirmation_required:
+          type: boolean
+        upload_failed:
+          type: boolean
+        error:
+          type: string
+
+    StorageLsResponse:
+      type: object
+      required:
+        - success
+        - key
+        - size_bytes
+        - bucket
+      properties:
+        success:
+          type: boolean
+        key:
+          type: string
+        size_bytes:
+          type: integer
+        bucket:
+          type: string
+
+    StorageDownloadResponse:
+      type: object
+      required:
+        - download_url
+        - object_key
+        - expires_in_seconds
+      properties:
+        download_url:
+          type: string
+          format: uri
+        object_key:
+          type: string
+        expires_in_seconds:
+          type: integer
+          minimum: 1
+          maximum: 3600
+
+    StorageDeleteResponse:
+      type: object
+      required:
+        - success
+        - key
+        - bucket
+        - bucket_deleted
+      properties:
+        success:
+          type: boolean
+        key:
+          type: string
+        bucket:
+          type: string
+        bucket_deleted:
+          type: boolean
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        details:
+          description: Optional structured or string detail.
