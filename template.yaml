@@ -22,6 +22,10 @@ Parameters:
     Type: String
     Default: "3600"
     Description: Quote TTL in seconds for DynamoDB expiration
+  WalletAuthEventsTtlSeconds:
+    Type: String
+    Default: "2592000"
+    Description: TTL in seconds for wallet authorizer auth event records
   MnemosparkRecipientWallet:
     Type: String
     Default: "0x47D241ae97fE37186AC59894290CA1c54c060A6c"
@@ -129,6 +133,24 @@ Resources:
           AttributeType: S
       KeySchema:
         - AttributeName: idempotency_key
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  WalletAuthEventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-wallet-auth-events"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: event_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: event_id
           KeyType: HASH
       TimeToLiveSpecification:
         AttributeName: expires_at
@@ -256,6 +278,15 @@ Resources:
         Variables:
           MNEMOSPARK_AUTH_MAX_AGE_SECONDS: "300"
           MNEMOSPARK_REQUEST_VERIFYING_CONTRACT: "0x0000000000000000000000000000000000000001"
+          WALLET_AUTH_EVENTS_TABLE_NAME: !Ref WalletAuthEventsTable
+          WALLET_AUTH_EVENTS_TTL_SECONDS: !Ref WalletAuthEventsTtlSeconds
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt WalletAuthEventsTable.Arn
 
   ApiGatewayAccessLogsLogGroup:
     Type: AWS::Logs::LogGroup
@@ -972,6 +1003,16 @@ Outputs:
     Value: !GetAtt UploadIdempotencyTable.Arn
     Export:
       Name: !Sub "${AWS::StackName}-UploadIdempotencyTableArn"
+  WalletAuthEventsTableName:
+    Description: DynamoDB table name for wallet authorizer auth decision events
+    Value: !Ref WalletAuthEventsTable
+    Export:
+      Name: !Sub "${AWS::StackName}-WalletAuthEventsTableName"
+  WalletAuthEventsTableArn:
+    Description: DynamoDB table ARN for wallet authorizer auth decision events
+    Value: !GetAtt WalletAuthEventsTable.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-WalletAuthEventsTableArn"
   PriceStorageLambdaRoleArn:
     Description: IAM role ARN for price-storage Lambda (quotes read/write)
     Value: !GetAtt PriceStorageLambdaRole.Arn
