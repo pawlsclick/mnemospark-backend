@@ -129,7 +129,7 @@ class WalletAuthorizerTests(unittest.TestCase):
         self.assertEqual(_policy_effect(response), "Allow")
         self.assertEqual(response.get("context"), {"walletAddress": self.wallet_address.lower()})
 
-    def test_price_storage_missing_header_is_allowed_without_context(self):
+    def test_price_storage_missing_header_is_denied(self):
         event = _make_request_event(
             method="POST",
             path="/price-storage",
@@ -138,13 +138,23 @@ class WalletAuthorizerTests(unittest.TestCase):
 
         response = app.lambda_handler(event, None)
 
-        self.assertEqual(_policy_effect(response), "Allow")
-        self.assertNotIn("context", response)
+        self.assertEqual(_policy_effect(response), "Deny")
 
     def test_storage_route_missing_header_is_denied(self):
         event = _make_request_event(
             method="POST",
             path="/storage/upload",
+            body={"wallet_address": self.wallet_address},
+        )
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(_policy_effect(response), "Deny")
+
+    def test_storage_upload_confirm_missing_header_is_denied(self):
+        event = _make_request_event(
+            method="POST",
+            path="/storage/upload/confirm",
             body={"wallet_address": self.wallet_address},
         )
 
@@ -271,4 +281,49 @@ class WalletAuthorizerTests(unittest.TestCase):
         self.assertEqual(_policy_effect(response), "Allow")
         out = stdout.getvalue()
         self.assertIn("authorizer_debug_after_verify", out)
-        self.assertIn("body_present=True", out)
+        self.assertIn('"validation_outcome":"wallet_proof_valid"', out)
+        self.assertIn('"wallet_header_present":true', out)
+
+    @patch.dict("os.environ", {"WALLET_AUTH_EVENTS_TABLE_NAME": "wallet-auth-events"}, clear=False)
+    def test_deny_decision_writes_best_effort_auth_event(self):
+        event = _make_request_event(
+            method="POST",
+            path="/storage/upload",
+            body={"wallet_address": self.wallet_address},
+        )
+        mock_ddb_client = unittest.mock.Mock()
+
+        with patch.object(app, "_dynamodb_client", return_value=mock_ddb_client):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(_policy_effect(response), "Deny")
+        mock_ddb_client.put_item.assert_called_once()
+        put_item_kwargs = mock_ddb_client.put_item.call_args.kwargs
+        self.assertEqual(put_item_kwargs["TableName"], "wallet-auth-events")
+        self.assertEqual(put_item_kwargs["Item"]["result"]["S"], "deny")
+        self.assertEqual(put_item_kwargs["Item"]["reason"]["S"], "missing_wallet_header")
+
+    @patch.dict("os.environ", {"WALLET_AUTH_EVENTS_TABLE_NAME": "wallet-auth-events"}, clear=False)
+    def test_allow_decision_writes_auth_event_with_recovered_wallet(self):
+        wallet_header = _build_wallet_header(
+            method="POST",
+            path="/storage/upload",
+            wallet_address=self.wallet_address,
+            private_key=self.signer.key,
+        )
+        event = _make_request_event(
+            method="POST",
+            path="/storage/upload",
+            wallet_header=wallet_header,
+        )
+        mock_ddb_client = unittest.mock.Mock()
+
+        with patch.object(app, "_dynamodb_client", return_value=mock_ddb_client):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(_policy_effect(response), "Allow")
+        mock_ddb_client.put_item.assert_called_once()
+        put_item_kwargs = mock_ddb_client.put_item.call_args.kwargs
+        self.assertEqual(put_item_kwargs["TableName"], "wallet-auth-events")
+        self.assertEqual(put_item_kwargs["Item"]["result"]["S"], "allow")
+        self.assertEqual(put_item_kwargs["Item"]["wallet_address"]["S"], self.wallet_address.lower())
