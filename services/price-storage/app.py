@@ -19,6 +19,19 @@ from typing import Any
 import boto3
 import botocore.exceptions
 
+try:
+    from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
+
+
+log_api_call = load_log_api_call()
+_log_api_call_result = load_log_api_call_result("/price-storage", log_api_call_getter=lambda: log_api_call)
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -643,7 +656,6 @@ def _error_response(status_code: int, error: str, message: str, details: Any | N
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    del context
     try:
         request = parse_input(event)
         _log_event(
@@ -712,12 +724,28 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             provider=quote["provider"],
             location=quote["location"],
         )
+        _log_api_call_result(
+            event,
+            context,
+            status_code=200,
+            result="success",
+            quote_id=quote["quote_id"],
+            object_id=quote["object_id"],
+        )
         return _response(200, quote)
     except BadRequestError as exc:
         _log_event(
             logging.WARNING,
             "price_bad_request",
             error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+        _log_api_call_result(
+            event,
+            context,
+            status_code=400,
+            result="bad_request",
+            error_code="bad_request",
             error_message=str(exc),
         )
         return _error_response(400, "Bad request", str(exc))
@@ -729,12 +757,28 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             error_type=type(exc).__name__,
             error_message=error_message,
         )
+        _log_api_call_result(
+            event,
+            context,
+            status_code=500,
+            result="internal_error",
+            error_code="dynamodb_client_error",
+            error_message=error_message,
+        )
         return _error_response(500, "Internal error", "Failed to process price-storage request", error_message)
     except Exception as exc:
         _log_event(
             logging.ERROR,
             "price_internal_error",
             error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+        _log_api_call_result(
+            event,
+            context,
+            status_code=500,
+            result="internal_error",
+            error_code="internal_error",
             error_message=str(exc),
         )
         return _error_response(500, "Internal error", str(exc))

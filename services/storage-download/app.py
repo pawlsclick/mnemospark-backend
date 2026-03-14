@@ -20,6 +20,19 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
+try:
+    from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
+
+
+log_api_call = load_log_api_call()
+_log_api_call_result = load_log_api_call_result("/storage/download", log_api_call_getter=lambda: log_api_call)
+
 US_EAST_1_REGION = "us-" + "east-1"
 DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
 DEFAULT_PRESIGNED_TTL_SECONDS = int(os.environ.get("STORAGE_DOWNLOAD_URL_TTL_SECONDS", "300"))
@@ -266,18 +279,77 @@ def generate_download_url(request: ParsedDownloadRequest, s3_client: Any | None 
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    del context
+    request: ParsedDownloadRequest | None = None
     try:
         request = parse_input(event)
         _require_authorized_wallet(event, request.wallet_address)
-        return _response(200, generate_download_url(request))
+        response_body = generate_download_url(request)
+        _log_api_call_result(
+            event,
+            context,
+            status_code=200,
+            result="success",
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+        )
+        return _response(200, response_body)
     except ForbiddenError as exc:
+        _log_api_call_result(
+            event,
+            context,
+            status_code=403,
+            result="forbidden",
+            error_code="wallet_mismatch",
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         return _error_response(403, "forbidden", str(exc))
     except BadRequestError as exc:
+        _log_api_call_result(
+            event,
+            context,
+            status_code=400,
+            result="bad_request",
+            error_code="bad_request",
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         return _error_response(400, "Bad request", str(exc))
     except MethodNotAllowedError as exc:
+        _log_api_call_result(
+            event,
+            context,
+            status_code=405,
+            result="method_not_allowed",
+            error_code="method_not_allowed",
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         return _error_response(405, "method_not_allowed", str(exc))
     except NotFoundError as exc:
+        _log_api_call_result(
+            event,
+            context,
+            status_code=404,
+            result="not_found",
+            error_code=exc.error,
+            error_message=exc.message,
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         return _error_response(404, exc.error, exc.message, details=exc.details)
     except Exception as exc:
+        _log_api_call_result(
+            event,
+            context,
+            status_code=500,
+            result="internal_error",
+            error_code="internal_error",
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         return _error_response(500, "Internal error", str(exc))

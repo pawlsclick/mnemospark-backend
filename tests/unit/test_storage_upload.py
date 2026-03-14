@@ -551,6 +551,19 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertEqual(body["error"], "forbidden")
         self.assertIn("wallet authorization context is required", body["message"])
 
+    def test_lambda_handler_logs_api_call_for_payment_required(self):
+        event = self._make_event()
+
+        with mock.patch.object(app, "log_api_call") as log_api_call_mock:
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 402)
+        self.assertGreaterEqual(log_api_call_mock.call_count, 1)
+        kwargs = log_api_call_mock.call_args.kwargs
+        self.assertEqual(kwargs["status_code"], 402)
+        self.assertEqual(kwargs["result"], "payment_required")
+        self.assertEqual(kwargs["route"], "/storage/upload")
+
     def test_authorizer_wallet_mismatch_returns_403(self):
         event = self._make_event(authorizer_wallet="0x2222222222222222222222222222222222222222")
 

@@ -27,6 +27,18 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
+try:
+    from common.log_api_call_loader import load_log_api_call
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.log_api_call_loader import load_log_api_call
+
+
+log_api_call = load_log_api_call(emit_warning=True, logger=logging.getLogger(__name__))
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -1357,8 +1369,48 @@ def _write_transaction_log(
             raise
 
 
+def _log_api_call_result(
+    event: dict[str, Any],
+    context: Any,
+    *,
+    route: str,
+    status_code: int,
+    result: str,
+    error_code: str | None = None,
+    error_message: str | None = None,
+    request: ParsedUploadRequest | ParsedUploadConfirmRequest | None = None,
+    quote_id: str | None = None,
+    trans_id: str | None = None,
+    payment_id: str | None = None,
+    idempotency_key: str | None = None,
+) -> None:
+    wallet_address = getattr(request, "wallet_address", None) if request is not None else None
+    object_id = getattr(request, "object_id", None) if request is not None else None
+    object_key = getattr(request, "object_key", None) if request is not None else None
+    resolved_quote_id = quote_id or (getattr(request, "quote_id", None) if request is not None else None)
+    resolved_idempotency_key = idempotency_key or (
+        getattr(request, "idempotency_key", None) if request is not None else None
+    )
+
+    log_api_call(
+        event=event,
+        context=context,
+        route=route,
+        status_code=status_code,
+        result=result,
+        error_code=error_code,
+        error_message=error_message,
+        wallet_address=wallet_address,
+        quote_id=resolved_quote_id,
+        trans_id=trans_id,
+        payment_id=payment_id,
+        object_id=object_id,
+        object_key=object_key,
+        idempotency_key=resolved_idempotency_key,
+    )
+
+
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    del context
     settlement_mode = _settlement_mode()
     _emit_mock_settlement_warning_once(settlement_mode)
     idempotency_lock_acquired = False
@@ -1419,7 +1471,16 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         idempotency_key=idempotency_key,
                         message="returning refreshed presigned response pending confirmation",
                     )
-                    return _cached_success_response(existing, request=request)
+                    cached_response = _cached_success_response(existing, request=request)
+                    _log_api_call_result(
+                        event,
+                        context,
+                        route="/storage/upload",
+                        status_code=200,
+                        result="success",
+                        request=request,
+                    )
+                    return cached_response
                 else:
                     _log_event(
                         logging.INFO,
@@ -1427,7 +1488,16 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         idempotency_key=idempotency_key,
                         message="returning cached response",
                     )
-                    return _cached_success_response(existing, request=request)
+                    cached_response = _cached_success_response(existing, request=request)
+                    _log_api_call_result(
+                        event,
+                        context,
+                        route="/storage/upload",
+                        status_code=200,
+                        result="success",
+                        request=request,
+                    )
+                    return cached_response
 
         if resume_upload_after_payment and retryable_idempotency_item:
             quote_context = _quote_context_from_retryable_idempotency(retryable_idempotency_item)
@@ -1484,7 +1554,16 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         idempotency_key=idempotency_key,
                         message="returning refreshed presigned response pending confirmation",
                     )
-                    return _cached_success_response(existing, request=request)
+                    cached_response = _cached_success_response(existing, request=request)
+                    _log_api_call_result(
+                        event,
+                        context,
+                        route="/storage/upload",
+                        status_code=200,
+                        result="success",
+                        request=request,
+                    )
+                    return cached_response
                 else:
                     _log_event(
                         logging.INFO,
@@ -1492,7 +1571,16 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         idempotency_key=idempotency_key,
                         message="returning cached response",
                     )
-                    return _cached_success_response(existing, request=request)
+                    cached_response = _cached_success_response(existing, request=request)
+                    _log_api_call_result(
+                        event,
+                        context,
+                        route="/storage/upload",
+                        status_code=200,
+                        result="success",
+                        request=request,
+                    )
+                    return cached_response
             else:
                 idempotency_lock_acquired = True
                 _log_event(
@@ -1608,6 +1696,15 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     "idempotency_marked_pending_confirmation",
                     idempotency_key=idempotency_key,
                 )
+            _log_api_call_result(
+                event,
+                context,
+                route="/storage/upload",
+                status_code=200,
+                result="success",
+                request=request,
+                trans_id=payment_result.trans_id,
+            )
             return _response(200, response_body, headers=_payment_response_headers(payment_response_header))
         else:
             if request.ciphertext is None:
@@ -1677,6 +1774,17 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         "asset": payment_result.asset,
                         "amount": str(payment_result.amount),
                     }
+                )
+                _log_api_call_result(
+                    event,
+                    context,
+                    route="/storage/upload",
+                    status_code=207,
+                    result="partial_success",
+                    error_code="upload_failed_after_payment",
+                    error_message=str(s3_exc),
+                    request=request,
+                    trans_id=payment_result.trans_id,
                 )
                 return _response(
                     207,
@@ -1760,6 +1868,15 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 idempotency_key=idempotency_key,
             )
 
+        _log_api_call_result(
+            event,
+            context,
+            route="/storage/upload",
+            status_code=200,
+            result="success",
+            request=request,
+            trans_id=payment_result.trans_id,
+        )
         return _response(200, response_body, headers=_payment_response_headers(payment_response_header))
 
     except ForbiddenError as exc:
@@ -1773,6 +1890,16 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         if idempotency_lock_acquired and idempotency_table and idempotency_key:
             _release_idempotency_lock(idempotency_table, idempotency_key)
+        _log_api_call_result(
+            event,
+            context,
+            route="/storage/upload",
+            status_code=403,
+            result="forbidden",
+            error_code="wallet_mismatch",
+            error_message=str(exc),
+            request=request,
+        )
         return _error_response(403, "forbidden", str(exc))
 
     except BadRequestError as exc:
@@ -1786,6 +1913,16 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         if idempotency_lock_acquired and idempotency_table and idempotency_key:
             _release_idempotency_lock(idempotency_table, idempotency_key)
+        _log_api_call_result(
+            event,
+            context,
+            route="/storage/upload",
+            status_code=400,
+            result="bad_request",
+            error_code="bad_request",
+            error_message=str(exc),
+            request=request,
+        )
         return _error_response(400, "Bad request", str(exc))
 
     except NotFoundError as exc:
@@ -1799,6 +1936,16 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         if idempotency_lock_acquired and idempotency_table and idempotency_key:
             _release_idempotency_lock(idempotency_table, idempotency_key)
+        _log_api_call_result(
+            event,
+            context,
+            route="/storage/upload",
+            status_code=404,
+            result="not_found",
+            error_code="quote_not_found",
+            error_message=str(exc),
+            request=request,
+        )
         return _error_response(404, "quote_not_found", "Quote not found or expired")
 
     except PaymentRequiredError as exc:
@@ -1813,6 +1960,16 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         if idempotency_lock_acquired and idempotency_table and idempotency_key:
             _release_idempotency_lock(idempotency_table, idempotency_key)
         headers = _payment_required_headers(exc.requirements)
+        _log_api_call_result(
+            event,
+            context,
+            route="/storage/upload",
+            status_code=402,
+            result="payment_required",
+            error_code="payment_required",
+            error_message=exc.message,
+            request=request,
+        )
         return _error_response(402, "payment_required", exc.message, details=exc.details, headers=headers)
 
     except ConflictError as exc:
@@ -1823,6 +1980,16 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             error_message=str(exc),
             quote_id=request.quote_id if request else None,
             wallet_address=request.wallet_address if request else None,
+        )
+        _log_api_call_result(
+            event,
+            context,
+            route="/storage/upload",
+            status_code=409,
+            result="conflict",
+            error_code="idempotency_conflict",
+            error_message=str(exc),
+            request=request,
         )
         return _error_response(409, "conflict", str(exc))
 
@@ -1837,11 +2004,20 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         if idempotency_lock_acquired and idempotency_table and idempotency_key:
             _release_idempotency_lock(idempotency_table, idempotency_key)
+        _log_api_call_result(
+            event,
+            context,
+            route="/storage/upload",
+            status_code=500,
+            result="internal_error",
+            error_code="internal_error",
+            error_message=str(exc),
+            request=request,
+        )
         return _error_response(500, "Internal error", str(exc))
 
 
 def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    del context
     request: ParsedUploadConfirmRequest | None = None
 
     try:
@@ -1868,6 +2044,16 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
         )
         idempotency_item = idempotency_response.get("Item")
         if not idempotency_item:
+            _log_api_call_result(
+                event,
+                context,
+                route="/storage/upload/confirm",
+                status_code=404,
+                result="not_found",
+                error_code="idempotency_not_found",
+                error_message="Upload confirmation idempotency record not found",
+                request=request,
+            )
             return _error_response(404, "not_found", "Upload confirmation idempotency record not found")
 
         try:
@@ -1884,10 +2070,30 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
             except ClientError as exc:
                 if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                     raise
+            _log_api_call_result(
+                event,
+                context,
+                route="/storage/upload/confirm",
+                status_code=404,
+                result="not_found",
+                error_code="idempotency_not_found",
+                error_message="Upload confirmation idempotency record not found",
+                request=request,
+            )
             return _error_response(404, "not_found", "Upload confirmation idempotency record not found")
 
         status = str(idempotency_item.get("status") or "").lower()
         if status not in {"completed", "pending_confirmation"}:
+            _log_api_call_result(
+                event,
+                context,
+                route="/storage/upload/confirm",
+                status_code=409,
+                result="conflict",
+                error_code="confirm_not_pending",
+                error_message="Upload confirmation is not pending for this Idempotency-Key",
+                request=request,
+            )
             return _error_response(409, "conflict", "Upload confirmation is not pending for this Idempotency-Key")
 
         confirm_hash = _confirm_request_fingerprint(
@@ -1914,7 +2120,16 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
             raise ConflictError("wallet_address does not match pending confirmation idempotency state")
 
         if status == "completed":
-            return _cached_success_response(idempotency_item)
+            cached_response = _cached_success_response(idempotency_item)
+            _log_api_call_result(
+                event,
+                context,
+                route="/storage/upload/confirm",
+                status_code=200,
+                result="success",
+                request=request,
+            )
+            return cached_response
 
         payment_result = _payment_result_from_retryable_idempotency(idempotency_item)
         quote_context = _quote_context_from_retryable_idempotency(idempotency_item)
@@ -1926,6 +2141,16 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
         except ClientError as exc:
             error_code = exc.response.get("Error", {}).get("Code")
             if error_code in {"404", "NotFound", "NoSuchKey", "NoSuchBucket"}:
+                _log_api_call_result(
+                    event,
+                    context,
+                    route="/storage/upload/confirm",
+                    status_code=404,
+                    result="not_found",
+                    error_code="object_not_found",
+                    error_message="S3 object not found. Upload the file using the presigned URL first.",
+                    request=request,
+                )
                 return _error_response(
                     404,
                     "not_found",
@@ -2019,6 +2244,15 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
             idempotency_key=request.idempotency_key,
         )
 
+        _log_api_call_result(
+            event,
+            context,
+            route="/storage/upload/confirm",
+            status_code=200,
+            result="success",
+            request=request,
+            trans_id=payment_result.trans_id,
+        )
         return _response(
             200,
             completed_response_body,
@@ -2026,10 +2260,40 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
         )
 
     except ForbiddenError as exc:
+        _log_api_call_result(
+            event,
+            context,
+            route="/storage/upload/confirm",
+            status_code=403,
+            result="forbidden",
+            error_code="wallet_mismatch",
+            error_message=str(exc),
+            request=request,
+        )
         return _error_response(403, "forbidden", str(exc))
     except BadRequestError as exc:
+        _log_api_call_result(
+            event,
+            context,
+            route="/storage/upload/confirm",
+            status_code=400,
+            result="bad_request",
+            error_code="bad_request",
+            error_message=str(exc),
+            request=request,
+        )
         return _error_response(400, "Bad request", str(exc))
     except ConflictError as exc:
+        _log_api_call_result(
+            event,
+            context,
+            route="/storage/upload/confirm",
+            status_code=409,
+            result="conflict",
+            error_code="idempotency_conflict",
+            error_message=str(exc),
+            request=request,
+        )
         return _error_response(409, "conflict", str(exc))
     except Exception as exc:
         _log_event(
@@ -2040,5 +2304,15 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
             quote_id=request.quote_id if request else None,
             wallet_address=request.wallet_address if request else None,
             idempotency_key=request.idempotency_key if request else None,
+        )
+        _log_api_call_result(
+            event,
+            context,
+            route="/storage/upload/confirm",
+            status_code=500,
+            result="internal_error",
+            error_code="internal_error",
+            error_message=str(exc),
+            request=request,
         )
         return _error_response(500, "Internal error", str(exc))

@@ -180,6 +180,20 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertEqual(body["size_bytes"], 12345)
         self.assertEqual(body["bucket"], self.bucket)
 
+    def test_lambda_handler_logs_api_call_on_success(self):
+        with (
+            mock.patch.object(app.boto3, "client", return_value=self.s3_client),
+            mock.patch.object(app, "log_api_call") as log_api_call_mock,
+        ):
+            response = app.lambda_handler(self._get_event(), None)
+
+        self.assertEqual(response["statusCode"], 200)
+        log_api_call_mock.assert_called_once()
+        kwargs = log_api_call_mock.call_args.kwargs
+        self.assertEqual(kwargs["status_code"], 200)
+        self.assertEqual(kwargs["result"], "success")
+        self.assertEqual(kwargs["route"], "/storage/ls")
+
     def test_lambda_handler_post_success(self):
         with mock.patch.object(app.boto3, "client", return_value=self.s3_client):
             response = app.lambda_handler(self._post_event(), None)

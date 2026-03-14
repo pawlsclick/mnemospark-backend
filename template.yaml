@@ -26,6 +26,10 @@ Parameters:
     Type: String
     Default: "2592000"
     Description: TTL in seconds for wallet authorizer auth event records
+  ApiCallsTtlSeconds:
+    Type: String
+    Default: "2592000"
+    Description: TTL in seconds for API call logging records
   MnemosparkRecipientWallet:
     Type: String
     Default: "0x47D241ae97fE37186AC59894290CA1c54c060A6c"
@@ -159,6 +163,24 @@ Resources:
         - Key: Project
           Value: mnemospark
 
+  ApiCallsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-api-calls"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: request_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: request_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
   PriceStorageLambdaRole:
     Type: AWS::IAM::Role
     Properties:
@@ -192,6 +214,14 @@ Resources:
                   - pricing:GetProducts
                   # /price-storage currently uses only Pricing.GetProducts.
                 Resource: "*"
+        - PolicyName: price-storage-api-calls-write
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt ApiCallsTable.Arn
       Tags:
         - Key: Project
           Value: mnemospark
@@ -264,6 +294,14 @@ Resources:
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:mnemospark/relayer-private-key*"
+        - PolicyName: upload-api-calls-write
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt ApiCallsTable.Arn
       Tags:
         - Key: Project
           Value: mnemospark
@@ -452,6 +490,8 @@ Resources:
           PRICE_STORAGE_MARKUP_PERCENT: !Ref PriceStorageMarkupPercent
           PRICE_STORAGE_TRANSFER_DIRECTION: out
           PRICE_STORAGE_RATE_TYPE: BEFORE_DISCOUNTS
+          API_CALLS_TABLE_NAME: !Ref ApiCallsTable
+          API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
       Events:
         PriceStoragePost:
           Type: Api
@@ -470,8 +510,8 @@ Resources:
   StorageUploadFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: app.lambda_handler
-      CodeUri: services/storage-upload
+      Handler: storage_upload_entry.lambda_handler
+      CodeUri: services
       Role: !GetAtt UploadLambdaRole.Arn
       Environment:
         Variables:
@@ -485,6 +525,8 @@ Resources:
           MNEMOSPARK_BASE_RPC_URL: !Ref BaseRpcUrl
           # Secret value is created out-of-band by operator/pipeline in Secrets Manager.
           MNEMOSPARK_RELAYER_SECRET_ID: mnemospark/relayer-private-key
+          API_CALLS_TABLE_NAME: !Ref ApiCallsTable
+          API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
       Events:
         StorageUploadPost:
           Type: Api
@@ -516,8 +558,8 @@ Resources:
   StorageUploadConfirmFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: app.confirm_upload_handler
-      CodeUri: services/storage-upload
+      Handler: storage_upload_entry.confirm_upload_handler
+      CodeUri: services
       Role: !GetAtt UploadLambdaRole.Arn
       Environment:
         Variables:
@@ -531,6 +573,8 @@ Resources:
           MNEMOSPARK_BASE_RPC_URL: !Ref BaseRpcUrl
           # Secret value is created out-of-band by operator/pipeline in Secrets Manager.
           MNEMOSPARK_RELAYER_SECRET_ID: mnemospark/relayer-private-key
+          API_CALLS_TABLE_NAME: !Ref ApiCallsTable
+          API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
       Events:
         StorageUploadConfirmPost:
           Type: Api
@@ -559,8 +603,12 @@ Resources:
   StorageLsFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: app.lambda_handler
-      CodeUri: services/storage-ls
+      Handler: storage_ls_entry.lambda_handler
+      CodeUri: services
+      Environment:
+        Variables:
+          API_CALLS_TABLE_NAME: !Ref ApiCallsTable
+          API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
       Events:
         StorageLsGet:
           Type: Api
@@ -603,12 +651,20 @@ Resources:
               Resource:
                 - !Sub "arn:aws:s3:::mnemospark-*"
                 - !Sub "arn:aws:s3:::mnemospark-*/*"
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt ApiCallsTable.Arn
 
   StorageDownloadFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: app.lambda_handler
-      CodeUri: services/storage-download
+      Handler: storage_download_entry.lambda_handler
+      CodeUri: services
+      Environment:
+        Variables:
+          API_CALLS_TABLE_NAME: !Ref ApiCallsTable
+          API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
       Policies:
         - Version: "2012-10-17"
           Statement:
@@ -619,6 +675,10 @@ Resources:
               Resource:
                 - !Sub "arn:aws:s3:::mnemospark-*"
                 - !Sub "arn:aws:s3:::mnemospark-*/*"
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt ApiCallsTable.Arn
       Events:
         StorageDownloadGet:
           Type: Api
@@ -655,8 +715,12 @@ Resources:
   StorageDeleteFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: app.lambda_handler
-      CodeUri: services/storage-delete
+      Handler: storage_delete_entry.lambda_handler
+      CodeUri: services
+      Environment:
+        Variables:
+          API_CALLS_TABLE_NAME: !Ref ApiCallsTable
+          API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
       Events:
         StorageDeleteDelete:
           Type: Api
@@ -702,6 +766,10 @@ Resources:
               Resource:
                 - !Sub "arn:aws:s3:::mnemospark-*"
                 - !Sub "arn:aws:s3:::mnemospark-*/*"
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt ApiCallsTable.Arn
 
   StorageHousekeepingFunction:
     Type: AWS::Serverless::Function
@@ -1013,6 +1081,16 @@ Outputs:
     Value: !GetAtt WalletAuthEventsTable.Arn
     Export:
       Name: !Sub "${AWS::StackName}-WalletAuthEventsTableArn"
+  ApiCallsTableName:
+    Description: DynamoDB table name for API call logs
+    Value: !Ref ApiCallsTable
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiCallsTableName"
+  ApiCallsTableArn:
+    Description: DynamoDB table ARN for API call logs
+    Value: !GetAtt ApiCallsTable.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiCallsTableArn"
   PriceStorageLambdaRoleArn:
     Description: IAM role ARN for price-storage Lambda (quotes read/write)
     Value: !GetAtt PriceStorageLambdaRole.Arn
