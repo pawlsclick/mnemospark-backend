@@ -219,10 +219,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - dynamodb:DescribeTable
-                  - dynamodb:GetItem
                   - dynamodb:PutItem
-                  - dynamodb:UpdateItem
                 Resource: !GetAtt QuotesTable.Arn
         - PolicyName: price-storage-pricing-query
           PolicyDocument:
@@ -264,9 +261,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - dynamodb:DescribeTable
                   - dynamodb:GetItem
-                  - dynamodb:Query
                   - dynamodb:DeleteItem
                 Resource: !GetAtt QuotesTable.Arn
         - PolicyName: upload-dynamodb-transaction-log-write
@@ -275,9 +270,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - dynamodb:DescribeTable
                   - dynamodb:PutItem
-                  - dynamodb:UpdateItem
                 Resource: !GetAtt UploadTransactionLogTable.Arn
         - PolicyName: upload-dynamodb-idempotency
           PolicyDocument:
@@ -285,10 +278,8 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - dynamodb:DescribeTable
                   - dynamodb:GetItem
                   - dynamodb:PutItem
-                  - dynamodb:UpdateItem
                   - dynamodb:DeleteItem
                 Resource: !GetAtt UploadIdempotencyTable.Arn
         - PolicyName: upload-dynamodb-payment-ledger-read
@@ -297,7 +288,6 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - dynamodb:DescribeTable
                   - dynamodb:GetItem
                 Resource: !GetAtt PaymentLedgerTable.Arn
         - PolicyName: upload-s3-storage-write
@@ -307,13 +297,13 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:CreateBucket
-                  - s3:HeadBucket
-                  - s3:HeadObject
+                  - s3:ListBucket
+                Resource: !Sub "arn:aws:s3:::mnemospark-*"
+              - Effect: Allow
+                Action:
                   - s3:GetObject
                   - s3:PutObject
-                Resource:
-                  - !Sub "arn:aws:s3:::mnemospark-*"
-                  - !Sub "arn:aws:s3:::mnemospark-*/*"
+                Resource: !Sub "arn:aws:s3:::mnemospark-*/*"
         - PolicyName: upload-api-calls-write
           PolicyDocument:
             Version: "2012-10-17"
@@ -345,7 +335,6 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - dynamodb:DescribeTable
                   - dynamodb:GetItem
                 Resource: !GetAtt QuotesTable.Arn
         - PolicyName: payment-settle-dynamodb-ledger-write
@@ -354,7 +343,6 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - dynamodb:DescribeTable
                   - dynamodb:GetItem
                   - dynamodb:PutItem
                   - dynamodb:DeleteItem
@@ -775,10 +763,11 @@ Resources:
             - Effect: Allow
               Action:
                 - s3:ListBucket
+              Resource: !Sub "arn:aws:s3:::mnemospark-*"
+            - Effect: Allow
+              Action:
                 - s3:GetObject
-              Resource:
-                - !Sub "arn:aws:s3:::mnemospark-*"
-                - !Sub "arn:aws:s3:::mnemospark-*/*"
+              Resource: !Sub "arn:aws:s3:::mnemospark-*/*"
             - Effect: Allow
               Action:
                 - dynamodb:PutItem
@@ -799,10 +788,11 @@ Resources:
             - Effect: Allow
               Action:
                 - s3:ListBucket
+              Resource: !Sub "arn:aws:s3:::mnemospark-*"
+            - Effect: Allow
+              Action:
                 - s3:GetObject
-              Resource:
-                - !Sub "arn:aws:s3:::mnemospark-*"
-                - !Sub "arn:aws:s3:::mnemospark-*/*"
+              Resource: !Sub "arn:aws:s3:::mnemospark-*/*"
             - Effect: Allow
               Action:
                 - dynamodb:PutItem
@@ -886,14 +876,14 @@ Resources:
           Statement:
             - Effect: Allow
               Action:
-                - s3:HeadBucket
-                - s3:GetObject
-                - s3:DeleteObject
                 - s3:ListBucket
                 - s3:DeleteBucket
-              Resource:
-                - !Sub "arn:aws:s3:::mnemospark-*"
-                - !Sub "arn:aws:s3:::mnemospark-*/*"
+              Resource: !Sub "arn:aws:s3:::mnemospark-*"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:DeleteObject
+              Resource: !Sub "arn:aws:s3:::mnemospark-*/*"
             - Effect: Allow
               Action:
                 - dynamodb:PutItem
@@ -916,20 +906,19 @@ Resources:
           Statement:
             - Effect: Allow
               Action:
-                - dynamodb:DescribeTable
                 - dynamodb:Scan
                 - dynamodb:DeleteItem
               Resource: !GetAtt UploadTransactionLogTable.Arn
             - Effect: Allow
               Action:
-                - s3:HeadBucket
-                - s3:HeadObject
                 - s3:ListBucket
-                - s3:DeleteObject
                 - s3:DeleteBucket
-              Resource:
-                - !Sub "arn:aws:s3:::mnemospark-*"
-                - !Sub "arn:aws:s3:::mnemospark-*/*"
+              Resource: !Sub "arn:aws:s3:::mnemospark-*"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:DeleteObject
+              Resource: !Sub "arn:aws:s3:::mnemospark-*/*"
 
   StorageHousekeepingScheduleRule:
     Type: AWS::Events::Rule
