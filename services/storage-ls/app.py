@@ -24,6 +24,19 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
+try:
+    from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
+
+
+log_api_call = load_log_api_call()
+_log_api_call_result = load_log_api_call_result("/storage/ls", log_api_call_getter=lambda: log_api_call)
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -238,7 +251,6 @@ def parse_input(event: dict[str, Any]) -> ParsedLsRequest:
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    del context
     request: ParsedLsRequest | None = None
     bucket_name: str | None = None
     try:
@@ -274,6 +286,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             bucket_name=bucket_name,
             size_bytes=object_size,
         )
+        _log_api_call_result(
+            event,
+            context,
+            status_code=200,
+            result="success",
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+        )
 
         return _response(
             200,
@@ -293,12 +313,32 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             wallet_address=request.wallet_address if request else None,
             object_key=request.object_key if request else None,
         )
+        _log_api_call_result(
+            event,
+            context,
+            status_code=403,
+            result="forbidden",
+            error_code="wallet_mismatch",
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         return _error_response(403, "forbidden", str(exc))
     except BadRequestError as exc:
         _log_event(
             logging.WARNING,
             "storage_ls_bad_request",
             error_type=type(exc).__name__,
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
+        _log_api_call_result(
+            event,
+            context,
+            status_code=400,
+            result="bad_request",
+            error_code="bad_request",
             error_message=str(exc),
             wallet_address=request.wallet_address if request else None,
             object_key=request.object_key if request else None,
@@ -314,6 +354,16 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             object_key=request.object_key if request else None,
             bucket_name=bucket_name,
         )
+        _log_api_call_result(
+            event,
+            context,
+            status_code=404,
+            result="not_found",
+            error_code=exc.error,
+            error_message=exc.message,
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         return _error_response(404, exc.error, exc.message)
     except Exception as exc:
         _log_event(
@@ -324,5 +374,15 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             wallet_address=request.wallet_address if request else None,
             object_key=request.object_key if request else None,
             bucket_name=bucket_name,
+        )
+        _log_api_call_result(
+            event,
+            context,
+            status_code=500,
+            result="internal_error",
+            error_code="internal_error",
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
         )
         return _error_response(500, "Internal error", str(exc))

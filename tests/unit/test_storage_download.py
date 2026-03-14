@@ -159,6 +159,23 @@ class LambdaHandlerTests(unittest.TestCase):
         )
         self.assertEqual(generate_call["Params"]["Key"], "backup.tar.gz")
 
+    def test_lambda_handler_logs_api_call_on_success(self):
+        fake_s3_client = FakeS3Client()
+        event = self._event()
+
+        with (
+            mock.patch.object(app.boto3, "client", return_value=fake_s3_client),
+            mock.patch.object(app, "log_api_call") as log_api_call_mock,
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 200)
+        log_api_call_mock.assert_called_once()
+        kwargs = log_api_call_mock.call_args.kwargs
+        self.assertEqual(kwargs["status_code"], 200)
+        self.assertEqual(kwargs["result"], "success")
+        self.assertEqual(kwargs["route"], "/storage/download")
+
     def test_lambda_handler_returns_404_when_bucket_missing(self):
         fake_s3_client = FakeS3Client(bucket_missing=True)
 
