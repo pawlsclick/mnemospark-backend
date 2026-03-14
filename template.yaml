@@ -181,6 +181,25 @@ Resources:
         - Key: Project
           Value: mnemospark
 
+  PaymentLedgerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-payments"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: wallet_address
+          AttributeType: S
+        - AttributeName: quote_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: wallet_address
+          KeyType: HASH
+        - AttributeName: quote_id
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
   PriceStorageLambdaRole:
     Type: AWS::IAM::Role
     Properties:
@@ -295,6 +314,58 @@ Resources:
                   - secretsmanager:GetSecretValue
                 Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:mnemospark/relayer-private-key*"
         - PolicyName: upload-api-calls-write
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt ApiCallsTable.Arn
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  PaymentSettleLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: payment-settle-dynamodb-quotes-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                Resource: !GetAtt QuotesTable.Arn
+        - PolicyName: payment-settle-dynamodb-ledger-write
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource: !GetAtt PaymentLedgerTable.Arn
+        - PolicyName: payment-settle-relayer-secret-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:mnemospark/relayer-private-key*"
+        - PolicyName: payment-settle-api-calls-write
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
@@ -476,6 +547,24 @@ Resources:
               type: string
             location:
               type: string
+        PaymentSettleRequest:
+          type: object
+          required:
+            - quote_id
+            - wallet_address
+          properties:
+            quote_id:
+              type: string
+            wallet_address:
+              type: string
+            payment:
+              type: object
+              description: Inline payment authorization payload.
+            payment_authorization:
+              oneOf:
+                - type: object
+                - type: string
+              description: Alternate inline payment authorization envelope.
 
   PriceStorageFunction:
     Type: AWS::Serverless::Function
@@ -597,6 +686,49 @@ Resources:
                   Required: false
                   Caching: false
               - method.request.header.x-wallet-signature:
+                  Required: false
+                  Caching: false
+
+  PaymentSettleFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: payment_settle_entry.lambda_handler
+      CodeUri: services
+      Role: !GetAtt PaymentSettleLambdaRole.Arn
+      Environment:
+        Variables:
+          QUOTES_TABLE_NAME: !Ref QuotesTable
+          PAYMENT_LEDGER_TABLE_NAME: !Ref PaymentLedgerTable
+          MNEMOSPARK_RECIPIENT_WALLET: !Ref MnemosparkRecipientWallet
+          MNEMOSPARK_PAYMENT_NETWORK: !Ref PaymentNetwork
+          MNEMOSPARK_PAYMENT_ASSET: !Ref PaymentAssetAddress
+          MNEMOSPARK_PAYMENT_SETTLEMENT_MODE: !Ref PaymentSettlementMode
+          MNEMOSPARK_BASE_RPC_URL: !Ref BaseRpcUrl
+          MNEMOSPARK_RELAYER_SECRET_ID: mnemospark/relayer-private-key
+          API_CALLS_TABLE_NAME: !Ref ApiCallsTable
+          API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
+      Events:
+        PaymentSettlePost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /payment/settle
+            Method: POST
+            Auth:
+              Authorizer: WalletRequestAuthorizer
+            RequestModel:
+              Model: PaymentSettleRequest
+              Required: true
+              ValidateBody: true
+              ValidateParameters: true
+            RequestParameters:
+              - method.request.header.PAYMENT-SIGNATURE:
+                  Required: false
+                  Caching: false
+              - method.request.header.x-payment:
+                  Required: false
+                  Caching: false
+              - method.request.header.X-PAYMENT:
                   Required: false
                   Caching: false
 
@@ -840,6 +972,15 @@ Resources:
         - Key: Project
           Value: mnemospark
 
+  PaymentSettleFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${PaymentSettleFunction}"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
   StorageLsFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -1071,6 +1212,16 @@ Outputs:
     Value: !GetAtt UploadIdempotencyTable.Arn
     Export:
       Name: !Sub "${AWS::StackName}-UploadIdempotencyTableArn"
+  PaymentLedgerTableName:
+    Description: DynamoDB table name for settled payment ledger records
+    Value: !Ref PaymentLedgerTable
+    Export:
+      Name: !Sub "${AWS::StackName}-PaymentLedgerTableName"
+  PaymentLedgerTableArn:
+    Description: DynamoDB table ARN for settled payment ledger records
+    Value: !GetAtt PaymentLedgerTable.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-PaymentLedgerTableArn"
   WalletAuthEventsTableName:
     Description: DynamoDB table name for wallet authorizer auth decision events
     Value: !Ref WalletAuthEventsTable
@@ -1116,6 +1267,9 @@ Outputs:
   StorageUploadFunctionArn:
     Description: Lambda function ARN for /storage/upload
     Value: !GetAtt StorageUploadFunction.Arn
+  PaymentSettleFunctionArn:
+    Description: Lambda function ARN for /payment/settle
+    Value: !GetAtt PaymentSettleFunction.Arn
   StorageLsFunctionArn:
     Description: Lambda function ARN for /storage/ls
     Value: !GetAtt StorageLsFunction.Arn
