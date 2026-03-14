@@ -26,7 +26,7 @@ sam deploy --guided
 On first deploy, `--guided` will prompt for:
 
 - **Stack name**: e.g. `s3-cost-estimate-api`
-- **AWS Region**: e.g. `us-east-1` (BCM Pricing Calculator is in us-east-1)
+- **AWS Region**: e.g. `REGION_PLACEHOLDER` (BCM Pricing Calculator is in `REGION_PLACEHOLDER`)
 - **Confirm changes before deploy**: Y
 - **Allow SAM CLI IAM role creation**: Y
 - **Disable rollback**: N
@@ -39,7 +39,7 @@ cd examples/s3-cost-estimate-api
 sam build && sam deploy
 ```
 
-Use the same stack name and region as first deploy (e.g. `mnemospark-cost-estimate` in `eu-north-1`); answer prompts or rely on `samconfig.toml` if you saved args.
+Use the same stack name and region as first deploy (e.g. `mnemospark-cost-estimate` in `REGION_PLACEHOLDER`); answer prompts or rely on `samconfig.toml` if you saved args.
 
 ## Invoke the API
 
@@ -49,17 +49,17 @@ After deploy, the stack **Outputs** give the API URL. Use it like this:
 
 ```bash
 # Required: gb. Optional: region, rate_type (BEFORE_DISCOUNTS | AFTER_DISCOUNTS | AFTER_DISCOUNTS_AND_COMMITMENTS)
-curl -H "x-api-key: YOUR_KEY" "https://YOUR_API_ID.execute-api.eu-north-1.amazonaws.com/prod/estimate?gb=100"
-curl -H "x-api-key: YOUR_KEY" "https://YOUR_API_ID.execute-api.eu-north-1.amazonaws.com/prod/estimate?gb=100&region=eu-north-1"
+curl -H "x-api-key: YOUR_KEY" "https://YOUR_API_ID.execute-api.REGION_PLACEHOLDER.amazonaws.com/prod/estimate?gb=100"
+curl -H "x-api-key: YOUR_KEY" "https://YOUR_API_ID.execute-api.REGION_PLACEHOLDER.amazonaws.com/prod/estimate?gb=100&region=REGION_PLACEHOLDER"
 ```
 
 **POST (JSON body):**
 
 ```bash
-curl -X POST "https://YOUR_API_ID.execute-api.eu-north-1.amazonaws.com/prod/estimate" \
+curl -X POST "https://YOUR_API_ID.execute-api.REGION_PLACEHOLDER.amazonaws.com/prod/estimate" \
   -H "x-api-key: YOUR_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"gb": 100, "region": "eu-north-1", "rateType": "BEFORE_DISCOUNTS"}'
+  -d '{"gb": 100, "region": "REGION_PLACEHOLDER", "rateType": "BEFORE_DISCOUNTS"}'
 ```
 
 **Example response (200):**
@@ -69,7 +69,7 @@ curl -X POST "https://YOUR_API_ID.execute-api.eu-north-1.amazonaws.com/prod/esti
   "estimatedCost": 2.3,
   "currency": "USD",
   "storageGbMonth": 100,
-  "region": "us-east-1",
+  "region": "REGION_PLACEHOLDER",
   "rateType": "BEFORE_DISCOUNTS"
 }
 ```
@@ -106,14 +106,14 @@ aws apigateway get-api-keys --include-values --query "items[?name=='S3CostEstima
 aws apigateway get-api-key --api-key YOUR_KEY_ID --include-value --query "value" --output text
 ```
 
-Use the **region** where you deployed (e.g. `--region us-east-1`).
+Use the **region** where you deployed (e.g. `--region REGION_PLACEHOLDER`).
 
 ### Call the API with the key
 
 Send the key in the **`x-api-key`** header:
 
 ```bash
-curl -H "x-api-key: YOUR_API_KEY" "https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod/estimate?gb=100"
+curl -H "x-api-key: YOUR_API_KEY" "https://YOUR_API_ID.execute-api.REGION_PLACEHOLDER.amazonaws.com/prod/estimate?gb=100"
 ```
 
 Without a valid key, API Gateway returns `403 Forbidden`.

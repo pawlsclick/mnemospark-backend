@@ -1,8 +1,8 @@
 """
-Lambda handler for S3 storage cost estimate REST API.
+Lambda handler for data transfer cost estimate REST API.
 
-Accepts GET or POST with query params or JSON body: gb, region, rate_type.
-Returns JSON: { estimatedCost, currency, storageGbMonth, region, rateType }.
+Accepts GET or POST with query params or JSON body: direction, gb, region, rate_type.
+Returns JSON: { estimatedCost, currency, dataGb, direction, region, rateType }.
 """
 
 import json
@@ -11,22 +11,44 @@ from typing import Any
 
 import boto3
 
-S3_STANDARD_STORAGE_USAGE_TYPE = "TimedStorage-ByteHrs"
+REGION_CODES = {
+    "REGION_PLACEHOLDER": "USE1",
+    "us-east-2": "USE2",
+    "us-west-1": "USW1",
+    "us-west-2": "USW2",
+    "eu-west-1": "EUW1",
+    "eu-west-2": "EUW2",
+    "eu-central-1": "EUC1",
+    "eu-central-2": "EUC2",
+    "eu-north-1": "EUN1",
+    "ap-northeast-1": "APN1",
+    "ap-northeast-2": "APN2",
+    "ap-southeast-1": "APS1",
+    "ap-southeast-2": "APS2",
+    "ap-south-1": "AP1",
+    "sa-east-1": "SAE1",
+}
+USAGE_TYPE_EGRESS = "DataTransfer-Out-Bytes"
+USAGE_TYPE_REGIONAL = "DataTransfer-Regional-Bytes"
 VALID_RATE_TYPES = ("BEFORE_DISCOUNTS", "AFTER_DISCOUNTS", "AFTER_DISCOUNTS_AND_COMMITMENTS")
 
 
-def estimate_s3_storage_cost(
-    storage_gb_month: float,
-    region: str = "us-east-1",
+def estimate_data_transfer_cost(
+    data_gb: float,
+    direction: str,
+    region: str = "REGION_PLACEHOLDER",
     rate_type: str = "BEFORE_DISCOUNTS",
     account_id: str | None = None,
 ) -> dict[str, Any]:
-    client = boto3.client("bcm-pricing-calculator", region_name="us-east-1")
+    client = boto3.client("bcm-pricing-calculator", region_name="REGION_PLACEHOLDER")
     if not account_id:
         account_id = boto3.client("sts").get_caller_identity()["Account"]
 
+    region_code = REGION_CODES.get(region, "USE1")
+    usage_type = f"{region_code}-{USAGE_TYPE_EGRESS}" if direction == "out" else f"{region_code}-{USAGE_TYPE_REGIONAL}"
+
     create = client.create_workload_estimate(
-        name="S3-storage-cost-estimate",
+        name="DataTransfer-cost-est",
         rateType=rate_type,
     )
     workload_id = create["id"]
@@ -36,12 +58,12 @@ def estimate_s3_storage_cost(
             workloadEstimateId=workload_id,
             usage=[
                 {
-                    "serviceCode": "AmazonS3",
-                    "usageType": S3_STANDARD_STORAGE_USAGE_TYPE,
+                    "serviceCode": "AmazonEC2",
+                    "usageType": usage_type,
                     "operation": "",
-                    "key": "s3storage",
+                    "key": "dtxfer01",
                     "usageAccountId": str(account_id),
-                    "amount": float(storage_gb_month),
+                    "amount": float(data_gb) * (1024**3),
                     "group": "mnemospark",
                 }
             ],
@@ -59,7 +81,7 @@ def estimate_s3_storage_cost(
 
 
 def parse_input(event: dict[str, Any]) -> dict[str, Any]:
-    """Extract gb, region, rate_type from API Gateway event (query or body)."""
+    """Extract direction, gb, region, rate_type from API Gateway event (query or body)."""
     params = event.get("queryStringParameters") or {}
     if event.get("body"):
         try:
@@ -67,12 +89,15 @@ def parse_input(event: dict[str, Any]) -> dict[str, Any]:
             params = {**params, **body}
         except json.JSONDecodeError:
             pass
-    gb = float(params.get("gb", params.get("storageGbMonth", 100)))
-    region = params.get("region", "us-east-1")
+    direction = (params.get("direction") or "in").lower()
+    if direction not in ("in", "out"):
+        direction = "in"
+    gb = float(params.get("gb", 100))
+    region = params.get("region", "REGION_PLACEHOLDER")
     rate_type = params.get("rate_type", params.get("rateType", "BEFORE_DISCOUNTS"))
     if rate_type not in VALID_RATE_TYPES:
         rate_type = "BEFORE_DISCOUNTS"
-    return {"gb": gb, "region": region, "rate_type": rate_type}
+    return {"direction": direction, "gb": gb, "region": region, "rate_type": rate_type}
 
 
 def response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:
@@ -86,15 +111,17 @@ def response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     try:
         inp = parse_input(event)
-        result = estimate_s3_storage_cost(
-            storage_gb_month=inp["gb"],
+        result = estimate_data_transfer_cost(
+            data_gb=inp["gb"],
+            direction=inp["direction"],
             region=inp["region"],
             rate_type=inp["rate_type"],
         )
         return response(200, {
             "estimatedCost": round(result["totalCost"], 2),
             "currency": result["costCurrency"],
-            "storageGbMonth": inp["gb"],
+            "dataGb": inp["gb"],
+            "direction": inp["direction"],
             "region": inp["region"],
             "rateType": inp["rate_type"],
         })

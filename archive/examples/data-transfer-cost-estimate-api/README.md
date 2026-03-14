@@ -35,7 +35,7 @@ After deploy, use the API URL from stack **Outputs**. Send the API key in the **
 ```bash
 # direction: in (ingress/regional) or out (egress). Optional: gb, region, rate_type
 curl -H "x-api-key: YOUR_KEY" "https://YOUR_API_ID.execute-api.REGION.amazonaws.com/prod/estimate?direction=in&gb=100"
-curl -H "x-api-key: YOUR_KEY" "https://YOUR_API_ID.execute-api.REGION.amazonaws.com/prod/estimate?direction=out&gb=500&region=eu-north-1"
+curl -H "x-api-key: YOUR_KEY" "https://YOUR_API_ID.execute-api.REGION.amazonaws.com/prod/estimate?direction=out&gb=500&region=REGION_PLACEHOLDER"
 ```
 
 **POST (JSON body):**
@@ -44,7 +44,7 @@ curl -H "x-api-key: YOUR_KEY" "https://YOUR_API_ID.execute-api.REGION.amazonaws.
 curl -X POST "https://YOUR_API_ID.execute-api.REGION.amazonaws.com/prod/estimate" \
   -H "x-api-key: YOUR_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"direction": "in", "gb": 100, "region": "us-east-1", "rateType": "BEFORE_DISCOUNTS"}'
+  -d '{"direction": "in", "gb": 100, "region": "REGION_PLACEHOLDER", "rateType": "BEFORE_DISCOUNTS"}'
 ```
 
 **Example response (200):**
@@ -55,7 +55,7 @@ curl -X POST "https://YOUR_API_ID.execute-api.REGION.amazonaws.com/prod/estimate
   "currency": "USD",
   "dataGb": 100,
   "direction": "in",
-  "region": "us-east-1",
+  "region": "REGION_PLACEHOLDER",
   "rateType": "BEFORE_DISCOUNTS"
 }
 ```

@@ -5,6 +5,10 @@
 Current deployed paths are unversioned, but they are treated as **v1 semantics**
 for compatibility and future versioned routing work.
 
+Production backend implementation lives in `template.yaml` and `services/`.
+Legacy proofs-of-concept are archived under `archive/examples/` and are not part
+of the supported API surface documented here.
+
 ## Public endpoint inventory
 
 The current internet-facing API Gateway routes are:
