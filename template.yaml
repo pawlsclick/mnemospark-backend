@@ -356,6 +356,7 @@ Resources:
                   - dynamodb:DescribeTable
                   - dynamodb:GetItem
                   - dynamodb:PutItem
+                  - dynamodb:DeleteItem
                 Resource: !GetAtt PaymentLedgerTable.Arn
         - PolicyName: payment-settle-relayer-secret-read
           PolicyDocument:
