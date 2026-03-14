@@ -356,12 +356,68 @@ def _write_payment_ledger(
                 "recipient_wallet": payment_config["recipient_wallet"],
                 "settlement_mode": settlement_mode,
             },
+            ConditionExpression=(
+                "attribute_exists(wallet_address) AND attribute_exists(quote_id) "
+                "AND payment_status = :expected_status"
+            ),
+            ExpressionAttributeValues={":expected_status": "settlement_in_progress"},
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            raise RuntimeError("payment settlement ledger claim is missing") from exc
+        raise
+
+
+def _claim_payment_ledger(
+    payments_table: Any,
+    request: ParsedPaymentSettleRequest,
+    quote_context: QuoteContext,
+    payment_config: dict[str, str],
+    now: int,
+) -> None:
+    timestamp = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    payment_received_at = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+    settlement_mode = os.environ.get("MNEMOSPARK_PAYMENT_SETTLEMENT_MODE", "onchain").strip().lower() or "onchain"
+    key = {"wallet_address": request.wallet_address, "quote_id": request.quote_id}
+
+    try:
+        payments_table.put_item(
+            Item={
+                **key,
+                "payment_status": "settlement_in_progress",
+                "timestamp": timestamp,
+                "payment_received_at": payment_received_at,
+                "storage_price": str(quote_context.storage_price),
+                "provider": quote_context.provider,
+                "location": quote_context.location,
+                "recipient_wallet": payment_config["recipient_wallet"],
+                "settlement_mode": settlement_mode,
+            },
             ConditionExpression="attribute_not_exists(wallet_address) AND attribute_not_exists(quote_id)",
         )
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
             raise
-        raise ConflictError("payment already settled for this quote and wallet") from exc
+        existing = payments_table.get_item(Key=key, ConsistentRead=True).get("Item") or {}
+        existing_status = str(existing.get("payment_status") or "").strip().lower()
+        if existing_status == "confirmed":
+            raise ConflictError("payment already settled for this quote and wallet") from exc
+        raise ConflictError("payment settlement already in progress for this quote and wallet") from exc
+
+
+def _release_payment_ledger_claim(payments_table: Any, request: ParsedPaymentSettleRequest) -> None:
+    delete_item = getattr(payments_table, "delete_item", None)
+    if not callable(delete_item):
+        return
+    try:
+        delete_item(
+            Key={"wallet_address": request.wallet_address, "quote_id": request.quote_id},
+            ConditionExpression="payment_status = :status",
+            ExpressionAttributeValues={":status": "settlement_in_progress"},
+        )
+    except Exception:
+        # Best-effort cleanup only when payment settlement has not happened.
+        return
 
 
 def _log_api_call_result(
@@ -391,6 +447,8 @@ def _log_api_call_result(
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     request: ParsedPaymentSettleRequest | None = None
+    payments_table: Any | None = None
+    ledger_claimed = False
     payment_core = _payment_core()
 
     try:
@@ -407,6 +465,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
         payment_config = payment_core._payment_config()
         requirements = payment_core._payment_requirements(quote_context, payment_config)
+        _claim_payment_ledger(
+            payments_table=payments_table,
+            request=request,
+            quote_context=quote_context,
+            payment_config=payment_config,
+            now=now,
+        )
+        ledger_claimed = True
 
         try:
             payment_result = payment_core.verify_and_settle_payment(
@@ -422,6 +488,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         except Exception as exc:
             if exc.__class__.__name__ != "PaymentRequiredError":
                 raise
+            if ledger_claimed and payments_table is not None:
+                _release_payment_ledger_claim(payments_table, request)
+                ledger_claimed = False
             raise PaymentRequiredError(
                 message=getattr(exc, "message", "Payment authorization is invalid"),
                 requirements=getattr(exc, "requirements", requirements),
@@ -436,6 +505,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             payment_config=payment_config,
             now=now,
         )
+        ledger_claimed = False
 
         response_body = {
             "quote_id": request.quote_id,

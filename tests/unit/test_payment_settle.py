@@ -108,7 +108,7 @@ class FakeDynamoTable:
             return {}
         return {"Item": dict(item)}
 
-    def put_item(self, Item, ConditionExpression=None):
+    def put_item(self, Item, ConditionExpression=None, ExpressionAttributeValues=None):
         key_tuple = self._key_tuple(Item)
         if ConditionExpression == "attribute_not_exists(wallet_address) AND attribute_not_exists(quote_id)":
             if key_tuple in self.items:
@@ -116,7 +116,33 @@ class FakeDynamoTable:
                     {"Error": {"Code": "ConditionalCheckFailedException", "Message": "duplicate"}},
                     "PutItem",
                 )
+        if (
+            ConditionExpression
+            == "attribute_exists(wallet_address) AND attribute_exists(quote_id) AND payment_status = :expected_status"
+        ):
+            expected_status = (
+                None if ExpressionAttributeValues is None else ExpressionAttributeValues.get(":expected_status")
+            )
+            existing = self.items.get(key_tuple)
+            if existing is None or existing.get("payment_status") != expected_status:
+                raise ClientError(
+                    {"Error": {"Code": "ConditionalCheckFailedException", "Message": "missing claim"}},
+                    "PutItem",
+                )
         self.items[key_tuple] = dict(Item)
+        return {}
+
+    def delete_item(self, Key, ConditionExpression=None, ExpressionAttributeValues=None):
+        key_tuple = self._key_tuple(Key)
+        existing = self.items.get(key_tuple)
+        if ConditionExpression == "payment_status = :status":
+            expected_status = None if ExpressionAttributeValues is None else ExpressionAttributeValues.get(":status")
+            if existing is None or existing.get("payment_status") != expected_status:
+                raise ClientError(
+                    {"Error": {"Code": "ConditionalCheckFailedException", "Message": "condition failed"}},
+                    "DeleteItem",
+                )
+        self.items.pop(key_tuple, None)
         return {}
 
 
@@ -230,6 +256,36 @@ class PaymentSettleHandlerTests(unittest.TestCase):
         self.assertEqual(second["statusCode"], 409)
         second_body = json.loads(second["body"])
         self.assertEqual(second_body["error"], "conflict")
+        self.assertEqual(len(self.fake_payment_core.verify_calls), 1)
+
+    def test_confirmed_duplicate_is_blocked_before_settlement(self):
+        self.payments_table.put_item(
+            Item={
+                "wallet_address": self.wallet_address,
+                "quote_id": self.quote_id,
+                "payment_status": "confirmed",
+                "trans_id": "0xalready",
+            }
+        )
+        event = self._event(headers={"PAYMENT-SIGNATURE": "signed-payload"})
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 409)
+        self.assertEqual(len(self.fake_payment_core.verify_calls), 0)
+
+    def test_payment_required_releases_ledger_claim(self):
+        self.fake_payment_core.verify_raises = PaymentRequiredError(
+            "Payment authorization is invalid",
+            {"accepts": [{"network": "eip155:8453"}]},
+            details="bad_signature",
+        )
+        event = self._event(headers={"PAYMENT-SIGNATURE": "bad-payload"})
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 402)
+        self.assertNotIn((("wallet_address", self.wallet_address), ("quote_id", self.quote_id)), self.payments_table.items)
 
     def test_missing_authorizer_context_returns_403(self):
         event = self._event(include_authorizer=False, headers={"PAYMENT-SIGNATURE": "signed-payload"})
