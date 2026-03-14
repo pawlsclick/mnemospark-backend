@@ -2,6 +2,8 @@ openapi: "3.2.0"
 info:
   title: mnemospark-backend API
   version: "0.1.0"
+  license:
+    name: Proprietary
   description: >
     Descriptive OpenAPI skeleton for currently deployed mnemospark-backend
     public endpoints. Paths are unversioned today, but treated as v1 semantics.
@@ -255,6 +257,12 @@ paths:
           $ref: "#/components/responses/ForbiddenError"
         "404":
           $ref: "#/components/responses/NotFoundError"
+        "405":
+          description: Method not allowed (only GET and POST are supported)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
     post:
@@ -290,6 +298,12 @@ paths:
           $ref: "#/components/responses/ForbiddenError"
         "404":
           $ref: "#/components/responses/NotFoundError"
+        "405":
+          description: Method not allowed (only GET and POST are supported)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -356,9 +370,12 @@ components:
       in: header
       name: X-Wallet-Signature
       description: >
-        Placeholder security scheme for wallet proof authentication.
-        Current backend verifies signed wallet proofs in a custom header envelope.
-        This model is intentionally high-level and will be refined in later tasks.
+        Wallet proof authentication. The client proves control of a wallet by signing
+        a structured request payload (EIP-712 MnemosparkRequest: method, path,
+        walletAddress, nonce, timestamp) and sending the result in this header.
+        The header value is base64-encoded JSON with payloadB64, signature, and address.
+        The backend verifies the EIP-712 signature and rejects requests with missing,
+        malformed, or invalid proofs (403). Required for all wallet-scoped endpoints.
 
   parameters:
     WalletAddressQuery:
@@ -472,6 +489,7 @@ components:
           type: number
           minimum: 0
           exclusiveMinimum: 0
+          description: Storage size in GB; must be greater than 0.
         provider:
           type: string
           description: Currently expected as "aws".
