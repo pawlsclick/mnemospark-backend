@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import time
+from functools import partial
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -28,21 +29,39 @@ from botocore.exceptions import ClientError
 
 try:
     from common.log_api_call_loader import load_log_api_call
+    from common.request_log_utils import (
+        build_log_event,
+        request_id,
+        request_method,
+        request_path,
+        sanitize_error_message,
+    )
 except ModuleNotFoundError:
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from common.log_api_call_loader import load_log_api_call
+    from common.request_log_utils import (
+        build_log_event,
+        request_id,
+        request_method,
+        request_path,
+        sanitize_error_message,
+    )
 
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 log_api_call = load_log_api_call(emit_warning=True, logger=logger)
+_log_event = build_log_event(logger)
+_request_id = request_id
+_request_method = request_method
 
 ROUTE_PATH = "/payment/settle"
 QUOTES_TABLE_ENV = "QUOTES_TABLE_NAME"
 PAYMENT_LEDGER_TABLE_ENV = "PAYMENT_LEDGER_TABLE_NAME"
 MAX_LOG_ERROR_MESSAGE_LENGTH = 512
+_request_path = partial(request_path, default_path=ROUTE_PATH)
 
 _PAYMENT_CORE: Any | None = None
 
@@ -100,71 +119,8 @@ def _payment_core() -> Any:
     return module
 
 
-def _log_event(level: int, event_name: str, **fields: Any) -> None:
-    payload: dict[str, Any] = {"event": event_name}
-    payload.update({key: value for key, value in fields.items() if value is not None})
-    logger.log(level, json.dumps(payload, default=str, separators=(",", ":")))
-
-
-def _request_context(event: dict[str, Any]) -> dict[str, Any]:
-    request_context = event.get("requestContext")
-    if isinstance(request_context, dict):
-        return request_context
-    return {}
-
-
-def _request_id(event: dict[str, Any], context: Any) -> str | None:
-    request_context = _request_context(event)
-    candidates = (
-        request_context.get("requestId"),
-        request_context.get("extendedRequestId"),
-        getattr(context, "aws_request_id", None),
-    )
-    for candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip()
-    return None
-
-
-def _request_method(event: dict[str, Any]) -> str:
-    request_context = _request_context(event)
-    candidates = (
-        event.get("httpMethod"),
-        request_context.get("httpMethod"),
-        (request_context.get("http") or {}).get("method") if isinstance(request_context.get("http"), dict) else None,
-    )
-    for candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip().upper()
-    return "UNKNOWN"
-
-
-def _request_path(event: dict[str, Any], default_path: str = ROUTE_PATH) -> str:
-    request_context = _request_context(event)
-    candidates = (
-        event.get("resource"),
-        request_context.get("resourcePath"),
-        event.get("path"),
-        request_context.get("path"),
-        event.get("rawPath"),
-        default_path,
-    )
-    for candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip():
-            path = candidate.strip().split("?", 1)[0]
-            if not path.startswith("/"):
-                path = f"/{path}"
-            return path
-    return default_path
-
-
 def _sanitize_error_message(error_message: str | None) -> str | None:
-    if error_message is None:
-        return None
-    sanitized = str(error_message).replace("\n", " ").replace("\r", " ").strip()
-    if len(sanitized) > MAX_LOG_ERROR_MESSAGE_LENGTH:
-        sanitized = sanitized[:MAX_LOG_ERROR_MESSAGE_LENGTH]
-    return sanitized
+    return sanitize_error_message(error_message, max_length=MAX_LOG_ERROR_MESSAGE_LENGTH)
 
 
 def _response(status_code: int, body: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
