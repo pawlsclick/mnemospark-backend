@@ -28,14 +28,26 @@ from botocore.exceptions import ClientError
 
 try:
     from common.log_api_call_loader import load_log_api_call
-    from common.request_log_utils import build_log_event, request_id, request_method, request_path
+    from common.request_log_utils import (
+        build_log_event,
+        request_id,
+        request_method,
+        request_path,
+        sanitize_error_message,
+    )
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from common.log_api_call_loader import load_log_api_call
-    from common.request_log_utils import build_log_event, request_id, request_method, request_path
+    from common.request_log_utils import (
+        build_log_event,
+        request_id,
+        request_method,
+        request_path,
+        sanitize_error_message,
+    )
 
 
 log_api_call = load_log_api_call(emit_warning=True, logger=logging.getLogger(__name__))
@@ -1493,6 +1505,7 @@ def _log_api_call_result(
     wallet_address = getattr(request, "wallet_address", None) if request is not None else None
     object_id = getattr(request, "object_id", None) if request is not None else None
     object_key = getattr(request, "object_key", None) if request is not None else None
+    sanitized_error_message = sanitize_error_message(error_message)
     resolved_quote_id = quote_id or (getattr(request, "quote_id", None) if request is not None else None)
     resolved_idempotency_key = idempotency_key or (
         getattr(request, "idempotency_key", None) if request is not None else None
@@ -1511,7 +1524,7 @@ def _log_api_call_result(
         status=status_code,
         result=result,
         error_code=error_code,
-        error_message=error_message,
+        error_message=sanitized_error_message,
         wallet_address=wallet_address,
         quote_id=resolved_quote_id,
         trans_id=trans_id,
