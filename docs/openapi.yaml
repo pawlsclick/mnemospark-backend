@@ -20,6 +20,8 @@ security:
 tags:
   - name: pricing
     description: Storage price quote operations
+  - name: payments
+    description: Payment settlement operations
   - name: storage
     description: Wallet-scoped storage object operations
 paths:
@@ -51,6 +53,45 @@ paths:
           $ref: "#/components/responses/ForbiddenError"
         "404":
           $ref: "#/components/responses/NotFoundError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /payment/settle:
+    post:
+      tags: [payments]
+      summary: Verify and settle quote payment
+      description: >
+        Verifies EIP-712 TransferWithAuthorization payloads and settles payment in
+        mock or on-chain mode, then stores a durable payment ledger record.
+      operationId: postPaymentSettle
+      security:
+        - walletProof: []
+      parameters:
+        - $ref: "#/components/parameters/PaymentSignatureHeader"
+        - $ref: "#/components/parameters/XPaymentHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentSettleRequest"
+      responses:
+        "200":
+          description: Payment settled and persisted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentSettleResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "402":
+          $ref: "#/components/responses/PaymentRequiredError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -477,6 +518,25 @@ components:
         location:
           type: string
 
+    PaymentSettleRequest:
+      type: object
+      required:
+        - quote_id
+        - wallet_address
+      properties:
+        quote_id:
+          type: string
+        wallet_address:
+          type: string
+        payment:
+          type: object
+          description: Inline payment authorization payload.
+        payment_authorization:
+          oneOf:
+            - type: object
+            - type: string
+          description: Alternate inline payment authorization envelope.
+
     UploadConfirmRequest:
       type: object
       required:
@@ -571,6 +631,36 @@ components:
         upload_failed:
           type: boolean
         error:
+          type: string
+
+    PaymentSettleResponse:
+      type: object
+      required:
+        - quote_id
+        - wallet_address
+        - trans_id
+        - network
+        - asset
+        - amount
+        - payment_status
+        - timestamp
+      properties:
+        quote_id:
+          type: string
+        wallet_address:
+          type: string
+        trans_id:
+          type: string
+        network:
+          type: string
+        asset:
+          type: string
+        amount:
+          type: string
+        payment_status:
+          type: string
+          enum: [confirmed]
+        timestamp:
           type: string
 
     StorageLsResponse:
