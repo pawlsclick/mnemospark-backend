@@ -26,6 +26,8 @@ DEFAULT_TABLE_ENV = "API_CALLS_TABLE_NAME"
 DEFAULT_TTL_ENV = "API_CALLS_TTL_SECONDS"
 MAX_ERROR_MESSAGE_LENGTH = 1024
 
+_DYNAMODB_CLIENT: Any | None = None
+
 
 def _safe_int(value: Any, default: int) -> int:
     try:
@@ -164,7 +166,10 @@ def _structured_log(level: int, event_name: str, **fields: Any) -> None:
 
 
 def _dynamodb_client() -> Any:
-    return boto3.client("dynamodb")
+    global _DYNAMODB_CLIENT
+    if _DYNAMODB_CLIENT is None:
+        _DYNAMODB_CLIENT = boto3.client("dynamodb")
+    return _DYNAMODB_CLIENT
 
 
 def _build_dynamodb_item(
