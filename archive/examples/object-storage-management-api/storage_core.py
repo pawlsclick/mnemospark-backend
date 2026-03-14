@@ -50,7 +50,7 @@ def ensure_bucket_exists(s3_client, bucket_name_str: str, location: str) -> None
     except ClientError as e:
         if e.response["Error"]["Code"] != "404":
             raise
-    if location == "us-east-1":
+    if location == "REGION_PLACEHOLDER":
         s3_client.create_bucket(Bucket=bucket_name_str)
     else:
         s3_client.create_bucket(
