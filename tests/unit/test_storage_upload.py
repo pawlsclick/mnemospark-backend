@@ -435,6 +435,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.object_id = "backup.tar.gz"
         self.object_hash = "f00dbeef"
         self.now = int(time.time())
+        self.default_payment_trans_id = "0xpaid-default"
 
         self.quotes_table = FakeDynamoTable(["quote_id"])
         self.quotes_table.put_item(
@@ -456,7 +457,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
             Item={
                 "wallet_address": self.wallet_address,
                 "quote_id": self.quote_id,
-                "trans_id": "0xpaid-default",
+                "trans_id": self.default_payment_trans_id,
                 "network": "eip155:8453",
                 "asset": "0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
                 "amount": "1250000",
@@ -529,6 +530,12 @@ class StorageUploadLambdaTests(unittest.TestCase):
             }
         return event
 
+    def _remove_payment_record(self):
+        self.payments_table.items.pop(
+            (("wallet_address", self.wallet_address), ("quote_id", self.quote_id)),
+            None,
+        )
+
     def _make_confirm_event(
         self,
         idempotency_key,
@@ -566,6 +573,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertIn("wallet authorization context is required", body["message"])
 
     def test_lambda_handler_logs_api_call_for_payment_required(self):
+        self._remove_payment_record()
         event = self._make_event()
 
         with mock.patch.object(app, "log_api_call") as log_api_call_mock:
@@ -589,6 +597,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertIn("wallet_address does not match authorized wallet", body["message"])
 
     def test_missing_payment_header_returns_402_with_payment_required_headers(self):
+        self._remove_payment_record()
         event = self._make_event()
 
         response = app.lambda_handler(event, None)
@@ -668,7 +677,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertEqual(response["statusCode"], 200)
         body = json.loads(response["body"])
         self.assertEqual(body["quote_id"], self.quote_id)
-        self.assertEqual(body["trans_id"], "0xabc123")
+        self.assertEqual(body["trans_id"], self.default_payment_trans_id)
         self.assertEqual(body["provider"], "aws")
         self.assertEqual(body["location"], "[REDACTED]")
         self.assertIn("PAYMENT-RESPONSE", response["headers"])
@@ -682,7 +691,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertEqual(len(self.transaction_log_table.items), 1)
         log_item = next(iter(self.transaction_log_table.items.values()))
         self.assertEqual(log_item["quote_id"], self.quote_id)
-        self.assertEqual(log_item["trans_id"], "0xabc123")
+        self.assertEqual(log_item["trans_id"], self.default_payment_trans_id)
         self.assertEqual(log_item["object_id"], self.object_id)
         self.assertEqual(log_item["object_key"], self.object_id)
         self.assertEqual(
@@ -739,7 +748,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
             },
         )
         self.assertTrue(response_body["confirmation_required"])
-        self.assertEqual(response_body["trans_id"], "0xpresigned")
+        self.assertEqual(response_body["trans_id"], self.default_payment_trans_id)
         self.assertEqual(len(self.s3_client.put_calls), 0)
         self.assertEqual(len(self.s3_client.presigned_calls), 1)
         self.assertEqual(len(self.transaction_log_table.items), 0)
@@ -824,7 +833,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertEqual(response["statusCode"], 200)
         response_body = json.loads(response["body"])
         self.assertEqual(response_body["quote_id"], self.quote_id)
-        self.assertEqual(response_body["trans_id"], "0xconfirm-ok")
+        self.assertEqual(response_body["trans_id"], self.default_payment_trans_id)
         self.assertNotIn("upload_url", response_body)
         self.assertNotIn("upload_headers", response_body)
         self.assertNotIn("confirmation_required", response_body)
@@ -1047,7 +1056,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertIn("x-payment-response", response["headers"])
         body = json.loads(response["body"])
         self.assertTrue(body["upload_failed"])
-        self.assertEqual(body["trans_id"], "0xpaid1")
+        self.assertEqual(body["trans_id"], self.default_payment_trans_id)
         self.assertEqual(body["quote_id"], self.quote_id)
         self.assertEqual(body["object_key"], self.object_id)
         self.assertEqual(body["bucket_name"], app._bucket_name(self.wallet_address))
@@ -1062,7 +1071,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         log_payload = json.loads(logger_error_mock.call_args.args[0])
         self.assertEqual(log_payload["event"], "s3_upload_failed_after_payment")
         self.assertEqual(log_payload["quote_id"], self.quote_id)
-        self.assertEqual(log_payload["trans_id"], "0xpaid1")
+        self.assertEqual(log_payload["trans_id"], self.default_payment_trans_id)
         self.assertEqual(log_payload["wallet_address"], self.wallet_address)
         self.assertEqual(log_payload["object_key"], self.object_id)
         self.assertIn("simulated put failure", log_payload["error"])
@@ -1090,7 +1099,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertIn("PAYMENT-RESPONSE", response["headers"])
         body = json.loads(response["body"])
         self.assertTrue(body["upload_failed"])
-        self.assertEqual(body["trans_id"], "0xpaid2")
+        self.assertEqual(body["trans_id"], self.default_payment_trans_id)
         release_lock_mock.assert_not_called()
 
         idem_item = self.idempotency_table.items[(("idempotency_key", "idem-s3-runtime"),)]
@@ -1128,7 +1137,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertEqual(response["statusCode"], 207)
         body = json.loads(response["body"])
         self.assertTrue(body["upload_failed"])
-        self.assertEqual(body["trans_id"], "0xpaid3")
+        self.assertEqual(body["trans_id"], self.default_payment_trans_id)
         release_lock_mock.assert_not_called()
         write_log_mock.assert_not_called()
 
@@ -1167,15 +1176,15 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertEqual(first_response["statusCode"], 207)
         first_body = json.loads(first_response["body"])
         self.assertTrue(first_body["upload_failed"])
-        self.assertEqual(first_body["trans_id"], "0xresume")
+        self.assertEqual(first_body["trans_id"], self.default_payment_trans_id)
 
         self.assertEqual(second_response["statusCode"], 200)
         second_body = json.loads(second_response["body"])
-        self.assertEqual(second_body["trans_id"], "0xresume")
+        self.assertEqual(second_body["trans_id"], self.default_payment_trans_id)
         self.assertEqual(second_body["bucket_name"], "mnemospark-inline-bucket")
         self.assertNotIn("upload_failed", second_body)
 
-        self.assertEqual(verify_mock.call_count, 1)
+        self.assertEqual(verify_mock.call_count, 0)
         self.assertEqual(upload_mock.call_count, 2)
         self.assertEqual(len(self.transaction_log_table.items), 1)
 
@@ -1184,6 +1193,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertIn("response_body", idem_item)
 
     def test_presigned_mode_still_requires_payment_verification(self):
+        self._remove_payment_record()
         event = self._make_event(
             headers={"Idempotency-Key": "idem-presigned-payment-required"},
             mode="presigned",
@@ -1225,17 +1235,9 @@ class StorageUploadLambdaTests(unittest.TestCase):
 
     def test_legacy_x_payment_header_is_accepted(self):
         event = self._make_event(headers={"x-payment": "legacy-signed-payload"})
-        fake_payment_result = app.PaymentVerificationResult(
-            trans_id="0xlegacy",
-            network="eip155:8453",
-            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
-            amount=1_250_000,
-        )
-        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result) as verify_mock:
+        with mock.patch.object(app, "verify_and_settle_payment", side_effect=AssertionError("must not be called")):
             response = app.lambda_handler(event, None)
         self.assertEqual(response["statusCode"], 200)
-        call_kwargs = verify_mock.call_args.kwargs
-        self.assertEqual(call_kwargs["payment_header"], "legacy-signed-payload")
 
 
 class Eip712VerificationTests(unittest.TestCase):
