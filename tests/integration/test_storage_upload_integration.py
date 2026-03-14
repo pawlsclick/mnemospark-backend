@@ -136,11 +136,25 @@ class StorageUploadIntegrationTests(unittest.TestCase):
         )
         transaction_log_table = FakeDynamoTable(["quote_id", "trans_id"])
         idempotency_table = FakeDynamoTable(["idempotency_key"])
+        payments_table = FakeDynamoTable(["wallet_address", "quote_id"])
+        payments_table.put_item(
+            Item={
+                "wallet_address": wallet_address,
+                "quote_id": quote_id,
+                "trans_id": "0xtrans",
+                "network": "eip155:8453",
+                "asset": "0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+                "amount": "2000000",
+                "payment_status": "confirmed",
+                "recipient_wallet": "0x47D241ae97fE37186AC59894290CA1c54c060A6c",
+            }
+        )
         dynamodb_resource = FakeDynamoResource(
             {
                 "quotes": quotes_table,
                 "txn-log": transaction_log_table,
                 "idem": idempotency_table,
+                "payments": payments_table,
             }
         )
         s3_client = FakeS3Client()
@@ -173,16 +187,11 @@ class StorageUploadIntegrationTests(unittest.TestCase):
             ),
         }
 
-        fake_payment_result = app.PaymentVerificationResult(
-            trans_id="0xtrans",
-            network="eip155:8453",
-            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
-            amount=2_000_000,
-        )
         env_vars = {
             "QUOTES_TABLE_NAME": "quotes",
             "UPLOAD_TRANSACTION_LOG_TABLE_NAME": "txn-log",
             "UPLOAD_IDEMPOTENCY_TABLE_NAME": "idem",
+            "PAYMENT_LEDGER_TABLE_NAME": "payments",
             "MNEMOSPARK_RECIPIENT_WALLET": "0x47D241ae97fE37186AC59894290CA1c54c060A6c",
             "MNEMOSPARK_PAYMENT_NETWORK": "eip155:8453",
             "MNEMOSPARK_PAYMENT_ASSET": "0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
@@ -193,7 +202,6 @@ class StorageUploadIntegrationTests(unittest.TestCase):
             mock.patch.dict(os.environ, env_vars, clear=False),
             mock.patch.object(app.boto3, "resource", return_value=dynamodb_resource),
             mock.patch.object(app.boto3, "client", side_effect=mock_client),
-            mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result),
         ):
             first = app.lambda_handler(event, None)
             second = app.lambda_handler(event, None)

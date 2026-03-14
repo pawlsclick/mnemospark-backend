@@ -387,7 +387,6 @@ class StorageUploadHelperTests(unittest.TestCase):
             ciphertext=None,
             wrapped_dek="wrapped",
             idempotency_key=None,
-            payment_header=None,
         )
         legacy_payload = {
             "quote_id": request.quote_id,
@@ -452,6 +451,19 @@ class StorageUploadLambdaTests(unittest.TestCase):
         )
         self.transaction_log_table = FakeDynamoTable(["quote_id", "trans_id"])
         self.idempotency_table = FakeDynamoTable(["idempotency_key"])
+        self.payments_table = FakeDynamoTable(["wallet_address", "quote_id"])
+        self.payments_table.put_item(
+            Item={
+                "wallet_address": self.wallet_address,
+                "quote_id": self.quote_id,
+                "trans_id": "0xpaid-default",
+                "network": "eip155:8453",
+                "asset": "0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+                "amount": "1250000",
+                "payment_status": "confirmed",
+                "recipient_wallet": "0x47D241ae97fE37186AC59894290CA1c54c060A6c",
+            }
+        )
         self.s3_client = FakeS3Client()
 
         self.dynamodb_resource = FakeDynamoResource(
@@ -459,6 +471,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
                 "quotes-table": self.quotes_table,
                 "txn-table": self.transaction_log_table,
                 "idem-table": self.idempotency_table,
+                "payments-table": self.payments_table,
             }
         )
 
@@ -468,6 +481,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
                 "QUOTES_TABLE_NAME": "quotes-table",
                 "UPLOAD_TRANSACTION_LOG_TABLE_NAME": "txn-table",
                 "UPLOAD_IDEMPOTENCY_TABLE_NAME": "idem-table",
+                "PAYMENT_LEDGER_TABLE_NAME": "payments-table",
                 "MNEMOSPARK_RECIPIENT_WALLET": "0x47D241ae97fE37186AC59894290CA1c54c060A6c",
                 "MNEMOSPARK_PAYMENT_NETWORK": "eip155:8453",
                 "MNEMOSPARK_PAYMENT_ASSET": "0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
