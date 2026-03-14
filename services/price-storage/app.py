@@ -9,10 +9,10 @@ with TTL.
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 import logging
 import os
-import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,11 +21,18 @@ from typing import Any
 import boto3
 import botocore.exceptions
 
-_services_root = Path(__file__).resolve().parents[1]
-if str(_services_root) not in sys.path:
-    sys.path.append(str(_services_root))
 
-from common.api_call_logger import log_api_call
+def _load_log_api_call() -> Any:
+    module_path = Path(__file__).resolve().parents[1] / "common" / "api_call_logger.py"
+    module_spec = importlib.util.spec_from_file_location("shared_api_call_logger", module_path)
+    if module_spec is None or module_spec.loader is None:
+        raise RuntimeError("Unable to load shared api_call_logger module")
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module.log_api_call
+
+
+log_api_call = _load_log_api_call()
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
