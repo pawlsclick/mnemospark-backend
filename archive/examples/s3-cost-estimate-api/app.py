@@ -17,11 +17,11 @@ VALID_RATE_TYPES = ("BEFORE_DISCOUNTS", "AFTER_DISCOUNTS", "AFTER_DISCOUNTS_AND_
 
 def estimate_s3_storage_cost(
     storage_gb_month: float,
-    region: str = "REGION_PLACEHOLDER",
+    region: str = "us-east-1",  # pragma: allowlist secret
     rate_type: str = "BEFORE_DISCOUNTS",
     account_id: str | None = None,
 ) -> dict[str, Any]:
-    client = boto3.client("bcm-pricing-calculator", region_name="REGION_PLACEHOLDER")
+    client = boto3.client("bcm-pricing-calculator", region_name="us-east-1")  # pragma: allowlist secret
     if not account_id:
         account_id = boto3.client("sts").get_caller_identity()["Account"]
 
@@ -68,7 +68,7 @@ def parse_input(event: dict[str, Any]) -> dict[str, Any]:
         except json.JSONDecodeError:
             pass
     gb = float(params.get("gb", params.get("storageGbMonth", 100)))
-    region = params.get("region", "REGION_PLACEHOLDER")
+    region = params.get("region", "us-east-1")  # pragma: allowlist secret
     rate_type = params.get("rate_type", params.get("rateType", "BEFORE_DISCOUNTS"))
     if rate_type not in VALID_RATE_TYPES:
         rate_type = "BEFORE_DISCOUNTS"

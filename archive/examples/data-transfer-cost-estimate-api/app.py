@@ -12,7 +12,7 @@ from typing import Any
 import boto3
 
 REGION_CODES = {
-    "REGION_PLACEHOLDER": "USE1",
+    "us-east-1": "USE1",  # pragma: allowlist secret
     "us-east-2": "USE2",
     "us-west-1": "USW1",
     "us-west-2": "USW2",
@@ -36,11 +36,11 @@ VALID_RATE_TYPES = ("BEFORE_DISCOUNTS", "AFTER_DISCOUNTS", "AFTER_DISCOUNTS_AND_
 def estimate_data_transfer_cost(
     data_gb: float,
     direction: str,
-    region: str = "REGION_PLACEHOLDER",
+    region: str = "us-east-1",  # pragma: allowlist secret
     rate_type: str = "BEFORE_DISCOUNTS",
     account_id: str | None = None,
 ) -> dict[str, Any]:
-    client = boto3.client("bcm-pricing-calculator", region_name="REGION_PLACEHOLDER")
+    client = boto3.client("bcm-pricing-calculator", region_name="us-east-1")  # pragma: allowlist secret
     if not account_id:
         account_id = boto3.client("sts").get_caller_identity()["Account"]
 
@@ -93,7 +93,7 @@ def parse_input(event: dict[str, Any]) -> dict[str, Any]:
     if direction not in ("in", "out"):
         direction = "in"
     gb = float(params.get("gb", 100))
-    region = params.get("region", "REGION_PLACEHOLDER")
+    region = params.get("region", "us-east-1")  # pragma: allowlist secret
     rate_type = params.get("rate_type", params.get("rateType", "BEFORE_DISCOUNTS"))
     if rate_type not in VALID_RATE_TYPES:
         rate_type = "BEFORE_DISCOUNTS"
