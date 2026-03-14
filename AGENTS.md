@@ -3,10 +3,15 @@
 ## Cursor Cloud specific instructions
 
 ### Project overview
-mnemospark-backend is a serverless AWS Lambda backend (Python 3.13) using AWS SAM. Three Lambda functions live under `examples/`:
-- **s3-cost-estimate-api** — S3 storage cost estimation via BCM Pricing Calculator
-- **data-transfer-cost-estimate-api** — data transfer cost estimation via BCM Pricing Calculator
-- **object-storage-management-api** — wallet-scoped S3 storage with AES-GCM envelope encryption (`cryptography` dependency)
+mnemospark-backend is a serverless AWS Lambda backend (Python 3.13) using AWS SAM.
+The supported production surface is:
+- **Infrastructure**: root `template.yaml`
+- **Runtime code**: `services/`
+- **API contract/docs**: `docs/openapi.yaml` and `docs/*.md`
+- **Tests**: `tests/unit/` and `tests/integration/`
+
+Legacy proof-of-concept SAM examples are archived under `archive/examples/` and
+are non-production historical artifacts.
 
 ### Development environment
 - **Python 3.13** is required (matches Lambda runtime in `template.yaml`). Installed from `ppa:deadsnakes/ppa`.
@@ -17,12 +22,12 @@ mnemospark-backend is a serverless AWS Lambda backend (Python 3.13) using AWS SA
 ### Key commands
 | Task | Command |
 |---|---|
-| Lint | `source /workspace/.venv/bin/activate && ruff check examples/` |
+| Lint | `source /workspace/.venv/bin/activate && ruff check services/ tests/` |
 | Unit tests | `source /workspace/.venv/bin/activate && pytest tests/ -v` |
-| SAM validate | `cd examples/<api-dir> && sam validate` |
-| SAM build | `cd examples/<api-dir> && sam build` |
-| Local invoke | `cd examples/<api-dir> && sam local invoke <FunctionName> -e <event.json>` |
-| Local API | `cd examples/<api-dir> && sam local start-api --port 3001` |
+| SAM validate | `source /workspace/.venv/bin/activate && sam validate --template /workspace/template.yaml` |
+| SAM build | `source /workspace/.venv/bin/activate && sam build --template-file /workspace/template.yaml` |
+| Local invoke | `source /workspace/.venv/bin/activate && sam local invoke <FunctionName> -e <event.json> --template /workspace/template.yaml` |
+| Local API | `source /workspace/.venv/bin/activate && sam local start-api --port 3001 --template /workspace/template.yaml` |
 
 ### Passing AWS credentials to `sam local invoke` / `sam local start-api`
 SAM local containers do not inherit host environment variables. Pass credentials via `--env-vars`:
@@ -33,13 +38,11 @@ sam local invoke <FunctionName> -e event.json \
 Or create a local `env.json` file (gitignored; do NOT commit it) and pass `--env-vars env.json`.
 
 ### Linting scope
-Run `ruff check` on source files only — avoid running on `examples/*/. aws-sam/build/` which contains third-party library code (cffi, etc.) that produces many false-positive lint errors.
+Run `ruff check` on source files only (`services/`, `tests/`) and avoid generated
+build directories (`.aws-sam/build/`) which can include third-party code.
 
 ### Gotchas
-- `sam validate` for `object-storage-management-api` requires `--region [REDACTED]` (no default region set in its samconfig.toml).
 - `sam validate --lint` reports W3005 warnings on auto-generated DependsOn for API key resources — these are cosmetic and come from SAM's internal resource generation, not from user-authored template code.
 - Lambda functions require real AWS credentials for integration testing (STS, BCM, S3, Secrets Manager, DynamoDB). Without credentials, `sam local invoke` returns 500 with `InvalidClientTokenId` — this is expected.
 - The `requests` library bundled with `aws-sam-cli` triggers a `RequestsDependencyWarning` about urllib3/chardet versions — safe to ignore.
 - `.gitignore` excludes `.aws-sam/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `env.json`.
-- The object-storage-management Lambda's `list` command returns 400 "Bucket not found" for wallets that have never uploaded — this is correct behavior, not an error.
-- The integration test `test_real_bcm_estimate_or_skip_when_no_credentials` in `test_estimate_storage_integration.py` fails even with valid AWS credentials due to a pre-existing BCM API `ValidationException` (key `s3-storage-gb-month` contains hyphens that violate the `[a-zA-Z0-9]*` constraint). This is a code-level issue, not an environment problem. The Lambda handler itself works fine via `sam local invoke` because it handles errors differently.

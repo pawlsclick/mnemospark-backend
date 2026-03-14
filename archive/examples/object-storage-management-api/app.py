@@ -21,7 +21,7 @@ from storage_core import (
 )
 
 VALID_COMMANDS = ("upload", "ls", "list", "download", "delete")
-DEFAULT_LOCATION = "us-east-1"
+DEFAULT_LOCATION = "REGION_PLACEHOLDER"
 
 
 def parse_input(event: dict[str, Any]) -> dict[str, Any]:
