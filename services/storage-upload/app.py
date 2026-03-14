@@ -443,7 +443,7 @@ def _ensure_bucket_exists(s3_client: Any, bucket_name: str, location: str) -> No
         if error_code not in {"404", "NotFound", "NoSuchBucket", "400", "BadRequest"}:
             if error_code in {"403", "Forbidden"}:
                 logger.warning(
-                    "HeadBucket 403 for %s: ensure bucket is in this account and Lambda role has s3:HeadBucket on mnemospark-*",
+                    "HeadBucket 403 for %s: ensure bucket is in this account and Lambda role has s3:ListBucket on mnemospark-*",
                     bucket_name,
                 )
             raise
