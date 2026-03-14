@@ -9,48 +9,27 @@ with TTL.
 from __future__ import annotations
 
 import base64
-import importlib.util
 import json
 import logging
 import os
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import boto3
 import botocore.exceptions
 
+try:
+    from common.log_api_call_loader import load_log_api_call
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
 
-def _noop_log_api_call(*args: Any, **kwargs: Any) -> None:
-    del args, kwargs
-    return None
-
-
-def _load_log_api_call() -> Any:
-    candidate_paths = (
-        Path(__file__).resolve().parent / "common" / "api_call_logger.py",
-        Path(__file__).resolve().parents[1] / "common" / "api_call_logger.py",
-    )
-    for module_path in candidate_paths:
-        if not module_path.is_file():
-            continue
-        module_spec = importlib.util.spec_from_file_location("shared_api_call_logger", module_path)
-        if module_spec is None or module_spec.loader is None:
-            continue
-        try:
-            module = importlib.util.module_from_spec(module_spec)
-            module_spec.loader.exec_module(module)
-        except Exception:
-            continue
-        log_api_call = getattr(module, "log_api_call", None)
-        if callable(log_api_call):
-            return log_api_call
-
-    return _noop_log_api_call
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.log_api_call_loader import load_log_api_call
 
 
-log_api_call = _load_log_api_call()
+log_api_call = load_log_api_call()
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
