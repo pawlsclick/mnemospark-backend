@@ -20,16 +20,17 @@ import boto3
 import botocore.exceptions
 
 try:
-    from common.log_api_call_loader import load_log_api_call
+    from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from common.log_api_call_loader import load_log_api_call
+    from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
 
 
 log_api_call = load_log_api_call()
+_log_api_call_result = load_log_api_call_result("/price-storage", log_api_call_getter=lambda: log_api_call)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -652,28 +653,6 @@ def _error_response(status_code: int, error: str, message: str, details: Any | N
     if details is not None:
         body["details"] = details
     return _response(status_code, body)
-
-
-def _log_api_call_result(
-    event: dict[str, Any],
-    context: Any,
-    *,
-    status_code: int,
-    result: str,
-    error_code: str | None = None,
-    error_message: str | None = None,
-    **extra: Any,
-) -> None:
-    log_api_call(
-        event=event,
-        context=context,
-        route="/price-storage",
-        status_code=status_code,
-        result=result,
-        error_code=error_code,
-        error_message=error_message,
-        **extra,
-    )
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:

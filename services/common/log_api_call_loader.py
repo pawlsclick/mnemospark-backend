@@ -54,3 +54,52 @@ def load_log_api_call(*, emit_warning: bool = False, logger: logging.Logger | No
             "Shared api_call_logger module not found; falling back to no-op API call logging"
         )
     return _noop_log_api_call
+
+
+def _build_log_api_call_result(
+    log_api_call_getter: Callable[[], Callable[..., None]],
+    route: str,
+) -> Callable[..., None]:
+    def _log_api_call_result(
+        event: dict[str, Any],
+        context: Any,
+        *,
+        status_code: int,
+        result: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        **extra: Any,
+    ) -> None:
+        log_api_call_getter()(
+            event=event,
+            context=context,
+            route=route,
+            status_code=status_code,
+            result=result,
+            error_code=error_code,
+            error_message=error_message,
+            **extra,
+        )
+
+    return _log_api_call_result
+
+
+def load_log_api_call_result(
+    route: str,
+    *,
+    emit_warning: bool = False,
+    logger: logging.Logger | None = None,
+    log_api_call_getter: Callable[[], Callable[..., None]] | None = None,
+) -> Callable[..., None]:
+    if log_api_call_getter is None:
+        loaded_log_api_call = load_log_api_call(emit_warning=emit_warning, logger=logger)
+
+        def _loaded_log_api_call_getter() -> Callable[..., None]:
+            return loaded_log_api_call
+
+        log_api_call_getter = _loaded_log_api_call_getter
+
+    return _build_log_api_call_result(
+        log_api_call_getter,
+        route,
+    )

@@ -19,16 +19,17 @@ import boto3
 from botocore.exceptions import ClientError
 
 try:
-    from common.log_api_call_loader import load_log_api_call
+    from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from common.log_api_call_loader import load_log_api_call
+    from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
 
 
 log_api_call = load_log_api_call()
+_log_api_call_result = load_log_api_call_result("/storage/delete", log_api_call_getter=lambda: log_api_call)
 
 US_EAST_1_REGION = "us-" + "east-1"
 DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
@@ -258,28 +259,6 @@ def delete_object(request: ParsedDeleteRequest, s3_client: Any) -> dict[str, Any
         "bucket": bucket,
         "bucket_deleted": bucket_deleted,
     }
-
-
-def _log_api_call_result(
-    event: dict[str, Any],
-    context: Any,
-    *,
-    status_code: int,
-    result: str,
-    error_code: str | None = None,
-    error_message: str | None = None,
-    **extra: Any,
-) -> None:
-    log_api_call(
-        event=event,
-        context=context,
-        route="/storage/delete",
-        status_code=status_code,
-        result=result,
-        error_code=error_code,
-        error_message=error_message,
-        **extra,
-    )
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
