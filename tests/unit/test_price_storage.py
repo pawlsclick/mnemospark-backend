@@ -584,6 +584,32 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertEqual(body["error"], "Bad request")
         self.assertIn("message", body)
 
+    def test_lambda_handler_logs_api_call_metadata_on_success(self):
+        event = self._valid_event()
+
+        with (
+            mock.patch.object(app, "estimate_storage_cost", return_value=2.0),
+            mock.patch.object(app, "estimate_transfer_cost", return_value=1.0),
+            mock.patch.object(app, "write_quote"),
+            mock.patch.object(app, "log_api_call") as log_api_call_mock,
+            mock.patch.dict(
+                os.environ,
+                {
+                    "PRICE_STORAGE_TRANSFER_DIRECTION": "out",
+                    "PRICE_STORAGE_RATE_TYPE": "BEFORE_DISCOUNTS",
+                },
+                clear=False,
+            ),
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 200)
+        log_api_call_mock.assert_called_once()
+        kwargs = log_api_call_mock.call_args.kwargs
+        self.assertEqual(kwargs["status_code"], 200)
+        self.assertEqual(kwargs["result"], "success")
+        self.assertEqual(kwargs["route"], "/price-storage")
+
     def test_lambda_handler_returns_internal_error_shape_on_dynamodb_failure(self):
         event = self._valid_event()
         client_error = ClientError(

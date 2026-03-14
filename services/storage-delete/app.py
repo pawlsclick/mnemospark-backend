@@ -12,11 +12,19 @@ import hashlib
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
+
+_services_root = Path(__file__).resolve().parents[1]
+if str(_services_root) not in sys.path:
+    sys.path.append(str(_services_root))
+
+from common.api_call_logger import log_api_call
 
 US_EAST_1_REGION = "us-" + "east-1"
 DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
@@ -248,21 +256,92 @@ def delete_object(request: ParsedDeleteRequest, s3_client: Any) -> dict[str, Any
     }
 
 
+def _log_api_call_result(
+    event: dict[str, Any],
+    context: Any,
+    *,
+    status_code: int,
+    result: str,
+    error_code: str | None = None,
+    error_message: str | None = None,
+    **extra: Any,
+) -> None:
+    log_api_call(
+        event=event,
+        context=context,
+        route="/storage/delete",
+        status_code=status_code,
+        result=result,
+        error_code=error_code,
+        error_message=error_message,
+        **extra,
+    )
+
+
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    del context
+    request: ParsedDeleteRequest | None = None
     try:
         request = parse_input(event)
         _require_authorized_wallet(event, request.wallet_address)
         s3_client = boto3.client("s3", region_name=request.location)
         result = delete_object(request, s3_client)
+        _log_api_call_result(
+            event,
+            context,
+            status_code=200,
+            result="success",
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+        )
         return _response(200, result)
     except ForbiddenError as exc:
+        _log_api_call_result(
+            event,
+            context,
+            status_code=403,
+            result="forbidden",
+            error_code="wallet_mismatch",
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         return _error_response(403, "forbidden", str(exc))
     except BadRequestError as exc:
+        _log_api_call_result(
+            event,
+            context,
+            status_code=400,
+            result="bad_request",
+            error_code="bad_request",
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         return _error_response(400, "Bad request", str(exc))
     except NotFoundError as exc:
+        error_code = "bucket_not_found" if str(exc) == "bucket_not_found" else "object_not_found"
+        _log_api_call_result(
+            event,
+            context,
+            status_code=404,
+            result="not_found",
+            error_code=error_code,
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         if str(exc) == "bucket_not_found":
             return _error_response(404, "bucket_not_found", "Bucket not found for this wallet")
         return _error_response(404, "object_not_found", "Object not found")
     except Exception as exc:
+        _log_api_call_result(
+            event,
+            context,
+            status_code=500,
+            result="internal_error",
+            error_code="internal_error",
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         return _error_response(500, "Internal error", str(exc))

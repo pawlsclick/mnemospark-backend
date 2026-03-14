@@ -118,6 +118,38 @@ class StorageDeleteLambdaTests(unittest.TestCase):
         self.assertNotIn(bucket, s3_client.buckets)
         self.assertIn(bucket, s3_client.deleted_buckets)
 
+    def test_lambda_handler_logs_api_call_on_success(self):
+        wallet_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        object_key = "backup.enc"
+        bucket = app._bucket_name(wallet_address)
+        s3_client = FakeS3Client()
+        s3_client.seed_object(bucket, object_key)
+        event = {
+            "httpMethod": "DELETE",
+            "queryStringParameters": {
+                "wallet_address": wallet_address,
+                "object_key": object_key,
+            },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": wallet_address,
+                }
+            },
+        }
+
+        with (
+            mock.patch.object(app.boto3, "client", return_value=s3_client),
+            mock.patch.object(app, "log_api_call") as log_api_call_mock,
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 200)
+        log_api_call_mock.assert_called_once()
+        kwargs = log_api_call_mock.call_args.kwargs
+        self.assertEqual(kwargs["status_code"], 200)
+        self.assertEqual(kwargs["result"], "success")
+        self.assertEqual(kwargs["route"], "/storage/delete")
+
     def test_delete_query_keeps_bucket_when_other_objects_exist(self):
         wallet_address = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         object_key = "target.dat"
