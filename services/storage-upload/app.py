@@ -28,18 +28,36 @@ from botocore.exceptions import ClientError
 
 try:
     from common.log_api_call_loader import load_log_api_call
+    from common.request_log_utils import (
+        build_log_event,
+        request_id,
+        request_method,
+        request_path,
+        sanitize_error_message,
+    )
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from common.log_api_call_loader import load_log_api_call
+    from common.request_log_utils import (
+        build_log_event,
+        request_id,
+        request_method,
+        request_path,
+        sanitize_error_message,
+    )
 
 
 log_api_call = load_log_api_call(emit_warning=True, logger=logging.getLogger(__name__))
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+_log_event = build_log_event(logger)
+_request_id = request_id
+_request_method = request_method
+_request_path = request_path
 
 US_EAST_1_REGION = "us-" + "east-1"
 DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
@@ -209,12 +227,6 @@ class PaymentLedgerRecord:
     asset: str
     amount: int
     recipient_wallet: str | None = None
-
-
-def _log_event(level: int, event_name: str, **fields: Any) -> None:
-    payload: dict[str, Any] = {"event": event_name}
-    payload.update({key: value for key, value in fields.items() if value is not None})
-    logger.log(level, json.dumps(payload, default=str, separators=(",", ":")))
 
 
 def _response(status_code: int, body: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -1447,6 +1459,8 @@ def _write_transaction_log(
     try:
         transaction_log_table.put_item(
             Item={
+                # Housekeeping depends on this schema: payment_status/trans_id/payment_received_at
+                # plus recipient_wallet/location/bucket_name/object_key for billing enforcement.
                 "quote_id": request.quote_id,
                 "trans_id": trans_id,
                 "timestamp": timestamp,
@@ -1491,9 +1505,32 @@ def _log_api_call_result(
     wallet_address = getattr(request, "wallet_address", None) if request is not None else None
     object_id = getattr(request, "object_id", None) if request is not None else None
     object_key = getattr(request, "object_key", None) if request is not None else None
+    sanitized_error_message = sanitize_error_message(error_message)
     resolved_quote_id = quote_id or (getattr(request, "quote_id", None) if request is not None else None)
     resolved_idempotency_key = idempotency_key or (
         getattr(request, "idempotency_key", None) if request is not None else None
+    )
+    level = logging.INFO
+    if status_code >= 500:
+        level = logging.ERROR
+    elif status_code >= 400:
+        level = logging.WARNING
+    _log_event(
+        level,
+        "storage_upload_api_result",
+        request_id=_request_id(event, context),
+        method=_request_method(event),
+        path=_request_path(event, route),
+        status=status_code,
+        result=result,
+        error_code=error_code,
+        error_message=sanitized_error_message,
+        wallet_address=wallet_address,
+        quote_id=resolved_quote_id,
+        trans_id=trans_id,
+        object_id=object_id,
+        object_key=object_key,
+        idempotency_key=resolved_idempotency_key,
     )
 
     log_api_call(
@@ -1529,6 +1566,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         _log_event(
             logging.INFO,
             "upload_request_parsed",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event, "/storage/upload"),
             quote_id=request.quote_id,
             wallet_address=request.wallet_address,
             object_id=request.object_id,
@@ -2127,6 +2167,9 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
         _log_event(
             logging.INFO,
             "confirm_request_parsed",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event, "/storage/upload/confirm"),
             quote_id=request.quote_id,
             wallet_address=request.wallet_address,
             object_key=request.object_key,

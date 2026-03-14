@@ -156,12 +156,14 @@ class StorageHousekeepingLambdaTests(unittest.TestCase):
         object_key: str,
         paid_at: datetime,
         recipient_wallet: str | None = None,
+        payment_status: str = "confirmed",
     ) -> dict[str, str]:
         normalized_wallet = wallet_address.lower()
         bucket_name = app._default_bucket_name(normalized_wallet)
         item = {
             "quote_id": quote_id,
             "trans_id": trans_id,
+            "payment_status": payment_status,
             "addr": normalized_wallet,
             "object_key": object_key,
             "bucket_name": bucket_name,
@@ -333,3 +335,28 @@ class StorageHousekeepingLambdaTests(unittest.TestCase):
 
         self.assertEqual(response["statusCode"], 200)
         self.assertEqual(body["rows_scanned"], 2)
+
+    def test_non_confirmed_payment_rows_are_skipped(self):
+        now = datetime(2026, 2, 25, 12, 0, tzinfo=timezone.utc)
+        wallet = "0x7777777777777777777777777777777777777777"
+        object_key = "pending-payment.enc"
+        old_payment = now - timedelta(days=60)
+        item = self._make_txn_item(
+            quote_id="quote-7",
+            trans_id="tx-7",
+            wallet_address=wallet,
+            object_key=object_key,
+            paid_at=old_payment,
+            payment_status="settlement_in_progress",
+        )
+        self.transaction_table.put_item(Item=item)
+        self.s3_client.seed_object(item["bucket_name"], object_key)
+
+        response = app.lambda_handler({"now": now.isoformat()}, None)
+        body = json.loads(response["body"])
+
+        self.assertEqual(response["statusCode"], 200)
+        self.assertEqual(body["rows_skipped_payment_not_confirmed"], 1)
+        self.assertEqual(body["rows_confirmed"], 0)
+        self.assertEqual(body["objects_due"], 0)
+        self.assertEqual(body["objects_deleted"], 0)
