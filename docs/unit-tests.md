@@ -19,11 +19,12 @@ pytest tests/ -v
 # Only unit tests (exclude integration)
 pytest tests/unit/ -v
 
-# Price-storage and estimate flows (unit)
-pytest tests/unit/test_price_storage.py tests/unit/test_estimate_storage.py tests/unit/test_estimate_transfer.py -v
+# Targeted active endpoint suites
+pytest tests/unit/test_price_storage.py tests/unit/test_payment_settle.py tests/unit/test_storage_upload.py -v
+pytest tests/unit/test_storage_ls.py tests/unit/test_storage_download.py tests/unit/test_storage_delete.py -v
 ```
 
-Unit tests use mocks and do **not** require AWS credentials. Integration tests under `tests/integration/` may call AWS and can be skipped or run with credentials; see AGENTS.md for details.
+Unit tests use mocks and do **not** require AWS credentials. Integration tests under `tests/integration/` may call AWS and can be skipped or run with credentials; see `AGENTS.md` for details.
 
 ## CI
 

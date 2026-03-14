@@ -38,7 +38,7 @@ After deploy, use the API URL from stack **Outputs**. Send the API key in the **
 | ---------------- | ----------------------------- | -------------------------------------------------------- |
 | `command`        | Yes                           | `upload` \| `ls` \| `list` \| `download` \| `delete`     |
 | `wallet_address` | Yes                           | Wallet address (used to derive bucket and KEK secret id) |
-| `location`       | No                            | AWS region (default `us-east-1`)                         |
+| `location`       | No                            | AWS region (default `REGION_PLACEHOLDER`)                |
 | `object_key`     | For upload/ls/download/delete | S3 object key (single path segment, no `/`)              |
 | `content`        | For upload only               | Base64-encoded file content                              |
 
@@ -48,7 +48,7 @@ After deploy, use the API URL from stack **Outputs**. Send the API key in the **
 curl -X POST "https://YOUR_API_ID.execute-api.REGION.amazonaws.com/prod/storage" \
   -H "x-api-key: YOUR_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"command": "list", "wallet_address": "0xYourWalletAddress", "location": "us-east-1"}'
+  -d '{"command": "list", "wallet_address": "0xYourWalletAddress", "location": "REGION_PLACEHOLDER"}'
 ```
 
 **Ls (single object metadata):**
@@ -57,7 +57,7 @@ curl -X POST "https://YOUR_API_ID.execute-api.REGION.amazonaws.com/prod/storage"
 curl -X POST "https://YOUR_API_ID.execute-api.REGION.amazonaws.com/prod/storage" \
   -H "x-api-key: YOUR_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"command": "ls", "wallet_address": "0xYourWalletAddress", "object_key": "myfile.txt", "location": "us-east-1"}'
+  -d '{"command": "ls", "wallet_address": "0xYourWalletAddress", "object_key": "myfile.txt", "location": "REGION_PLACEHOLDER"}'
 ```
 
 **Upload (content as base64):**
@@ -68,7 +68,7 @@ CONTENT=$(base64 -w0 myfile.txt 2>/dev/null || base64 -i myfile.txt | tr -d '\n'
 curl -X POST "https://YOUR_API_ID.execute-api.REGION.amazonaws.com/prod/storage" \
   -H "x-api-key: YOUR_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"command\": \"upload\", \"wallet_address\": \"0xYourWalletAddress\", \"object_key\": \"myfile.txt\", \"location\": \"us-east-1\", \"content\": \"$CONTENT\"}"
+  -d "{\"command\": \"upload\", \"wallet_address\": \"0xYourWalletAddress\", \"object_key\": \"myfile.txt\", \"location\": \"REGION_PLACEHOLDER\", \"content\": \"$CONTENT\"}"
 ```
 
 **Download (returns base64 content in JSON):**
@@ -77,7 +77,7 @@ curl -X POST "https://YOUR_API_ID.execute-api.REGION.amazonaws.com/prod/storage"
 curl -X POST "https://YOUR_API_ID.execute-api.REGION.amazonaws.com/prod/storage" \
   -H "x-api-key: YOUR_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"command": "download", "wallet_address": "0xYourWalletAddress", "object_key": "myfile.txt", "location": "us-east-1"}'
+  -d '{"command": "download", "wallet_address": "0xYourWalletAddress", "object_key": "myfile.txt", "location": "REGION_PLACEHOLDER"}'
 ```
 
 **Delete:**
@@ -86,7 +86,7 @@ curl -X POST "https://YOUR_API_ID.execute-api.REGION.amazonaws.com/prod/storage"
 curl -X POST "https://YOUR_API_ID.execute-api.REGION.amazonaws.com/prod/storage" \
   -H "x-api-key: YOUR_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"command": "delete", "wallet_address": "0xYourWalletAddress", "object_key": "myfile.txt", "location": "us-east-1"}'
+  -d '{"command": "delete", "wallet_address": "0xYourWalletAddress", "object_key": "myfile.txt", "location": "REGION_PLACEHOLDER"}'
 ```
 
 ## Get the API URL after deploy
