@@ -924,6 +924,9 @@ Resources:
               Action:
                 - s3:HeadBucket
                 - s3:HeadObject
+                - s3:ListBucket
+                - s3:DeleteObject
+                - s3:DeleteBucket
               Resource:
                 - !Sub "arn:aws:s3:::mnemospark-*"
                 - !Sub "arn:aws:s3:::mnemospark-*/*"

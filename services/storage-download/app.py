@@ -12,8 +12,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
+from functools import partial
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,16 +24,37 @@ from botocore.exceptions import ClientError
 
 try:
     from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
+    from common.request_log_utils import (
+        build_log_event,
+        request_id,
+        request_method,
+        request_path,
+        sanitize_error_message,
+    )
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
+    from common.request_log_utils import (
+        build_log_event,
+        request_id,
+        request_method,
+        request_path,
+        sanitize_error_message,
+    )
 
 
 log_api_call = load_log_api_call()
 _log_api_call_result = load_log_api_call_result("/storage/download", log_api_call_getter=lambda: log_api_call)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+_log_event = build_log_event(logger)
+_request_id = request_id
+_request_method = request_method
+_request_path = partial(request_path, default_path="/storage/download")
+_sanitize_error_message = sanitize_error_message
 
 US_EAST_1_REGION = "us-" + "east-1"
 DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
@@ -282,8 +305,27 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     request: ParsedDownloadRequest | None = None
     try:
         request = parse_input(event)
+        _log_event(
+            logging.INFO,
+            "storage_download_request_parsed",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+        )
         _require_authorized_wallet(event, request.wallet_address)
         response_body = generate_download_url(request)
+        _log_event(
+            logging.INFO,
+            "storage_download_succeeded",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            status=200,
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+        )
         _log_api_call_result(
             event,
             context,
@@ -294,6 +336,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         return _response(200, response_body)
     except ForbiddenError as exc:
+        _log_event(
+            logging.WARNING,
+            "storage_download_forbidden",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            status=403,
+            error_code="wallet_mismatch",
+            error_message=_sanitize_error_message(str(exc)),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         _log_api_call_result(
             event,
             context,
@@ -306,6 +360,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         return _error_response(403, "forbidden", str(exc))
     except BadRequestError as exc:
+        _log_event(
+            logging.WARNING,
+            "storage_download_bad_request",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            status=400,
+            error_code="bad_request",
+            error_message=_sanitize_error_message(str(exc)),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         _log_api_call_result(
             event,
             context,
@@ -318,6 +384,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         return _error_response(400, "Bad request", str(exc))
     except MethodNotAllowedError as exc:
+        _log_event(
+            logging.WARNING,
+            "storage_download_method_not_allowed",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            status=405,
+            error_code="method_not_allowed",
+            error_message=_sanitize_error_message(str(exc)),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         _log_api_call_result(
             event,
             context,
@@ -330,6 +408,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         return _error_response(405, "method_not_allowed", str(exc))
     except NotFoundError as exc:
+        _log_event(
+            logging.WARNING,
+            "storage_download_not_found",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            status=404,
+            error_code=exc.error,
+            error_message=_sanitize_error_message(exc.message),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         _log_api_call_result(
             event,
             context,
@@ -342,6 +432,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         return _error_response(404, exc.error, exc.message, details=exc.details)
     except Exception as exc:
+        _log_event(
+            logging.ERROR,
+            "storage_download_internal_error",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            status=500,
+            error_code="internal_error",
+            error_message=_sanitize_error_message(str(exc)),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         _log_api_call_result(
             event,
             context,

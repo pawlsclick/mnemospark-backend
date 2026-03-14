@@ -7,6 +7,7 @@ Supported flow:
 - Validates wallet proof payload format and EIP-712 signature.
 - Enforces wallet-proof auth for all supported public routes:
   * POST /price-storage
+  * POST /payment/settle
   * POST /storage/upload
   * POST /storage/upload/confirm
   * GET,POST /storage/ls
@@ -52,6 +53,7 @@ SIGNATURE_PATTERN = re.compile(r"^0x[a-fA-F0-9]{130}$")
 
 PUBLIC_ROUTE_METHODS: dict[str, set[str]] = {
     "/price-storage": {"POST"},
+    "/payment/settle": {"POST"},
     "/storage/upload": {"POST"},
     "/storage/upload/confirm": {"POST"},
     "/storage/ls": {"GET", "POST"},
@@ -177,6 +179,17 @@ def _resource_arn(event: dict[str, Any]) -> str:
         if value:
             return value
     return "*"
+
+
+def _event_request_id(event: dict[str, Any], context: Any) -> str | None:
+    request_context = event.get("requestContext")
+    if isinstance(request_context, dict):
+        request_id = _safe_str(request_context.get("requestId")) or _safe_str(request_context.get("extendedRequestId"))
+        if request_id:
+            return request_id
+
+    context_request_id = _safe_str(getattr(context, "aws_request_id", None))
+    return context_request_id or None
 
 
 def _event_stage(event: dict[str, Any]) -> str | None:
@@ -496,6 +509,7 @@ def _to_dynamodb_attr(value: Any) -> dict[str, Any]:
 
 def _write_auth_event(
     *,
+    request_id: str | None,
     method: str,
     path: str,
     route_classification: str,
@@ -510,6 +524,7 @@ def _write_auth_event(
         _log_authorizer_debug(
             "auth_event_skip",
             reason="wallet_auth_events_table_not_configured",
+            request_id=request_id,
             method=method,
             path=path,
             route_classification=route_classification,
@@ -531,6 +546,8 @@ def _write_auth_event(
         "reason": _to_dynamodb_attr(reason),
         "resource_arn": _to_dynamodb_attr(resource_arn or "*"),
     }
+    if request_id:
+        item["request_id"] = _to_dynamodb_attr(request_id)
     if recovered_wallet:
         item["wallet_address"] = _to_dynamodb_attr(recovered_wallet)
 
@@ -539,6 +556,7 @@ def _write_auth_event(
     except Exception as error:  # pragma: no cover - best-effort path
         _log_authorizer_debug(
             "auth_event_write_failed",
+            request_id=request_id,
             error_type=type(error).__name__,
             error_message=str(error),
             table_name=table_name,
@@ -578,8 +596,8 @@ def _deny(resource_arn: str) -> dict[str, Any]:
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    del context
     resource_arn = _resource_arn(event)
+    request_id = _event_request_id(event, context)
     method = "UNKNOWN"
     path = "UNKNOWN"
     route_mode = "unresolved"
@@ -594,12 +612,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             route_classification=route_mode,
             result=result,
             reason=reason,
+            request_id=request_id,
             wallet_header_present=wallet_header_present,
             validation_outcome=validation_outcome,
             recovered_wallet=signer_wallet,
             resource_arn=resource_arn,
         )
         _write_auth_event(
+            request_id=request_id,
             method=method,
             path=path,
             route_classification=route_mode,
@@ -621,6 +641,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             method=method,
             path=path,
             route_classification=route_mode,
+            request_id=request_id,
             resource_arn=resource_arn,
         )
         if route_mode == "unsupported":
@@ -633,13 +654,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             method=method,
             path=path,
             route_classification=route_mode,
+            request_id=request_id,
             wallet_header_present=wallet_header_present,
             body_present=event.get("body") is not None,
         )
         if wallet_header is None:
             return _finalize("deny", "missing_wallet_header", validation_outcome="header_missing")
 
-        _log_authorizer_debug("verify_proof_start", method=method, path=path)
+        _log_authorizer_debug("verify_proof_start", method=method, path=path, request_id=request_id)
         signer_wallet = _verify_wallet_proof(wallet_header, method=method, path=path)
         request_wallet = _extract_request_wallet(event)
         _log_authorizer_debug(
@@ -647,6 +669,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             method=method,
             path=path,
             route_classification=route_mode,
+            request_id=request_id,
             request_wallet=request_wallet,
             recovered_wallet=signer_wallet,
             validation_outcome="wallet_proof_valid",
@@ -665,6 +688,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             method=method,
             path=path,
             route_classification=route_mode,
+            request_id=request_id,
             reason=reason,
             error_message=str(error),
         )
@@ -675,6 +699,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             method=method,
             path=path,
             route_classification=route_mode,
+            request_id=request_id,
             reason="internal_error",
             error_type=type(error).__name__,
             error_message=str(error),
