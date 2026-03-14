@@ -287,6 +287,19 @@ class PaymentSettleHandlerTests(unittest.TestCase):
         self.assertEqual(response["statusCode"], 402)
         self.assertNotIn((("wallet_address", self.wallet_address), ("quote_id", self.quote_id)), self.payments_table.items)
 
+    def test_unhandled_settlement_error_releases_ledger_claim(self):
+        self.fake_payment_core.verify_raises = RuntimeError("rpc timeout")
+        event = self._event(headers={"PAYMENT-SIGNATURE": "bad-payload"})
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 500)
+        self.assertNotIn((("wallet_address", self.wallet_address), ("quote_id", self.quote_id)), self.payments_table.items)
+
+        self.fake_payment_core.verify_raises = None
+        retry_response = app.lambda_handler(event, None)
+        self.assertEqual(retry_response["statusCode"], 200)
+
     def test_missing_authorizer_context_returns_403(self):
         event = self._event(include_authorizer=False, headers={"PAYMENT-SIGNATURE": "signed-payload"})
 

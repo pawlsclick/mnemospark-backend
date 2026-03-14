@@ -584,6 +584,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         return _error_response(409, "conflict", str(exc))
     except Exception as exc:
+        if ledger_claimed and payments_table is not None and request is not None:
+            _release_payment_ledger_claim(payments_table, request)
+            ledger_claimed = False
         _log_event(
             logging.ERROR,
             "payment_settle_internal_error",
