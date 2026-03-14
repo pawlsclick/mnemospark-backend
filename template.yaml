@@ -291,6 +291,15 @@ Resources:
                   - dynamodb:UpdateItem
                   - dynamodb:DeleteItem
                 Resource: !GetAtt UploadIdempotencyTable.Arn
+        - PolicyName: upload-dynamodb-payment-ledger-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                Resource: !GetAtt PaymentLedgerTable.Arn
         - PolicyName: upload-s3-storage-write
           PolicyDocument:
             Version: "2012-10-17"
@@ -305,14 +314,6 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:s3:::mnemospark-*"
                   - !Sub "arn:aws:s3:::mnemospark-*/*"
-        - PolicyName: upload-relayer-secret-read
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - secretsmanager:GetSecretValue
-                Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:mnemospark/relayer-private-key*"
         - PolicyName: upload-api-calls-write
           PolicyDocument:
             Version: "2012-10-17"
@@ -608,13 +609,10 @@ Resources:
           QUOTES_TABLE_NAME: !Ref QuotesTable
           UPLOAD_TRANSACTION_LOG_TABLE_NAME: !Ref UploadTransactionLogTable
           UPLOAD_IDEMPOTENCY_TABLE_NAME: !Ref UploadIdempotencyTable
+          PAYMENT_LEDGER_TABLE_NAME: !Ref PaymentLedgerTable
           MNEMOSPARK_RECIPIENT_WALLET: !Ref MnemosparkRecipientWallet
           MNEMOSPARK_PAYMENT_NETWORK: !Ref PaymentNetwork
           MNEMOSPARK_PAYMENT_ASSET: !Ref PaymentAssetAddress
-          MNEMOSPARK_PAYMENT_SETTLEMENT_MODE: !Ref PaymentSettlementMode
-          MNEMOSPARK_BASE_RPC_URL: !Ref BaseRpcUrl
-          # Secret value is created out-of-band by operator/pipeline in Secrets Manager.
-          MNEMOSPARK_RELAYER_SECRET_ID: mnemospark/relayer-private-key
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
       Events:
@@ -656,13 +654,10 @@ Resources:
           QUOTES_TABLE_NAME: !Ref QuotesTable
           UPLOAD_TRANSACTION_LOG_TABLE_NAME: !Ref UploadTransactionLogTable
           UPLOAD_IDEMPOTENCY_TABLE_NAME: !Ref UploadIdempotencyTable
+          PAYMENT_LEDGER_TABLE_NAME: !Ref PaymentLedgerTable
           MNEMOSPARK_RECIPIENT_WALLET: !Ref MnemosparkRecipientWallet
           MNEMOSPARK_PAYMENT_NETWORK: !Ref PaymentNetwork
           MNEMOSPARK_PAYMENT_ASSET: !Ref PaymentAssetAddress
-          MNEMOSPARK_PAYMENT_SETTLEMENT_MODE: !Ref PaymentSettlementMode
-          MNEMOSPARK_BASE_RPC_URL: !Ref BaseRpcUrl
-          # Secret value is created out-of-band by operator/pipeline in Secrets Manager.
-          MNEMOSPARK_RELAYER_SECRET_ID: mnemospark/relayer-private-key
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
       Events:

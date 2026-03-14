@@ -4,10 +4,9 @@ Lambda handler for POST /storage/upload.
 Flow:
 1. Parse request and optional Idempotency-Key.
 2. Lookup and validate quote in DynamoDB.
-3. Verify payment authorization (EIP-712 TransferWithAuthorization).
-4. Settle payment (on-chain by default; optional mock mode for testing).
-5. Upload ciphertext to wallet-scoped S3 bucket with wrapped DEK metadata.
-6. Write upload transaction log row in DynamoDB.
+3. Require an existing confirmed payment ledger record for (wallet_address, quote_id).
+4. Upload ciphertext to wallet-scoped S3 bucket with wrapped DEK metadata.
+5. Write upload transaction log row in DynamoDB.
 """
 
 from __future__ import annotations
@@ -58,6 +57,7 @@ PRESIGNED_URL_EXPIRES_IN_SECONDS = 60 * 60
 QUOTES_TABLE_ENV = "QUOTES_TABLE_NAME"
 UPLOAD_TRANSACTION_LOG_TABLE_ENV = "UPLOAD_TRANSACTION_LOG_TABLE_NAME"
 UPLOAD_IDEMPOTENCY_TABLE_ENV = "UPLOAD_IDEMPOTENCY_TABLE_NAME"
+PAYMENT_LEDGER_TABLE_ENV = "PAYMENT_LEDGER_TABLE_NAME"
 RELAYER_SECRET_ID_ENV = "MNEMOSPARK_RELAYER_SECRET_ID"
 
 _RELAYER_PRIVATE_KEY_CACHE: str | None = None
@@ -160,7 +160,6 @@ class ParsedUploadRequest:
     ciphertext: bytes | None
     wrapped_dek: str
     idempotency_key: str | None
-    payment_header: str | None
     content_length_bytes: int | None = None
 
 
@@ -201,6 +200,15 @@ class PaymentVerificationResult:
     network: str
     asset: str
     amount: int
+
+
+@dataclass(frozen=True)
+class PaymentLedgerRecord:
+    trans_id: str
+    network: str
+    asset: str
+    amount: int
+    recipient_wallet: str | None = None
 
 
 def _log_event(level: int, event_name: str, **fields: Any) -> None:
@@ -508,13 +516,6 @@ def parse_input(event: dict[str, Any]) -> ParsedUploadRequest:
     idempotency_key = _header_value(headers, "Idempotency-Key")
     if mode == "presigned" and not idempotency_key:
         raise BadRequestError("Idempotency-Key header is required for presigned mode")
-    payment_header: str | None = None
-    for header_name in PAYMENT_SIGNATURE_HEADER_NAMES:
-        header_value = _header_value(headers, header_name)
-        if header_value:
-            payment_header = header_value
-            break
-
     return ParsedUploadRequest(
         quote_id=quote_id,
         wallet_address=wallet_address,
@@ -528,7 +529,6 @@ def parse_input(event: dict[str, Any]) -> ParsedUploadRequest:
         ciphertext=ciphertext,
         wrapped_dek=wrapped_dek,
         idempotency_key=idempotency_key,
-        payment_header=payment_header,
         content_length_bytes=content_length_bytes,
     )
 
@@ -1268,6 +1268,110 @@ def _quote_context_from_retryable_idempotency(item: dict[str, Any]) -> QuoteCont
     )
 
 
+def _load_confirmed_payment_record(
+    payment_ledger_table: Any,
+    request: ParsedUploadRequest,
+    requirements: dict[str, Any],
+) -> PaymentLedgerRecord:
+    payment_item = payment_ledger_table.get_item(
+        Key={
+            "wallet_address": request.wallet_address,
+            "quote_id": request.quote_id,
+        },
+        ConsistentRead=True,
+    ).get("Item")
+    if not payment_item:
+        raise PaymentRequiredError(
+            message="Confirmed payment record is required before upload",
+            requirements=requirements,
+            details={
+                "quote_id": request.quote_id,
+                "wallet_address": request.wallet_address,
+                "reason": "payment_record_missing",
+                "settle_path": "/payment/settle",
+            },
+        )
+
+    payment_status = str(payment_item.get("payment_status") or "").strip().lower()
+    if payment_status != "confirmed":
+        raise PaymentRequiredError(
+            message="Payment record is not confirmed for this quote",
+            requirements=requirements,
+            details={
+                "quote_id": request.quote_id,
+                "wallet_address": request.wallet_address,
+                "reason": "payment_not_confirmed",
+                "payment_status": payment_status or None,
+                "settle_path": "/payment/settle",
+            },
+        )
+
+    ledger_wallet_address = _optional_normalized_address(payment_item.get("wallet_address"))
+    if ledger_wallet_address and ledger_wallet_address != request.wallet_address:
+        raise PaymentRequiredError(
+            message="Payment record wallet does not match upload wallet",
+            requirements=requirements,
+            details={
+                "quote_id": request.quote_id,
+                "wallet_address": request.wallet_address,
+                "reason": "payment_wallet_mismatch",
+                "settle_path": "/payment/settle",
+            },
+        )
+
+    ledger_quote_id = str(payment_item.get("quote_id") or "").strip()
+    if ledger_quote_id and ledger_quote_id != request.quote_id:
+        raise PaymentRequiredError(
+            message="Payment record quote_id does not match upload quote",
+            requirements=requirements,
+            details={
+                "quote_id": request.quote_id,
+                "wallet_address": request.wallet_address,
+                "reason": "payment_quote_mismatch",
+                "settle_path": "/payment/settle",
+            },
+        )
+
+    trans_id = str(payment_item.get("trans_id") or "").strip()
+    network = str(payment_item.get("network") or payment_item.get("payment_network") or "").strip()
+    asset = str(payment_item.get("asset") or payment_item.get("payment_asset") or "").strip()
+    amount_raw = payment_item.get("amount") or payment_item.get("payment_amount")
+    try:
+        amount = int(amount_raw)
+    except (TypeError, ValueError) as exc:
+        raise PaymentRequiredError(
+            message="Payment record is malformed",
+            requirements=requirements,
+            details={
+                "quote_id": request.quote_id,
+                "wallet_address": request.wallet_address,
+                "reason": "payment_amount_invalid",
+                "settle_path": "/payment/settle",
+            },
+        ) from exc
+
+    if not trans_id or not network or not asset or amount <= 0:
+        raise PaymentRequiredError(
+            message="Payment record is incomplete",
+            requirements=requirements,
+            details={
+                "quote_id": request.quote_id,
+                "wallet_address": request.wallet_address,
+                "reason": "payment_record_incomplete",
+                "settle_path": "/payment/settle",
+            },
+        )
+
+    recipient_wallet = _optional_normalized_address(payment_item.get("recipient_wallet"))
+    return PaymentLedgerRecord(
+        trans_id=trans_id,
+        network=network,
+        asset=asset,
+        amount=amount,
+        recipient_wallet=recipient_wallet,
+    )
+
+
 def _release_idempotency_lock(idempotency_table: Any, idempotency_key: str) -> None:
     try:
         idempotency_table.delete_item(Key={"idempotency_key": idempotency_key})
@@ -1328,8 +1432,8 @@ def _write_transaction_log(
     now: int,
     request: ParsedUploadRequest,
     quote_context: QuoteContext,
-    payment_config: dict[str, str],
     payment_result: PaymentVerificationResult,
+    recipient_wallet: str | None,
     trans_id: str,
     bucket_name: str,
 ) -> None:
@@ -1348,7 +1452,7 @@ def _write_transaction_log(
                 "timestamp": timestamp,
                 "payment_received_at": payment_received_at,
                 "payment_status": "confirmed",
-                "recipient_wallet": payment_config["recipient_wallet"],
+                "recipient_wallet": recipient_wallet or "",
                 "payment_network": payment_result.network,
                 "payment_asset": payment_asset,
                 "payment_amount": str(payment_result.amount),
@@ -1411,8 +1515,6 @@ def _log_api_call_result(
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    settlement_mode = _settlement_mode()
-    _emit_mock_settlement_warning_once(settlement_mode)
     idempotency_lock_acquired = False
     idempotency_table: Any | None = None
     idempotency_key: str | None = None
@@ -1444,6 +1546,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         dynamodb = boto3.resource("dynamodb")
         quotes_table = dynamodb.Table(_require_env(QUOTES_TABLE_ENV))
         transaction_log_table = dynamodb.Table(_require_env(UPLOAD_TRANSACTION_LOG_TABLE_ENV))
+        payment_ledger_table = dynamodb.Table(_require_env(PAYMENT_LEDGER_TABLE_ENV))
 
         if idempotency_key:
             idempotency_table = dynamodb.Table(_require_env(UPLOAD_IDEMPOTENCY_TABLE_ENV))
@@ -1590,34 +1693,32 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     message="lock acquired",
                 )
 
+        payment_ledger_record = _load_confirmed_payment_record(
+            payment_ledger_table=payment_ledger_table,
+            request=request,
+            requirements=requirements,
+        )
+        payment_result = PaymentVerificationResult(
+            trans_id=payment_ledger_record.trans_id,
+            network=payment_ledger_record.network,
+            asset=payment_ledger_record.asset,
+            amount=payment_ledger_record.amount,
+        )
         if resume_upload_after_payment and retryable_idempotency_item:
-            settlement_mode = "resumed"
-            payment_result = _payment_result_from_retryable_idempotency(retryable_idempotency_item)
             _log_event(
                 logging.INFO,
-                "payment_settlement_already_confirmed",
+                "payment_ledger_confirmed_resume_upload",
                 trans_id=payment_result.trans_id,
-                settlement_mode=settlement_mode,
                 idempotency_key=idempotency_key,
-                message="skipping payment verification and resuming upload",
+                message="resuming upload using confirmed payment ledger record",
             )
         else:
-            settlement_mode = _settlement_mode()
-            payment_result = verify_and_settle_payment(
-                payment_header=request.payment_header,
-                wallet_address=request.wallet_address,
-                quote_id=request.quote_id,
-                expected_amount=quote_context.storage_price_micro,
-                expected_recipient=payment_config["recipient_wallet"],
-                expected_network=payment_config["payment_network"],
-                expected_asset=payment_config["payment_asset"],
-                requirements=requirements,
-            )
             _log_event(
                 logging.INFO,
-                "payment_verification_succeeded",
+                "payment_ledger_confirmed",
                 trans_id=payment_result.trans_id,
-                settlement_mode=settlement_mode,
+                quote_id=request.quote_id,
+                wallet_address=request.wallet_address,
                 amount=payment_result.amount,
                 network=payment_result.network,
             )
@@ -1804,8 +1905,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             now=now,
             request=request,
             quote_context=quote_context,
-            payment_config=payment_config,
             payment_result=payment_result,
+            recipient_wallet=payment_ledger_record.recipient_wallet or payment_config["recipient_wallet"],
             trans_id=payment_result.trans_id,
             bucket_name=bucket_name,
         )
@@ -2182,7 +2283,6 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
             ciphertext=None,
             wrapped_dek="",
             idempotency_key=request.idempotency_key,
-            payment_header=None,
             content_length_bytes=None,
         )
         _write_transaction_log(
@@ -2190,8 +2290,8 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
             now=now,
             request=request_for_log,
             quote_context=quote_context,
-            payment_config=payment_config,
             payment_result=payment_result,
+            recipient_wallet=payment_config["recipient_wallet"],
             trans_id=payment_result.trans_id,
             bucket_name=bucket_name,
         )
