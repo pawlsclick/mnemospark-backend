@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib
 import importlib.util
 import json
 import os
@@ -21,14 +22,38 @@ import boto3
 from botocore.exceptions import ClientError
 
 
+def _noop_log_api_call(*args: Any, **kwargs: Any) -> None:
+    del args, kwargs
+    return None
+
+
 def _load_log_api_call() -> Any:
-    module_path = Path(__file__).resolve().parents[1] / "common" / "api_call_logger.py"
-    module_spec = importlib.util.spec_from_file_location("shared_api_call_logger", module_path)
-    if module_spec is None or module_spec.loader is None:
-        raise RuntimeError("Unable to load shared api_call_logger module")
-    module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
-    return module.log_api_call
+    candidate_paths = (
+        Path(__file__).resolve().parent / "common" / "api_call_logger.py",
+        Path(__file__).resolve().parents[1] / "common" / "api_call_logger.py",
+    )
+    for module_path in candidate_paths:
+        if not module_path.is_file():
+            continue
+        module_spec = importlib.util.spec_from_file_location("shared_api_call_logger", module_path)
+        if module_spec is None or module_spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        log_api_call = getattr(module, "log_api_call", None)
+        if callable(log_api_call):
+            return log_api_call
+
+    for module_name in ("common.api_call_logger", "api_call_logger"):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        log_api_call = getattr(module, "log_api_call", None)
+        if callable(log_api_call):
+            return log_api_call
+
+    return _noop_log_api_call
 
 
 log_api_call = _load_log_api_call()
