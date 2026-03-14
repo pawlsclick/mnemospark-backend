@@ -37,6 +37,7 @@ class StorageApiCallLoggerLoaderTests(unittest.TestCase):
             "storage-delete",
             "storage-download",
             "storage-ls",
+            "price-storage",
         )
         for service_dir in service_dirs:
             with self.subTest(service_dir=service_dir):
