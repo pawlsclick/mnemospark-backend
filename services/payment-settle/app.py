@@ -39,8 +39,10 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 log_api_call = load_log_api_call(emit_warning=True, logger=logger)
 
+ROUTE_PATH = "/payment/settle"
 QUOTES_TABLE_ENV = "QUOTES_TABLE_NAME"
 PAYMENT_LEDGER_TABLE_ENV = "PAYMENT_LEDGER_TABLE_NAME"
+MAX_LOG_ERROR_MESSAGE_LENGTH = 512
 
 _PAYMENT_CORE: Any | None = None
 
@@ -102,6 +104,67 @@ def _log_event(level: int, event_name: str, **fields: Any) -> None:
     payload: dict[str, Any] = {"event": event_name}
     payload.update({key: value for key, value in fields.items() if value is not None})
     logger.log(level, json.dumps(payload, default=str, separators=(",", ":")))
+
+
+def _request_context(event: dict[str, Any]) -> dict[str, Any]:
+    request_context = event.get("requestContext")
+    if isinstance(request_context, dict):
+        return request_context
+    return {}
+
+
+def _request_id(event: dict[str, Any], context: Any) -> str | None:
+    request_context = _request_context(event)
+    candidates = (
+        request_context.get("requestId"),
+        request_context.get("extendedRequestId"),
+        getattr(context, "aws_request_id", None),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
+def _request_method(event: dict[str, Any]) -> str:
+    request_context = _request_context(event)
+    candidates = (
+        event.get("httpMethod"),
+        request_context.get("httpMethod"),
+        (request_context.get("http") or {}).get("method") if isinstance(request_context.get("http"), dict) else None,
+    )
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip().upper()
+    return "UNKNOWN"
+
+
+def _request_path(event: dict[str, Any], default_path: str = ROUTE_PATH) -> str:
+    request_context = _request_context(event)
+    candidates = (
+        event.get("resource"),
+        request_context.get("resourcePath"),
+        event.get("path"),
+        request_context.get("path"),
+        event.get("rawPath"),
+        default_path,
+    )
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            path = candidate.strip().split("?", 1)[0]
+            if not path.startswith("/"):
+                path = f"/{path}"
+            return path
+    return default_path
+
+
+def _sanitize_error_message(error_message: str | None) -> str | None:
+    if error_message is None:
+        return None
+    sanitized = str(error_message).replace("\n", " ").replace("\r", " ").strip()
+    if len(sanitized) > MAX_LOG_ERROR_MESSAGE_LENGTH:
+        sanitized = sanitized[:MAX_LOG_ERROR_MESSAGE_LENGTH]
+    return sanitized
 
 
 def _response(status_code: int, body: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -431,14 +494,35 @@ def _log_api_call_result(
     error_code: str | None = None,
     error_message: str | None = None,
 ) -> None:
+    sanitized_error_message = _sanitize_error_message(error_message)
+    level = logging.INFO
+    if status_code >= 500:
+        level = logging.ERROR
+    elif status_code >= 400:
+        level = logging.WARNING
+
+    _log_event(
+        level,
+        "payment_settlement_api_result",
+        request_id=_request_id(event, context),
+        method=_request_method(event),
+        path=_request_path(event),
+        status=status_code,
+        result=result,
+        error_code=error_code,
+        error_message=sanitized_error_message,
+        wallet_address=request.wallet_address if request else None,
+        quote_id=request.quote_id if request else None,
+        trans_id=trans_id,
+    )
     log_api_call(
         event=event,
         context=context,
-        route="/payment/settle",
+        route=ROUTE_PATH,
         status_code=status_code,
         result=result,
         error_code=error_code,
-        error_message=error_message,
+        error_message=sanitized_error_message,
         wallet_address=request.wallet_address if request else None,
         quote_id=request.quote_id if request else None,
         trans_id=trans_id,
@@ -455,6 +539,15 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         now = int(time.time())
         request = parse_input(event)
         _require_authorized_wallet(event, request.wallet_address)
+        _log_event(
+            logging.INFO,
+            "payment_settlement_request_parsed",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            wallet_address=request.wallet_address,
+            quote_id=request.quote_id,
+        )
 
         dynamodb = boto3.resource("dynamodb")
         quotes_table = dynamodb.Table(_require_env(QUOTES_TABLE_ENV))
@@ -517,6 +610,17 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "payment_status": "confirmed",
             "timestamp": datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         }
+        _log_event(
+            logging.INFO,
+            "payment_settlement_succeeded",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            status=200,
+            wallet_address=request.wallet_address,
+            quote_id=request.quote_id,
+            trans_id=payment_result.trans_id,
+        )
         _log_api_call_result(
             event,
             context,
@@ -590,8 +694,13 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         _log_event(
             logging.ERROR,
             "payment_settle_internal_error",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            status=500,
+            error_code="internal_error",
             error_type=type(exc).__name__,
-            error_message=str(exc),
+            error_message=_sanitize_error_message(str(exc)),
             quote_id=request.quote_id if request else None,
             wallet_address=request.wallet_address if request else None,
         )

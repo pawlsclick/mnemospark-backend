@@ -10,6 +10,7 @@ for compatibility and future versioned routing work.
 The current internet-facing API Gateway routes are:
 
 - `POST /price-storage`
+- `POST /payment/settle`
 - `POST /storage/upload`
 - `POST /storage/upload/confirm`
 - `GET /storage/ls`
@@ -21,3 +22,9 @@ The current internet-facing API Gateway routes are:
 
 There are no additional public routes at this time; scheduled/internal functions
 (for example storage housekeeping) are not part of the public API contract.
+
+## Observability conventions
+
+- `docs/logging-observability.md` defines structured logging fields and
+  investigation correlation flow across CloudWatch, DynamoDB log tables, and
+  CloudTrail.

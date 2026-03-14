@@ -217,6 +217,55 @@ def _log_event(level: int, event_name: str, **fields: Any) -> None:
     logger.log(level, json.dumps(payload, default=str, separators=(",", ":")))
 
 
+def _request_context(event: dict[str, Any]) -> dict[str, Any]:
+    request_context = event.get("requestContext")
+    if isinstance(request_context, dict):
+        return request_context
+    return {}
+
+
+def _request_id(event: dict[str, Any], context: Any) -> str | None:
+    request_context = _request_context(event)
+    for candidate in (
+        request_context.get("requestId"),
+        request_context.get("extendedRequestId"),
+        getattr(context, "aws_request_id", None),
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
+def _request_method(event: dict[str, Any]) -> str:
+    request_context = _request_context(event)
+    for candidate in (
+        event.get("httpMethod"),
+        request_context.get("httpMethod"),
+        (request_context.get("http") or {}).get("method") if isinstance(request_context.get("http"), dict) else None,
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip().upper()
+    return "UNKNOWN"
+
+
+def _request_path(event: dict[str, Any], default_path: str) -> str:
+    request_context = _request_context(event)
+    for candidate in (
+        event.get("resource"),
+        request_context.get("resourcePath"),
+        event.get("path"),
+        request_context.get("path"),
+        event.get("rawPath"),
+        default_path,
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            path = candidate.strip().split("?", 1)[0]
+            if not path.startswith("/"):
+                path = f"/{path}"
+            return path
+    return default_path
+
+
 def _response(status_code: int, body: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
     merged_headers = {
         "Content-Type": "application/json",
@@ -1447,6 +1496,8 @@ def _write_transaction_log(
     try:
         transaction_log_table.put_item(
             Item={
+                # Housekeeping depends on this schema: payment_status/trans_id/payment_received_at
+                # plus recipient_wallet/location/bucket_name/object_key for billing enforcement.
                 "quote_id": request.quote_id,
                 "trans_id": trans_id,
                 "timestamp": timestamp,
@@ -1495,6 +1546,28 @@ def _log_api_call_result(
     resolved_idempotency_key = idempotency_key or (
         getattr(request, "idempotency_key", None) if request is not None else None
     )
+    level = logging.INFO
+    if status_code >= 500:
+        level = logging.ERROR
+    elif status_code >= 400:
+        level = logging.WARNING
+    _log_event(
+        level,
+        "storage_upload_api_result",
+        request_id=_request_id(event, context),
+        method=_request_method(event),
+        path=_request_path(event, route),
+        status=status_code,
+        result=result,
+        error_code=error_code,
+        error_message=error_message,
+        wallet_address=wallet_address,
+        quote_id=resolved_quote_id,
+        trans_id=trans_id,
+        object_id=object_id,
+        object_key=object_key,
+        idempotency_key=resolved_idempotency_key,
+    )
 
     log_api_call(
         event=event,
@@ -1529,6 +1602,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         _log_event(
             logging.INFO,
             "upload_request_parsed",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event, "/storage/upload"),
             quote_id=request.quote_id,
             wallet_address=request.wallet_address,
             object_id=request.object_id,
@@ -2127,6 +2203,9 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
         _log_event(
             logging.INFO,
             "confirm_request_parsed",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event, "/storage/upload/confirm"),
             quote_id=request.quote_id,
             wallet_address=request.wallet_address,
             object_key=request.object_key,

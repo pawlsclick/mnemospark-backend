@@ -77,6 +77,7 @@ def _make_request_event(
     wallet_header: str | None = None,
     body: dict[str, object] | None = None,
     query: dict[str, str] | None = None,
+    request_id: str | None = "api-gw-request-1",
 ) -> dict[str, object]:
     event: dict[str, object] = {
         "type": "REQUEST",
@@ -86,7 +87,10 @@ def _make_request_event(
         "path": path,
         "headers": {},
         "queryStringParameters": query,
+        "requestContext": {},
     }
+    if request_id:
+        event["requestContext"] = {"requestId": request_id}
     if wallet_header is not None:
         event["headers"] = {"X-Wallet-Signature": wallet_header}
     if body is not None:
@@ -161,6 +165,25 @@ class WalletAuthorizerTests(unittest.TestCase):
         response = app.lambda_handler(event, None)
 
         self.assertEqual(_policy_effect(response), "Deny")
+
+    def test_payment_settle_valid_signature_allows(self):
+        wallet_header = _build_wallet_header(
+            method="POST",
+            path="/payment/settle",
+            wallet_address=self.wallet_address,
+            private_key=self.signer.key,
+        )
+        event = _make_request_event(
+            method="POST",
+            path="/payment/settle",
+            wallet_header=wallet_header,
+            body={"wallet_address": self.wallet_address},
+        )
+
+        response = app.lambda_handler(event, None)
+
+        self.assertEqual(_policy_effect(response), "Allow")
+        self.assertEqual(response.get("context"), {"walletAddress": self.wallet_address.lower()})
 
     def test_invalid_signature_is_denied(self):
         wallet_header = _build_wallet_header(
@@ -302,6 +325,7 @@ class WalletAuthorizerTests(unittest.TestCase):
         self.assertEqual(put_item_kwargs["TableName"], "wallet-auth-events")
         self.assertEqual(put_item_kwargs["Item"]["result"]["S"], "deny")
         self.assertEqual(put_item_kwargs["Item"]["reason"]["S"], "missing_wallet_header")
+        self.assertEqual(put_item_kwargs["Item"]["request_id"]["S"], "api-gw-request-1")
 
     @patch.dict("os.environ", {"WALLET_AUTH_EVENTS_TABLE_NAME": "wallet-auth-events"}, clear=False)
     def test_allow_decision_writes_auth_event_with_recovered_wallet(self):
@@ -327,3 +351,4 @@ class WalletAuthorizerTests(unittest.TestCase):
         self.assertEqual(put_item_kwargs["TableName"], "wallet-auth-events")
         self.assertEqual(put_item_kwargs["Item"]["result"]["S"], "allow")
         self.assertEqual(put_item_kwargs["Item"]["wallet_address"]["S"], self.wallet_address.lower())
+        self.assertEqual(put_item_kwargs["Item"]["request_id"]["S"], "api-gw-request-1")

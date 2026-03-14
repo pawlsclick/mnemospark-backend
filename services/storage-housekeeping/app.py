@@ -8,7 +8,10 @@ if the bucket becomes empty, the bucket is deleted as well. Related transaction
 rows are removed from DynamoDB after cleanup.
 
 Payment confirmation logic:
-- A row is considered a confirmed payment event when it has a non-empty trans_id.
+- A row is considered a confirmed payment event when it has:
+  * payment_status == "confirmed"
+  * a non-empty trans_id
+  * a parseable payment timestamp
 - If the row contains recipient_wallet, it must match MNEMOSPARK_RECIPIENT_WALLET.
 - The latest confirmed payment timestamp per object is used as the billing anchor.
 """
@@ -245,6 +248,10 @@ def _row_timestamp(item: dict[str, Any]) -> datetime | None:
 
 
 def _row_is_confirmed_payment(item: dict[str, Any], expected_recipient_wallet: str) -> tuple[bool, str | None]:
+    payment_status = str(item.get("payment_status") or "").strip().lower()
+    if payment_status != "confirmed":
+        return False, "payment_not_confirmed"
+
     trans_id = str(item.get("trans_id") or "").strip()
     if not trans_id:
         return False, "missing_trans_id"
@@ -278,6 +285,7 @@ def _build_object_ledgers(
         "rows_scanned": 0,
         "rows_confirmed": 0,
         "rows_skipped_missing_identity": 0,
+        "rows_skipped_payment_not_confirmed": 0,
         "rows_skipped_missing_trans_id": 0,
         "rows_skipped_missing_timestamp": 0,
         "rows_skipped_recipient_mismatch": 0,
@@ -294,6 +302,8 @@ def _build_object_ledgers(
         if not is_confirmed:
             if reason == "recipient_mismatch":
                 counters["rows_skipped_recipient_mismatch"] += 1
+            elif reason == "payment_not_confirmed":
+                counters["rows_skipped_payment_not_confirmed"] += 1
             elif reason == "missing_timestamp":
                 counters["rows_skipped_missing_timestamp"] += 1
             else:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -30,6 +31,8 @@ except ModuleNotFoundError:
 
 log_api_call = load_log_api_call()
 _log_api_call_result = load_log_api_call_result("/storage/delete", log_api_call_getter=lambda: log_api_call)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 US_EAST_1_REGION = "us-" + "east-1"
 DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
@@ -60,6 +63,61 @@ class ParsedDeleteRequest:
     wallet_address: str
     object_key: str
     location: str
+
+
+def _log_event(level: int, event_name: str, **fields: Any) -> None:
+    payload: dict[str, Any] = {"event": event_name}
+    payload.update({key: value for key, value in fields.items() if value is not None})
+    logger.log(level, json.dumps(payload, default=str, separators=(",", ":")))
+
+
+def _request_context(event: dict[str, Any]) -> dict[str, Any]:
+    request_context = event.get("requestContext")
+    if isinstance(request_context, dict):
+        return request_context
+    return {}
+
+
+def _request_id(event: dict[str, Any], context: Any) -> str | None:
+    request_context = _request_context(event)
+    for candidate in (
+        request_context.get("requestId"),
+        request_context.get("extendedRequestId"),
+        getattr(context, "aws_request_id", None),
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
+def _request_method(event: dict[str, Any]) -> str:
+    request_context = _request_context(event)
+    for candidate in (
+        event.get("httpMethod"),
+        request_context.get("httpMethod"),
+        (request_context.get("http") or {}).get("method") if isinstance(request_context.get("http"), dict) else None,
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip().upper()
+    return "UNKNOWN"
+
+
+def _request_path(event: dict[str, Any], default_path: str = "/storage/delete") -> str:
+    request_context = _request_context(event)
+    for candidate in (
+        event.get("resource"),
+        request_context.get("resourcePath"),
+        event.get("path"),
+        request_context.get("path"),
+        event.get("rawPath"),
+        default_path,
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            path = candidate.strip().split("?", 1)[0]
+            if not path.startswith("/"):
+                path = f"/{path}"
+            return path
+    return default_path
 
 
 def _response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:
@@ -265,9 +323,30 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     request: ParsedDeleteRequest | None = None
     try:
         request = parse_input(event)
+        _log_event(
+            logging.INFO,
+            "storage_delete_request_parsed",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+        )
         _require_authorized_wallet(event, request.wallet_address)
         s3_client = boto3.client("s3", region_name=request.location)
         result = delete_object(request, s3_client)
+        _log_event(
+            logging.INFO,
+            "storage_delete_succeeded",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            status=200,
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+            bucket=result.get("bucket"),
+            bucket_deleted=result.get("bucket_deleted"),
+        )
         _log_api_call_result(
             event,
             context,
@@ -278,6 +357,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         return _response(200, result)
     except ForbiddenError as exc:
+        _log_event(
+            logging.WARNING,
+            "storage_delete_forbidden",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            status=403,
+            error_code="wallet_mismatch",
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         _log_api_call_result(
             event,
             context,
@@ -290,6 +381,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         return _error_response(403, "forbidden", str(exc))
     except BadRequestError as exc:
+        _log_event(
+            logging.WARNING,
+            "storage_delete_bad_request",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            status=400,
+            error_code="bad_request",
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         _log_api_call_result(
             event,
             context,
@@ -303,6 +406,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return _error_response(400, "Bad request", str(exc))
     except NotFoundError as exc:
         error_code = "bucket_not_found" if str(exc) == "bucket_not_found" else "object_not_found"
+        _log_event(
+            logging.WARNING,
+            "storage_delete_not_found",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            status=404,
+            error_code=error_code,
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         _log_api_call_result(
             event,
             context,
@@ -317,6 +432,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             return _error_response(404, "bucket_not_found", "Bucket not found for this wallet")
         return _error_response(404, "object_not_found", "Object not found")
     except Exception as exc:
+        _log_event(
+            logging.ERROR,
+            "storage_delete_internal_error",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            status=500,
+            error_code="internal_error",
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
         _log_api_call_result(
             event,
             context,

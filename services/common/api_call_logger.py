@@ -11,6 +11,7 @@ import base64
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ DEFAULT_TTL_SECONDS = 30 * 24 * 60 * 60
 DEFAULT_TABLE_ENV = "API_CALLS_TABLE_NAME"
 DEFAULT_TTL_ENV = "API_CALLS_TTL_SECONDS"
 MAX_ERROR_MESSAGE_LENGTH = 1024
+HEX_SIGNATURE_PATTERN = re.compile(r"0x[a-fA-F0-9]{130}")
 
 _DYNAMODB_CLIENT: Any | None = None
 
@@ -165,6 +167,16 @@ def _structured_log(level: int, event_name: str, **fields: Any) -> None:
     logger.log(level, json.dumps(payload, default=str, separators=(",", ":")))
 
 
+def _sanitize_error_message(error_message: str | None) -> str | None:
+    if error_message is None:
+        return None
+    sanitized = str(error_message).replace("\n", " ").replace("\r", " ").strip()
+    sanitized = HEX_SIGNATURE_PATTERN.sub("[REDACTED_SIGNATURE]", sanitized)
+    if len(sanitized) > MAX_ERROR_MESSAGE_LENGTH:
+        return sanitized[:MAX_ERROR_MESSAGE_LENGTH]
+    return sanitized
+
+
 def _dynamodb_client() -> Any:
     global _DYNAMODB_CLIENT
     if _DYNAMODB_CLIENT is None:
@@ -236,6 +248,7 @@ def log_api_call(
     """
     try:
         now = datetime.now(timezone.utc)
+        sanitized_error_message = _sanitize_error_message(error_message)
         request_id = _extract_api_gateway_request_id(event, context)
         method = _extract_http_method(event)
         path = _normalized_path(event, route=route)
@@ -260,7 +273,7 @@ def log_api_call(
             "status_code": int(status_code),
             "result": result,
             "error_code": error_code,
-            "error_message": error_message[:MAX_ERROR_MESSAGE_LENGTH] if error_message else None,
+            "error_message": sanitized_error_message,
             **{k: v for k, v in extra_fields.items() if v is not None},
         }
 
@@ -278,7 +291,7 @@ def log_api_call(
                     status_code=int(status_code),
                     result=result,
                     error_code=error_code,
-                    error_message=error_message,
+                    error_message=sanitized_error_message,
                     expires_at=expires_at,
                     extra_fields=extra_fields,
                 )
@@ -297,7 +310,7 @@ def log_api_call(
                     path=path,
                     table_name=resolved_table_name,
                     error_type=type(exc).__name__,
-                    error_message=str(exc),
+                    error_message=_sanitize_error_message(str(exc)),
                 )
 
         _structured_log(logging.INFO, "api_call_logged", ddb_write_status=ddb_write_status, **payload)
@@ -306,5 +319,5 @@ def log_api_call(
             logging.WARNING,
             "api_call_log_unexpected_failure",
             error_type=type(exc).__name__,
-            error_message=str(exc),
+            error_message=_sanitize_error_message(str(exc)),
         )
