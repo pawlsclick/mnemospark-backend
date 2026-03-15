@@ -682,6 +682,10 @@ def _payment_requirements(quote_context: QuoteContext, payment_config: dict[str,
         "asset": payment_config["payment_asset"],
         "payTo": payment_config["recipient_wallet"],
         "amount": str(quote_context.storage_price_micro),
+        "extra": {
+            "name": payment_config["token_name"],
+            "version": payment_config["token_version"],
+        },
     }
     return {"accepts": [option]}
 
