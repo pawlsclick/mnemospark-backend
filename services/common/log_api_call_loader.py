@@ -37,6 +37,7 @@ def load_log_api_call(*, emit_warning: bool = False, logger: logging.Logger | No
             sys.modules[module_spec.name] = module
             module_spec.loader.exec_module(module)
         except Exception:
+            sys.modules.pop(module_spec.name, None)
             continue
         log_api_call = getattr(module, "log_api_call", None)
         if callable(log_api_call):
