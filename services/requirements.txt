@@ -1,0 +1,5 @@
+# Dependencies for Lambdas using CodeUri: services (PaymentSettle, StorageUpload, etc.).
+# SAM installs from this file when building the services artifact.
+boto3
+eth-account
+web3
