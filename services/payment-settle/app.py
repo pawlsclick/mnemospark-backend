@@ -624,6 +624,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return _error_response(404, "quote_not_found", "Quote not found or expired")
     except PaymentRequiredError as exc:
         headers = payment_core._payment_required_headers(exc.requirements)
+        if exc.details:
+            _log_event(
+                logging.WARNING,
+                "payment_required_details",
+                request_id=_request_id(event, context),
+                message=exc.message,
+                details=str(exc.details),
+            )
         _log_api_call_result(
             event,
             context,
