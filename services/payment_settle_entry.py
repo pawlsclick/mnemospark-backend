@@ -9,6 +9,7 @@ __file__ is under /var/task/payment-settle/.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 _entry_path = Path(__file__).resolve().parents[0] / "payment-settle" / "app.py"
@@ -16,6 +17,7 @@ _spec = importlib.util.spec_from_file_location("payment_settle_app", _entry_path
 if _spec is None or _spec.loader is None:
     raise RuntimeError("Unable to load payment-settle app module")
 _module = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = _module
 _spec.loader.exec_module(_module)
 
 lambda_handler = _module.lambda_handler
