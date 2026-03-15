@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import logging
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -33,6 +34,7 @@ def load_log_api_call(*, emit_warning: bool = False, logger: logging.Logger | No
             continue
         try:
             module = importlib.util.module_from_spec(module_spec)
+            sys.modules[module_spec.name] = module
             module_spec.loader.exec_module(module)
         except Exception:
             continue
