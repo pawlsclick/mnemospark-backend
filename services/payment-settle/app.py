@@ -16,6 +16,7 @@ import importlib.util
 import json
 import logging
 import os
+import sys
 import time
 from functools import partial
 from dataclasses import dataclass
@@ -114,6 +115,7 @@ def _payment_core() -> Any:
     if module_spec is None or module_spec.loader is None:
         raise RuntimeError("Unable to load shared storage-upload payment module")
     module = importlib.util.module_from_spec(module_spec)
+    sys.modules[module_spec.name] = module
     module_spec.loader.exec_module(module)
     _PAYMENT_CORE = module
     return module
