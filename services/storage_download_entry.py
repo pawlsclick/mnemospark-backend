@@ -8,6 +8,7 @@ its __file__ is under /var/task/storage-download/.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 _entry_path = Path(__file__).resolve().parents[0] / "storage-download" / "app.py"
@@ -15,6 +16,7 @@ _spec = importlib.util.spec_from_file_location("storage_download_app", _entry_pa
 if _spec is None or _spec.loader is None:
     raise RuntimeError("Unable to load storage-download app module")
 _module = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = _module
 _spec.loader.exec_module(_module)
 
 lambda_handler = _module.lambda_handler
