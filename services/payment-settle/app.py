@@ -651,7 +651,6 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         Key={"wallet_address": request.wallet_address, "quote_id": request.quote_id},
                         ConsistentRead=True,
                     ).get("Item")
-                    or {}
                 )
             except Exception:
                 existing = None
