@@ -643,6 +643,43 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         return _error_response(402, "payment_required", exc.message, details=exc.details, headers=headers)
     except ConflictError as exc:
+        error_message = str(exc)
+        if "already settled" in error_message.lower() and payments_table is not None and request is not None:
+            existing = (
+                payments_table.get_item(
+                    Key={"wallet_address": request.wallet_address, "quote_id": request.quote_id},
+                    ConsistentRead=True,
+                ).get("Item")
+                or {}
+            )
+            response_body = {
+                "quote_id": request.quote_id,
+                "wallet_address": request.wallet_address,
+                "trans_id": existing.get("trans_id"),
+                "network": existing.get("network"),
+                "asset": existing.get("asset"),
+                "amount": str(existing.get("amount")) if existing.get("amount") is not None else None,
+                "payment_status": "confirmed",
+                "timestamp": existing.get("timestamp"),
+                "result": "already_settled",
+            }
+            _log_api_call_result(
+                event,
+                context,
+                status_code=200,
+                result="success",
+                request=request,
+                trans_id=response_body.get("trans_id"),
+            )
+            return {
+                "statusCode": 200,
+                "headers": {
+                    "Content-Type": "application/json",
+                    **CORS_HEADERS,
+                },
+                "body": json.dumps(response_body),
+            }
+
         _log_api_call_result(
             event,
             context,
@@ -650,9 +687,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             result="conflict",
             request=request,
             error_code="payment_already_settled",
-            error_message=str(exc),
+            error_message=error_message,
         )
-        return _error_response(409, "conflict", str(exc))
+        return _error_response(409, "conflict", error_message)
     except Exception as exc:
         if ledger_claimed and payments_table is not None and request is not None:
             _release_payment_ledger_claim(payments_table, request)
