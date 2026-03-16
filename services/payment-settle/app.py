@@ -671,14 +671,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 request=request,
                 trans_id=response_body.get("trans_id"),
             )
-            return {
-                "statusCode": 200,
-                "headers": {
-                    "Content-Type": "application/json",
-                    **CORS_HEADERS,
-                },
-                "body": json.dumps(response_body),
-            }
+            return _response(200, response_body)
 
         _log_api_call_result(
             event,
