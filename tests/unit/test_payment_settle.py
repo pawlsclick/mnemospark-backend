@@ -246,19 +246,20 @@ class PaymentSettleHandlerTests(unittest.TestCase):
         self.assertEqual(log_api_call_mock.call_args.kwargs["status_code"], 200)
         self.assertEqual(log_api_call_mock.call_args.kwargs["route"], "/payment/settle")
 
-    def test_duplicate_settlement_returns_conflict(self):
+    def test_duplicate_settlement_returns_idempotent_success(self):
         event = self._event(headers={"PAYMENT-SIGNATURE": "signed-payload"})
 
         first = app.lambda_handler(event, None)
         second = app.lambda_handler(event, None)
 
         self.assertEqual(first["statusCode"], 200)
-        self.assertEqual(second["statusCode"], 409)
+        self.assertEqual(second["statusCode"], 200)
         second_body = json.loads(second["body"])
-        self.assertEqual(second_body["error"], "conflict")
+        self.assertEqual(second_body["payment_status"], "confirmed")
+        self.assertEqual(second_body["result"], "already_settled")
         self.assertEqual(len(self.fake_payment_core.verify_calls), 1)
 
-    def test_confirmed_duplicate_is_blocked_before_settlement(self):
+    def test_confirmed_duplicate_returns_success_before_settlement(self):
         self.payments_table.put_item(
             Item={
                 "wallet_address": self.wallet_address,
@@ -271,7 +272,10 @@ class PaymentSettleHandlerTests(unittest.TestCase):
 
         response = app.lambda_handler(event, None)
 
-        self.assertEqual(response["statusCode"], 409)
+        self.assertEqual(response["statusCode"], 200)
+        body = json.loads(response["body"])
+        self.assertEqual(body["payment_status"], "confirmed")
+        self.assertEqual(body["result"], "already_settled")
         self.assertEqual(len(self.fake_payment_core.verify_calls), 0)
 
     def test_payment_required_releases_ledger_claim(self):
