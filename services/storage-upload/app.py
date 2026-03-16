@@ -465,6 +465,7 @@ def _presigned_put_object_params(
     params: dict[str, Any] = {
         "Bucket": bucket_name,
         "Key": object_key,
+        "ContentType": "application/octet-stream",
         "Metadata": {"wrapped-dek": wrapped_dek},
     }
     if content_length_bytes is not None:
