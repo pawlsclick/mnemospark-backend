@@ -645,33 +645,37 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     except ConflictError as exc:
         error_message = str(exc)
         if "already settled" in error_message.lower() and payments_table is not None and request is not None:
-            existing = (
-                payments_table.get_item(
-                    Key={"wallet_address": request.wallet_address, "quote_id": request.quote_id},
-                    ConsistentRead=True,
-                ).get("Item")
-                or {}
-            )
-            response_body = {
-                "quote_id": request.quote_id,
-                "wallet_address": request.wallet_address,
-                "trans_id": existing.get("trans_id"),
-                "network": existing.get("network"),
-                "asset": existing.get("asset"),
-                "amount": str(existing.get("amount")) if existing.get("amount") is not None else None,
-                "payment_status": "confirmed",
-                "timestamp": existing.get("timestamp"),
-                "result": "already_settled",
-            }
-            _log_api_call_result(
-                event,
-                context,
-                status_code=200,
-                result="success",
-                request=request,
-                trans_id=response_body.get("trans_id"),
-            )
-            return _response(200, response_body)
+            try:
+                existing = (
+                    payments_table.get_item(
+                        Key={"wallet_address": request.wallet_address, "quote_id": request.quote_id},
+                        ConsistentRead=True,
+                    ).get("Item")
+                    or {}
+                )
+            except Exception:
+                existing = None
+            if existing is not None:
+                response_body = {
+                    "quote_id": request.quote_id,
+                    "wallet_address": request.wallet_address,
+                    "trans_id": existing.get("trans_id"),
+                    "network": existing.get("network"),
+                    "asset": existing.get("asset"),
+                    "amount": str(existing.get("amount")) if existing.get("amount") is not None else None,
+                    "payment_status": "confirmed",
+                    "timestamp": existing.get("timestamp"),
+                    "result": "already_settled",
+                }
+                _log_api_call_result(
+                    event,
+                    context,
+                    status_code=200,
+                    result="success",
+                    request=request,
+                    trans_id=response_body.get("trans_id"),
+                )
+                return _response(200, response_body)
 
         _log_api_call_result(
             event,
