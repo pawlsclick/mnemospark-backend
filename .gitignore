@@ -2,6 +2,10 @@
 .aws-sam/
 __pycache__/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage/
 env.json
 .DS_Store
 # IDE / editor
