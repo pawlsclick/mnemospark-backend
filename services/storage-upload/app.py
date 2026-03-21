@@ -1516,6 +1516,20 @@ def _write_transaction_log(
             raise
 
 
+def _load_existing_upload_transaction(
+    transaction_log_table: Any,
+    *,
+    quote_id: str,
+    trans_id: str,
+) -> dict[str, Any] | None:
+    response = transaction_log_table.get_item(
+        Key={"quote_id": quote_id, "trans_id": trans_id},
+        ConsistentRead=True,
+    )
+    item = response.get("Item")
+    return item if isinstance(item, dict) else None
+
+
 def _log_api_call_result(
     event: dict[str, Any],
     context: Any,
@@ -1791,6 +1805,82 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 amount=payment_result.amount,
                 network=payment_result.network,
             )
+        existing_upload_log = _load_existing_upload_transaction(
+            transaction_log_table,
+            quote_id=request.quote_id,
+            trans_id=payment_result.trans_id,
+        )
+        if existing_upload_log:
+            existing_object_key = str(existing_upload_log.get("object_key") or "").strip()
+            if existing_object_key and existing_object_key != request.object_key:
+                raise ConflictError("quote_already_consumed")
+
+            bucket_name = (
+                str(existing_upload_log.get("bucket_name") or "").strip()
+                or _bucket_name(request.wallet_address)
+            )
+            _log_event(
+                logging.INFO,
+                "upload_already_confirmed",
+                quote_id=request.quote_id,
+                trans_id=payment_result.trans_id,
+                idempotency_key=idempotency_key,
+                object_key=request.object_key,
+            )
+            response_body = {
+                "quote_id": request.quote_id,
+                "addr": request.wallet_address,
+                "addr_hash": _wallet_hash(request.wallet_address),
+                "trans_id": payment_result.trans_id,
+                "storage_price": float(quote_context.storage_price),
+                "object_id": request.object_id,
+                "object_key": request.object_key,
+                "provider": quote_context.provider,
+                "bucket_name": bucket_name,
+                "location": quote_context.location,
+            }
+            payment_response_header = _encode_json_base64(
+                {
+                    "trans_id": payment_result.trans_id,
+                    "network": payment_result.network,
+                    "asset": payment_result.asset,
+                    "amount": str(payment_result.amount),
+                }
+            )
+            if (
+                idempotency_table
+                and idempotency_key
+                and request_hash
+                and (idempotency_lock_acquired or resume_upload_after_payment)
+            ):
+                _mark_idempotency_completed(
+                    idempotency_table=idempotency_table,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    response_body=response_body,
+                    payment_response_header=payment_response_header,
+                    now=now,
+                )
+                _log_event(
+                    logging.DEBUG,
+                    "idempotency_marked_completed_existing_upload",
+                    idempotency_key=idempotency_key,
+                )
+            _log_api_call_result(
+                event,
+                context,
+                route="/storage/upload",
+                status_code=200,
+                result="success",
+                request=request,
+                trans_id=payment_result.trans_id,
+            )
+            return _response(
+                200,
+                response_body,
+                headers=_payment_response_headers(payment_response_header),
+            )
+
         upload_url: str | None = None
         if request.mode == "presigned":
             s3_client = boto3.client("s3", region_name=quote_context.location)
@@ -2144,6 +2234,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             quote_id=request.quote_id if request else None,
             wallet_address=request.wallet_address if request else None,
         )
+        if idempotency_lock_acquired and idempotency_table and idempotency_key:
+            _release_idempotency_lock(idempotency_table, idempotency_key)
         _log_api_call_result(
             event,
             context,
