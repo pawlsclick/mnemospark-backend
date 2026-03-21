@@ -125,12 +125,11 @@ Handle division by zero (no txs or zero fee) with an explicit **unknown / safe d
 ## Lambda monitor flow
 
 1. Load **`MNEMOSPARK_RELAYER_WALLET_ADDRESS`** and Base RPC URL from environment.
-2. (Optional) Reconcile **pending** rows if the product ever writes them; v1 may omit pending state (see plan).
-3. Load **confirmed** transactions for the wallet from **`RelayerTransactions`** (query by pk) for aggregation windows.
-4. Compute daily / weekly / monthly aggregates → **`RelayerStats`**.
-5. **`eth_getBalance`** for relayer address.
-6. Compute runway → **`RelayerHealth`**.
-7. If status is warning or critical, **publish message to SNS topic** (email subscription to **alerts@mnemospark.ai**).
+2. Load transactions for the wallet from **`RelayerTransactions`** (**query** by pk). v1 is **write-on-success-only** — **no** pending reconciliation step.
+3. Compute daily / weekly / monthly aggregates → **`RelayerStats`**.
+4. **`eth_getBalance`** for relayer address.
+5. Compute runway → **`RelayerHealth`**.
+6. If status is warning or critical, **publish message to SNS topic** (email subscription to **alerts@mnemospark.ai**).
 
 ---
 
@@ -138,8 +137,7 @@ Handle division by zero (no txs or zero fee) with an explicit **unknown / safe d
 
 Suggested defaults (tunable per environment):
 
-- **Frequent:** stats + health + balance (e.g. every 15–60 minutes).
-- **Optional faster rule:** only if pending reconciliation is required later.
+- **Single rule:** stats + health + balance in one invocation (e.g. `rate(30 minutes)`).
 
 ---
 
