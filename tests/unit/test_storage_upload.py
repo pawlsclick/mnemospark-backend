@@ -944,7 +944,9 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertNotIn("upload_headers", response_body)
         self.assertNotIn("confirmation_required", response_body)
         self.assertEqual(len(self.transaction_log_table.items), 1)
-        self.assertNotIn((("quote_id", self.quote_id),), self.quotes_table.items)
+        # Quote is no longer deleted on confirm - it expires via TTL to support
+        # dashboard funnel visibility (quote_created -> ... -> upload_confirmed).
+        self.assertIn((("quote_id", self.quote_id),), self.quotes_table.items)
         idem_item = self.idempotency_table.items[(("idempotency_key", "idem-confirm-success"),)]
         self.assertEqual(idem_item["status"], "completed")
 

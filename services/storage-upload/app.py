@@ -1986,16 +1986,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             quote_id=request.quote_id,
         )
 
-        try:
-            quotes_table.delete_item(Key={"quote_id": request.quote_id})
-            _log_event(
-                logging.DEBUG,
-                "consumed_quote_deleted",
-                quote_id=request.quote_id,
-                message="consumed quote deleted",
-            )
-        except ClientError:
-            pass
+        # Quote is intentionally preserved in QuotesTable to support dashboard funnel
+        # visibility (quote_created -> payment_settled -> upload_started -> upload_confirmed).
+        # TTL (expires_at) handles cleanup after 1 hour.
 
         response_body = {
             "quote_id": request.quote_id,
@@ -2375,10 +2368,7 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
             idempotency_key=request.idempotency_key,
         )
 
-        try:
-            quotes_table.delete_item(Key={"quote_id": request.quote_id})
-        except ClientError:
-            pass
+        # Quote preserved — same rationale as upload handler above.
 
         completed_response_body = dict(pending_response_body)
         completed_response_body.pop("upload_url", None)
