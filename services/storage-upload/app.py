@@ -929,7 +929,9 @@ def _onchain_settle_payment(authorization: TransferAuthorization) -> str:
     tx_hex = tx_hash.hex() if hasattr(tx_hash, "hex") else str(tx_hash)
     try:
         gas_used = int(receipt["gasUsed"])
-        eff_raw = receipt.get("effectiveGasPrice") or receipt.get("gasPrice")
+        eff_raw = receipt.get("effectiveGasPrice")
+        if eff_raw is None:
+            eff_raw = receipt.get("gasPrice")
         effective_gas_price = int(eff_raw)
         block_number = int(receipt["blockNumber"])
 

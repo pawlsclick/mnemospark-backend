@@ -64,6 +64,8 @@ class TestRelayerLedger(unittest.TestCase):
         self.assertIn("ConditionExpression", call_kw)
         item = call_kw["Item"]
         self.assertEqual(item["status"], "success")
+        self.assertTrue(item["sk"].startswith("TX#"))
+        self.assertTrue(item["sk"].endswith("#0x" + ("c" * 64)))
         self.assertEqual(item["gasUsed"], "100000")
         self.assertEqual(item["effectiveGasPriceWei"], "2")
         self.assertEqual(item["feePaidWei"], "200000")
