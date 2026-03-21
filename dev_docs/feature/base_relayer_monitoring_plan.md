@@ -8,55 +8,92 @@ _Use this file as the Cursor implementation plan (tracked in git; `.cursor/` is 
 
 ---
 
-## 1. Codebase review vs spec
+## 0. Locked product / engineering decisions
 
-### What already exists
+| Topic | Decision |
+|--------|-----------|
+| Stack & patterns | **Python 3.13 + Web3.py** only; **no viem / Node**; **minimize** changes and avoid new architectural patterns unless needed. **Spec amended** accordingly. |
+| Alerts | **SNS → email** to **alerts@mnemospark.ai**. Implement `AWS::SNS::Topic` + `AWS::SNS::Subscription` (`Protocol: email`, `Endpoint: alerts@mnemospark.ai`). Monitor Lambda `Publish` to topic on **warning/critical** (and optionally OK recovery). **Note:** the inbox must **confirm** the SNS subscription once via AWS’s confirmation email. |
+| Relayer address | **`MNEMOSPARK_RELAYER_WALLET_ADDRESS`** set from a new CloudFormation **parameter** (e.g. `RelayerWalletAddress`) passed into the **monitor** Lambda (and any other function that needs the literal address for Dynamo keys). See **§0.1** for where to type the value. |
+| On-chain entry point | **All on-chain settlement is centralized on `POST /payment/settle`**. Relayer ledger instrumentation should align with that operational model (see **§0.2**). Do **not** expand `StorageUploadFunction` with RPC/relayer secrets for on-chain work as part of this feature. |
+| Wallet count | **Single** relayer wallet; PK design `WALLET#<one address>` only. |
 
-| Area | Today | Spec expectation |
-|------|--------|-------------------|
-| On-chain settlement | `_onchain_settle_payment` in `services/storage-upload/app.py` uses **Web3.py**, sends raw tx, **`wait_for_transaction_receipt`** (sync), returns tx hash hex | “Lambda A writes metadata”; viem examples |
-| Relayer key | `MNEMOSPARK_RELAYER_SECRET_ID` → Secrets Manager; `_resolve_relayer_private_key()` | Same secret story fits |
-| Base RPC | `MNEMOSPARK_BASE_RPC_URL` on **PaymentSettleFunction** only in `template.yaml` | Dedicated RPC in prod |
-| DynamoDB | **`UploadTransactionLogTable`**: keys `quote_id` + `trans_id`; stores `trans_id` (tx hash for onchain), no gas fields | **`RelayerTransactions` / `RelayerStats` / `RelayerHealth`** (new) |
-| Scheduled Lambda pattern | `StorageHousekeepingFunction` + `AWS::Events::Rule` in `template.yaml` | EventBridge schedules for monitor |
+### 0.1 Where to set `MNEMOSPARK_RELAYER_WALLET_ADDRESS`
 
-### Gaps and mismatches
+1. **`template.yaml`** — add a parameter, for example:
 
-1. **Runtime / RPC client:** Spec shows **TypeScript + viem**. This repo is **Python 3.13** Lambdas; settlement already uses **web3.py**. Implementation should use **`eth_getTransactionReceipt`** / **`eth_getBalance`** via the same stack (or thin wrapper), unless you explicitly add a Node Lambda (not recommended for one feature).
-2. **No “pending” relayer queue today:** Settlement **blocks until receipt** and only returns on success. There is **nothing in DynamoDB** with `status: pending` for relayer txs unless we **add** a write-before-broadcast or a **reconciliation** path for edge cases (dropped RPC, partial failures, future async submit).
-3. **“Lambda A writes transaction metadata”:** `_write_transaction_log` records **business** upload/payment fields, **not** `gasUsed`, `effectiveGasPrice`, or `WALLET#…` keys from the spec.
-4. **Two call paths into settlement:** `verify_and_settle_payment` is used from **storage upload** and from **`payment-settle`** (dynamic import of `storage-upload` payment core). Any relayer instrumentation must cover **both** paths (shared helper).
-5. **Template vs code:** **`StorageUploadFunction`** does **not** declare `MNEMOSPARK_BASE_RPC_URL` or `MNEMOSPARK_RELAYER_SECRET_ID` in `template.yaml`, while **`PaymentSettleFunction`** does. If upload is supposed to run **onchain** settlement in deployed stacks, that may be a **pre-existing config gap**; worth confirming in ops.
+   ```yaml
+   RelayerWalletAddress:
+     Type: String
+     Description: Checksum or lower-hex Base address for the relayer (no private key)
+   ```
+
+   Wire it to the monitor function:
+
+   ```yaml
+   MNEMOSPARK_RELAYER_WALLET_ADDRESS: !Ref RelayerWalletAddress
+   ```
+
+2. **Deploy time** — pass the address when you deploy, for example:
+
+   ```bash
+   sam deploy --parameter-overrides RelayerWalletAddress=0xYourRelayerAddress...
+   ```
+
+   Or set **`RelayerWalletAddress`** in **`samconfig.toml`** / CI **`parameter_overrides`** for each environment (dev/staging/prod).
+
+3. **Value** — use the same **0x…** address as `Account.from_key(relayer_private_key).address` for the key stored in Secrets Manager (checksum or lowercase hex both work if the code normalizes).
+
+### 0.2 Centralizing on `POST /payment/settle`
+
+Settlement logic still lives in shared Python (`verify_and_settle_payment` → `_onchain_settle_payment`). **Operationally**, clients should perform on-chain payment **only** through **`POST /payment/settle`** so relayer activity is one place.
+
+- **Instrumentation:** Record **`RelayerTransactions`** when `_onchain_settle_payment` completes successfully (receipt in hand). That path is used whenever the payment core runs in **onchain** mode—today both upload and payment-settle can call it; **product routing** should favor **payment/settle** only for on-chain.
+- **Not in scope for this feature:** Ripping out or hard-disabling on-chain from **`/storage/upload`** in code; if you want that enforced in API behavior, treat it as a **follow-up** change.
 
 ---
 
-## 2. Proposed target architecture (aligned with repo)
+## 1. Decisions on pending writes & backfill (Q4 & Q5)
 
-- **Lambda A (extend existing):** After a successful on-chain settlement (when you already hold the **receipt**), write or update one row in **`RelayerTransactions`** (and optionally enqueue nothing if you only persist **confirmed** rows in v1).
-- **Lambda B (new):** `services/base-relayer-monitor` (name TBD), triggered by **EventBridge**:
-  - **Reconcile:** Query items that still need receipt data (if any); `eth_getTransactionReceipt` + idempotent `UpdateItem`.
-  - **Stats / health:** Recompute **7d** (and spec’s daily/weekly/monthly) aggregates into **`RelayerStats`**, **`RelayerHealth`**; `eth_getBalance` for runway.
-- **Infra:** New DynamoDB tables + IAM role + **one or two** schedule rules (fast reconcile vs slower stats), same style as `StorageHousekeepingScheduleRule`.
+These were open choices; below is the **recommended default** aligned with *minimal change* and **how the code works today**.
 
-**Private key:** Monitor Lambda should **not** need the relayer private key. Prefer **`MNEMOSPARK_RELAYER_WALLET_ADDRESS`** (or derive once at deploy from the secret into **SSM Parameter** / stack output) for `eth_getBalance` and partition keys.
+### Q4 — Pending transactions vs write-on-success-only
+
+**What we’re choosing:** **Write-on-success-only** for v1: when `_onchain_settle_payment` has a **successful** receipt, write one **confirmed** row to **`RelayerTransactions`** (gas, fee, hashes). Do **not** add a “pending at broadcast” row or a mandatory 5-minute reconcile loop for the common case.
+
+**Why the spec mentioned “pending”:** That pattern fits **async** submission (send tx, return immediately, later reconcile). Your Lambdas **already** `wait_for_transaction_receipt` before returning; if that succeeds, there is nothing to “reconcile” for gas accounting unless the process crashed in an extremely narrow window.
+
+**Tradeoff:** Simpler, fewer writes, monitor focuses on **aggregates + balance + alerts**. You **lose** automatic Dynamo tracking for txs that were broadcast but the Lambda died before a receipt (rare if you keep synchronous wait). If you later go async, add **pending** rows + reconcile.
+
+**Optional:** Keep a **lightweight** reconcile path in the monitor (query `status = pending`) for **future** use or manual repair rows—can be empty in v1.
+
+### Q5 — Historical backfill vs forward-only
+
+**What we’re choosing:** **Forward-only** for v1: only settlements **after** this feature ships populate **`RelayerTransactions`**.
+
+**Why not always backfill:** Old **`trans_id`** values live in **`UploadTransactionLog`** (and possibly ledger) but may include **mock** hashes, mixed formats, or high RPC volume to refetch receipts. Backfill is a **one-time script or ops run**, not required for runway math once new txs are recorded.
+
+**Tradeoff:** Dashboards and 7d averages start **empty** until traffic accrues; **long-term** accuracy is fine. If you need history on day one, add a **separate** backfill job (filter real `0x` tx hashes, rate-limit RPC).
 
 ---
 
-## 3. DynamoDB design (from spec, minor clarifications)
+## 2. Codebase review vs spec (brief)
 
-Implement three tables as in the spec, with these implementation notes:
+| Area | Today |
+|------|--------|
+| On-chain settlement | `_onchain_settle_payment` in `services/storage-upload/app.py` — Web3.py, synchronous receipt |
+| Relayer key | `MNEMOSPARK_RELAYER_SECRET_ID` → Secrets Manager |
+| Base RPC | `MNEMOSPARK_BASE_RPC_URL` on **PaymentSettleFunction** in `template.yaml` |
+| DynamoDB | **UploadTransactionLogTable** has business fields + `trans_id`; no relayer analytics tables yet |
+| Schedules | **StorageHousekeepingFunction** + EventBridge rule pattern in `template.yaml` |
 
-- **`RelayerTransactions`**
-  - PK/SK as specified (`WALLET#<address>`, `TX#<timestamp>#<txHash>`).
-  - Ensure **idempotent** updates (same hash + confirmed fields) via conditional or merge pattern.
-  - For **v1 “sync settlement”**, most rows can be written **once** in **success** state with gas fields populated from the receipt already in memory.
-- **`RelayerStats`**
-  - PK encodes period; document concrete `PERIOD` string patterns (e.g. `DAY#YYYY-MM-DD`, `WEEK#…`, `MONTH#…`) in code constants.
-  - Large integers: keep **wei** as **decimal strings** (Python `int` → `str`) to avoid float drift; use `int` math in Lambda.
-- **`RelayerHealth`**
-  - Single `HEALTH#LATEST` per wallet as spec; overwrite each stats run.
+---
 
-**Optional later:** GSI if you need queries beyond PK (not required for single relayer + `Query` on PK).
+## 3. Target architecture
+
+- **Settlement path:** After successful receipt in `_onchain_settle_payment`, call a small shared helper (e.g. `services/common/relayer_ledger.py`) to **`PutItem`** **`RelayerTransactions`** (idempotent on tx hash).
+- **Monitor:** New Lambda (e.g. `services/base-relayer-monitor`), EventBridge schedule, reads **`RelayerTransactions`**, writes **`RelayerStats`** + **`RelayerHealth`**, **`Publish`** to SNS on warning/critical.
+- **Monitor IAM:** DynamoDB on the three new tables; `sns:Publish` on the alert topic; no private key.
 
 ---
 
@@ -64,72 +101,40 @@ Implement three tables as in the spec, with these implementation notes:
 
 ### Phase A — Infrastructure (`template.yaml`)
 
-- Add **`RelayerTransactionsTable`**, **`RelayerStatsTable`**, **`RelayerHealthTable`** (namespaced with `${AWS::StackName}-…`).
-- Add **`BaseRelayerMonitorFunction`** + **`BaseRelayerMonitorLambdaRole`**:
-  - `GetItem` / `PutItem` / `UpdateItem` / `Query` (as needed) on the three tables.
-  - No Secrets Manager **unless** you choose to read address from secret (prefer env/SSM).
-  - Outbound HTTPS to Base RPC (no extra IAM for public RPC; if VPC endpoint needed, follow existing patterns).
-- Add **EventBridge rules** (parameters for expressions, defaults e.g. `rate(5 minutes)` reconcile, `rate(1 hour)` stats — tune with you).
-- Parameters: `BaseRpcUrl` already exists; add **`RelayerWalletAddress`** (or document derivation).
+- Parameter **`RelayerWalletAddress`** → **`MNEMOSPARK_RELAYER_WALLET_ADDRESS`** on monitor Lambda.
+- Tables: **RelayerTransactions**, **RelayerStats**, **RelayerHealth** (`${AWS::StackName}-…`).
+- **RelayerAlertsTopic** + **email subscription** to **alerts@mnemospark.ai**.
+- **BaseRelayerMonitorFunction** + role + EventBridge rule(s).
+- Pass **`MNEMOSPARK_BASE_RPC_URL`** (or same ref as settlement) to the monitor.
 
-### Phase B — Instrument settlement (Lambda A)
+### Phase B — Instrument `_onchain_settle_payment`
 
-- Extract a small **shared module** under `services/common/` (e.g. `relayer_ledger.py`) to avoid duplicating Dynamo writes between packages:
-  - `record_relayer_transaction(...)` using receipt fields: `gasUsed`, `effectiveGasPrice` (Base legacy tx uses gas price; if you move to EIP-1559 later, map **`effectiveGasPrice`** from receipt consistently).
-  - Compute `feePaidWei = gasUsed * effectiveGasPrice`.
-- Call from **`_onchain_settle_payment`** immediately after successful receipt (both code paths funnel here).
-- **Mock mode:** Either skip ledger writes or write with `status` / source tag indicating non-chain (product decision).
+- Shared **`record_relayer_transaction(...)`** using receipt fields; **skip** in mock mode.
+- Grant **PaymentSettle** (and any Lambda that can run onchain settlement) **PutItem** on **RelayerTransactionsTable** if not already covered by a shared role.
 
-### Phase C — Monitor Lambda (Lambda B)
+### Phase C — Monitor Lambda
 
-- Load wallet address + RPC URL from env.
-- **Pending reconciliation loop:** `Query` `RelayerTransactions` for wallet PK with `FilterExpression` on `status = pending` (acceptable at low volume) or maintain a small **GSI** if volume grows.
-- **Stats:** Scan or query last 7 days of txs for wallet (depends on SK sort order — ensure timestamp in SK supports range queries) → compute averages → write **`RelayerStats`** + **`RelayerHealth`**.
-- **Runway:** Implement spec formulas; guard **divide-by-zero** when `avgTxPerDay_7d` or fee average is 0 → treat as “unknown” status or OK with large runway.
-- **Retries:** boto3 + web3 with timeouts/backoff consistent with `_onchain_settle_payment` (`request_kwargs={"timeout": 20}`).
+- Query txs by wallet pk; compute periods; **get_balance**; runway; **Publish** SNS when degraded.
 
-### Phase D — Observability & alerts
+### Phase D — Tests & docs
 
-- **Structured logs** for `status` transitions (ok / warning / critical).
-- **Emit alert if needed:** Wire to **SNS topic** (new resource + opt-in subscription) or **CloudWatch alarm** on a custom metric published from the monitor — pick one pattern and document in `docs/`.
-
-### Phase E — Tests
-
-- **Unit:** Fee math, runway edge cases, Dynamo idempotency (moto or stubbed clients).
-- **Integration (optional):** Mock RPC responses for receipt/balance.
-
-### Phase F — Documentation
-
-- Update **`docs/openapi.yaml`** only if you add **read APIs** for health (spec does not require a public API; internal/ops-only may stay Lambda+CLI).
-- Short **`docs/`** note for operators: RPC URL, alarm subscription, how to read `RelayerHealth`.
+- Unit tests for fee math, runway edge cases, idempotency.
+- Operator note: confirm SNS email, where parameters live.
 
 ---
 
-## 5. Open questions (for your review)
+## 5. Success criteria
 
-1. **Spec vs stack:** Do you want to **amend the spec** to say **Python + web3.py** (and link Web3 receipt/balance docs) instead of viem, so future readers do not assume a second runtime?
-2. **Alerts:** Preferred channel — **SNS email**, **Slack**, **PagerDuty**, or **CloudWatch alarm only**? Who subscribes in prod?
-3. **Relayer address:** OK to add **`MNEMOSPARK_RELAYER_WALLET_ADDRESS`** as a **CloudFormation parameter** (set at deploy), or should ops **derive from the existing secret** at deploy time (no new param)?
-4. **Pending txs:** For v1, is **write-on-success-only** (no pending state) acceptable, plus reconciliation only for **future** async or manual “pending” rows? Or do you require **write at broadcast** + monitor for **every** tx?
-5. **Historical backfill:** Should the first deploy **scan `UploadTransactionLog`** (and/or **payment ledger** fields) for past `trans_id` values and backfill **`RelayerTransactions`** via RPC (rate-limited), or start **from deploy forward** only?
-6. **Storage upload onchain:** Is production settlement **only** via **`POST /payment/settle`**, or must **`POST /storage/upload`** also run onchain? If both, should we **fix `template.yaml`** to give **StorageUploadFunction** the same RPC + secret env and IAM as payment settle?
-7. **Multi-wallet:** Spec defers multi-wallet; confirm **single relayer** for the next 6–12 months so PK design stays `WALLET#<one address>` only.
+- **RelayerHealth** has balance + runway + status.
+- **RelayerTransactions** populated for new on-chain settlements after deploy.
+- **RelayerStats** has daily / weekly / monthly aggregates.
+- SNS fires on **warning/critical**; **alerts@mnemospark.ai** confirmed in SNS.
+- **ruff**, **pytest**, **`sam validate`** pass.
 
 ---
 
-## 6. Success criteria (review checklist)
+## 6. Follow-up (optional)
 
-- [ ] Relayer ETH balance and **estimated days of runway** stored in **`RelayerHealth`** and visible to ops (table read or admin path).
-- [ ] Per-tx **fee paid** and **gas used** persisted for on-chain settlements.
-- [ ] **Daily / weekly / monthly** counts and fee totals in **`RelayerStats`** (exact key shapes documented in code).
-- [ ] **Warning / critical** when runway drops below thresholds (3d / 1d).
-- [ ] **Idempotent** Dynamo writes; monitor safe to run on overlapping schedules.
-- [ ] **ruff** + **pytest** green; **`sam validate`** passes.
-
----
-
-## 7. Suggested follow-up after approval
-
-1. Lock answers to **§5**.  
-2. Implement Phase A → B → C in order; ship alerts (D) once health row is stable.  
-3. Optional backfill script or one-time monitor invocation if **§5.5** is “yes.”
+- Backfill script for historical **`trans_id`** (if product needs it).
+- API or internal read path for health row (if ops wants console-free visibility).
+- Code change to **disallow** on-chain settlement from **`/storage/upload`** if you want hard enforcement.
