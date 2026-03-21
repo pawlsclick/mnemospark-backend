@@ -348,6 +348,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
+                  - dynamodb:GetItem
                   - dynamodb:PutItem
                 Resource: !GetAtt UploadTransactionLogTable.Arn
         - PolicyName: upload-dynamodb-idempotency
