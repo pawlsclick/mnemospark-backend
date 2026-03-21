@@ -611,6 +611,10 @@ def _build_quote_context(quote_item: dict[str, Any] | None, request: ParsedUploa
     if not quote_item:
         raise NotFoundError("quote_not_found")
 
+    quote_status = str(quote_item.get("status") or "").strip().lower()
+    if quote_status == "consumed" or quote_item.get("consumed_at") is not None:
+        raise NotFoundError("quote_not_found")
+
     expires_at_raw = quote_item.get("expires_at")
     if expires_at_raw is None:
         raise NotFoundError("quote_not_found")
@@ -1468,6 +1472,31 @@ def _upload_ciphertext_to_s3(
     return bucket_name
 
 
+def _mark_quote_consumed(
+    quotes_table: Any,
+    quote_id: str,
+    now: int,
+    *,
+    consumed_stage: str,
+) -> None:
+    consumed_at = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+    try:
+        quotes_table.update_item(
+            Key={"quote_id": quote_id},
+            UpdateExpression="SET #status = :consumed_status, consumed_at = :consumed_at, consumed_stage = :consumed_stage",
+            ConditionExpression="attribute_exists(quote_id) AND attribute_not_exists(consumed_at)",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":consumed_status": "consumed",
+                ":consumed_at": consumed_at,
+                ":consumed_stage": consumed_stage,
+            },
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+
+
 def _write_transaction_log(
     transaction_log_table: Any,
     now: int,
@@ -1985,10 +2014,15 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             trans_id=payment_result.trans_id,
             quote_id=request.quote_id,
         )
+        _mark_quote_consumed(
+            quotes_table=quotes_table,
+            quote_id=request.quote_id,
+            now=now,
+            consumed_stage="upload_confirmed",
+        )
 
-        # Quote is intentionally preserved in QuotesTable to support dashboard funnel
-        # visibility (quote_created -> payment_settled -> upload_started -> upload_confirmed).
-        # TTL (expires_at) handles cleanup after 1 hour.
+        # Quote remains in QuotesTable for dashboard funnel visibility while
+        # being marked consumed to prevent replay within the TTL window.
 
         response_body = {
             "quote_id": request.quote_id,
@@ -2367,8 +2401,15 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
             trans_id=payment_result.trans_id,
             idempotency_key=request.idempotency_key,
         )
+        _mark_quote_consumed(
+            quotes_table=quotes_table,
+            quote_id=request.quote_id,
+            now=now,
+            consumed_stage="upload_confirmed",
+        )
 
-        # Quote preserved — same rationale as upload handler above.
+        # Quote remains in QuotesTable for dashboard funnel visibility while
+        # being marked consumed to prevent replay within the TTL window.
 
         completed_response_body = dict(pending_response_body)
         completed_response_body.pop("upload_url", None)
