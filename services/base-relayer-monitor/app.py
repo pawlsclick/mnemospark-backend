@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -29,6 +30,7 @@ RPC_ENV = "MNEMOSPARK_BASE_RPC_URL"
 TOPIC_ARN_ENV = "RELAYER_ALERTS_TOPIC_ARN"
 
 HEALTH_SK = "HEALTH#LATEST"
+_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 
 @dataclass(frozen=True)
@@ -40,7 +42,7 @@ class ParsedTx:
 
 def normalize_wallet(address: str) -> str:
     raw = (address or "").strip()
-    if not raw.startswith("0x") or len(raw) != 42:
+    if not _ADDRESS_RE.match(raw):
         raise ValueError("invalid wallet address")
     return "0x" + raw[2:].lower()
 
@@ -195,12 +197,15 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     pk = f"WALLET#{wallet}"
     ddb = boto3.resource("dynamodb")
     tx_tbl = ddb.Table(tx_table)
+    now = datetime.now(timezone.utc)
+    tx_cutoff_iso = (now - timedelta(days=31)).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    tx_cutoff_sk = f"TX#{tx_cutoff_iso}"
 
     items: list[dict[str, Any]] = []
     try:
         kwargs: dict[str, Any] = {
-            "KeyConditionExpression": "pk = :pk",
-            "ExpressionAttributeValues": {":pk": pk},
+            "KeyConditionExpression": "pk = :pk AND sk >= :sk",
+            "ExpressionAttributeValues": {":pk": pk, ":sk": tx_cutoff_sk},
         }
         while True:
             resp = tx_tbl.query(**kwargs)
@@ -214,8 +219,6 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         raise
 
     parsed = [p for p in (parse_tx_item(i) for i in items) if p is not None]
-    now = datetime.now(timezone.utc)
-
     stats_tbl = ddb.Table(stats_table)
     for period_type, period_value in _period_labels(now):
         agg = _aggregate_for_period(parsed, now, period_type, period_value)
