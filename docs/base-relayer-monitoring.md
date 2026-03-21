@@ -17,6 +17,12 @@ Design reference: `dev_docs/feature/base_relayer_monitoring_spec.md` and `dev_do
 
 Stack outputs include table names, topic ARN, monitor function ARN, and schedule rule ARN.
 
+## Deploy IAM (GitHub Actions / OIDC)
+
+CloudFormation runs **as your deploy role** (e.g. `mnemospark-backend-staging-deploy`). That role must be allowed to manage **SNS** resources, or stack updates will fail with **`SNS:GetTopicAttributes` AccessDenied** when creating `RelayerAlertsTopic` / subscriptions.
+
+Apply the **`SNS`** statement in [`docs/iam-mnemospark-deploy-policy.json`](iam-mnemospark-deploy-policy.json) to the **staging** and **production** deploy policies (same account/region as the stack), then re-run **Deploy Staging**.
+
 ## Parameters (CloudFormation / SAM)
 
 - **`RelayerWalletAddress`** — Relayer **public** address (must match the address derived from the relayer private key in Secrets Manager). Default is set in `template.yaml`; override per environment if needed. If set to **empty**, the monitor **exits successfully without work** (no RPC, no writes).
