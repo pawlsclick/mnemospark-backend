@@ -253,12 +253,14 @@ def log_api_call(
         method = _extract_http_method(event)
         path = _normalized_path(event, route=route)
         wallet_address = _extract_authorizer_wallet(event)
+        lambda_name = getattr(context, "function_name", None)
         ttl_seconds = _safe_int(os.getenv(DEFAULT_TTL_ENV), DEFAULT_TTL_SECONDS)
         expires_at = int(time.time()) + max(ttl_seconds, 0)
 
         request_ids = _extract_request_ids(event)
         extra_fields: dict[str, Any] = {
             **request_ids,
+            "lambda_name": lambda_name,
             **extra,
         }
         for reserved_key in ("request_id", "timestamp", "method", "path", "status_code", "result"):
