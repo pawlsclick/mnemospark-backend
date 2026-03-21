@@ -23,29 +23,17 @@ _Use this file as the Cursor implementation plan (tracked in git; `.cursor/` is 
 
 ### 0.1 Where to set `MNEMOSPARK_RELAYER_WALLET_ADDRESS`
 
-1. **`template.yaml`** — add a parameter, for example:
+1. **`template.yaml`** — parameter **`RelayerWalletAddress`** (default **`0x604d308201626a0A8a67B46112943D08dbd99bC8`**) is wired to the monitor Lambda as **`MNEMOSPARK_RELAYER_WALLET_ADDRESS`**.
 
-   ```yaml
-   RelayerWalletAddress:
-     Type: String
-     Description: Checksum or lower-hex Base address for the relayer (no private key)
-   ```
-
-   Wire it to the monitor function:
-
-   ```yaml
-   MNEMOSPARK_RELAYER_WALLET_ADDRESS: !Ref RelayerWalletAddress
-   ```
-
-2. **Deploy time** — pass the address when you deploy, for example:
+2. **Deploy time** — override only if a stack needs a different relayer, for example:
 
    ```bash
-   sam deploy --parameter-overrides RelayerWalletAddress=0xYourRelayerAddress...
+   sam deploy --parameter-overrides RelayerWalletAddress=0x...
    ```
 
-   Or set **`RelayerWalletAddress`** in **`samconfig.toml`** / CI **`parameter_overrides`** for each environment (dev/staging/prod).
+   Or set **`RelayerWalletAddress`** in **`samconfig.toml`** / CI **`parameter_overrides`** per environment.
 
-3. **Value** — use the same **0x…** address as `Account.from_key(relayer_private_key).address` for the key stored in Secrets Manager (checksum or lowercase hex both work if the code normalizes).
+3. **Value** — must match **`Account.from_key(relayer_private_key).address`** for the key in Secrets Manager (checksum or lowercase hex both work; code normalizes to lowercase for Dynamo keys).
 
 ### 0.2 Centralizing on `POST /payment/settle`
 
@@ -100,7 +88,7 @@ Execute **steps 1–4** in one coherent `template.yaml` (and related SAM) edit i
 | Step | What to do | Depends on |
 |------|------------|------------|
 | **1** | Define **DynamoDB** tables: `RelayerTransactions`, `RelayerStats`, `RelayerHealth` (`${AWS::StackName}-…`), keys per spec. | — |
-| **2** | Add **parameter** `RelayerWalletAddress` (required for production; optional `Default: ""` only if you want `sam validate` / partial local flows without it—then monitor must no-op when empty). | — |
+| **2** | Parameter **`RelayerWalletAddress`** has a **default** relayer address in `template.yaml`; override per env or set `""` to no-op the monitor. | — |
 | **3** | Create **`AWS::SNS::Topic`** + standalone **`AWS::SNS::Subscription`** (`Protocol: email`, `Endpoint: alerts@mnemospark.ai`). Pass topic ARN to monitor via env. | — |
 | **4** | Create **`BaseRelayerMonitorFunction`** + **dedicated IAM role**: DynamoDB read/write on the three tables; `sns:Publish` on topic; env: `MNEMOSPARK_RELAYER_WALLET_ADDRESS`, `MNEMOSPARK_BASE_RPC_URL`, table names, `RELAYER_ALERTS_TOPIC_ARN` (or equivalent). Add **EventBridge rule** → Lambda (e.g. `rate(30 minutes)` default; tune later). Add **Lambda permission** for EventBridge. | 1–3 |
 | **5** | Extend **`PaymentSettleFunction`**: env `RELAYER_TRANSACTIONS_TABLE_NAME`; IAM **`PutItem`** on **RelayerTransactions** table ARN only. | 1 |
