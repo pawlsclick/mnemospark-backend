@@ -78,6 +78,45 @@ class FakeDynamoTable:
         self.put_history.append(copy.deepcopy(Item))
         return {}
 
+    def update_item(
+        self,
+        Key,
+        UpdateExpression=None,
+        ConditionExpression=None,
+        ExpressionAttributeNames=None,
+        ExpressionAttributeValues=None,
+    ):
+        key_tuple = self._key_tuple(Key)
+        existing = self.items.get(key_tuple)
+        if ConditionExpression == "attribute_exists(quote_id) AND attribute_not_exists(consumed_at)":
+            if existing is None or existing.get("consumed_at") is not None:
+                raise ClientError(
+                    {"Error": {"Code": "ConditionalCheckFailedException", "Message": "condition not met"}},
+                    "UpdateItem",
+                )
+        if existing is None:
+            raise ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "item not found"}},
+                "UpdateItem",
+            )
+        if (
+            UpdateExpression
+            == "SET #status = :consumed_status, consumed_at = :consumed_at, consumed_stage = :consumed_stage"
+        ):
+            updated = copy.deepcopy(existing)
+            status_key = (
+                "status"
+                if ExpressionAttributeNames is None
+                else str(ExpressionAttributeNames.get("#status") or "status")
+            )
+            values = ExpressionAttributeValues or {}
+            updated[status_key] = values.get(":consumed_status")
+            updated["consumed_at"] = values.get(":consumed_at")
+            updated["consumed_stage"] = values.get(":consumed_stage")
+            self.items[key_tuple] = updated
+            return {}
+        raise AssertionError(f"Unexpected UpdateExpression: {UpdateExpression}")
+
     def delete_item(self, Key, ConditionExpression=None, ExpressionAttributeValues=None):
         key_tuple = self._key_tuple(Key)
         item = self.items.get(key_tuple)
@@ -821,6 +860,55 @@ class StorageUploadLambdaTests(unittest.TestCase):
             duplicate_response = app.lambda_handler(event, None)
         self.assertEqual(duplicate_response["statusCode"], 200)
         self.assertEqual(json.loads(duplicate_response["body"]), body)
+
+    def test_inline_quote_reuse_is_rejected_after_successful_upload(self):
+        event = self._make_event(headers={"PAYMENT-SIGNATURE": "mock"})
+
+        first_response = app.lambda_handler(event, None)
+        second_response = app.lambda_handler(event, None)
+
+        self.assertEqual(first_response["statusCode"], 200)
+        self.assertEqual(second_response["statusCode"], 404)
+        second_body = json.loads(second_response["body"])
+        self.assertEqual(second_body["error"], "quote_not_found")
+        quote_item = self.quotes_table.items[(("quote_id", self.quote_id),)]
+        self.assertEqual(quote_item["status"], "consumed")
+        self.assertEqual(quote_item["consumed_stage"], "upload_confirmed")
+        self.assertTrue(str(quote_item["consumed_at"]).strip())
+
+    def test_presigned_quote_reuse_with_new_idempotency_key_is_rejected_after_confirm(self):
+        first_event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-presigned-consume-a"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        first_body = json.loads(first_event["body"])
+        first_body.pop("ciphertext", None)
+        first_event["body"] = json.dumps(first_body)
+
+        first_response = app.lambda_handler(first_event, None)
+        self.assertEqual(first_response["statusCode"], 200)
+        first_upload_body = json.loads(first_response["body"])
+        self.s3_client.objects.add((first_upload_body["bucket_name"], first_upload_body["object_key"]))
+
+        confirm_event = self._make_confirm_event(idempotency_key="idem-presigned-consume-a")
+        confirm_response = app.confirm_upload_handler(confirm_event, None)
+        self.assertEqual(confirm_response["statusCode"], 200)
+
+        replay_event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-presigned-consume-b"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        replay_body = json.loads(replay_event["body"])
+        replay_body.pop("ciphertext", None)
+        replay_event["body"] = json.dumps(replay_body)
+
+        replay_response = app.lambda_handler(replay_event, None)
+        self.assertEqual(replay_response["statusCode"], 404)
+        self.assertEqual(json.loads(replay_response["body"])["error"], "quote_not_found")
 
     def test_presigned_mode_without_ciphertext_returns_upload_url(self):
         event = self._make_event(

@@ -51,6 +51,35 @@ class FakeDynamoTable:
         self.items[key] = copy.deepcopy(Item)
         return {}
 
+    def update_item(
+        self,
+        Key,
+        UpdateExpression=None,
+        ConditionExpression=None,
+        ExpressionAttributeNames=None,
+        ExpressionAttributeValues=None,
+    ):
+        del UpdateExpression, ExpressionAttributeNames
+        key_tuple = self._key_tuple(Key)
+        existing = self.items.get(key_tuple)
+        if ConditionExpression == "attribute_exists(quote_id) AND attribute_not_exists(consumed_at)":
+            if existing is None or existing.get("consumed_at") is not None:
+                raise ClientError(
+                    {"Error": {"Code": "ConditionalCheckFailedException", "Message": "condition failed"}},
+                    "UpdateItem",
+                )
+        if existing is None:
+            existing = {}
+        if ExpressionAttributeValues is not None:
+            if ":consumed_status" in ExpressionAttributeValues:
+                existing["status"] = ExpressionAttributeValues[":consumed_status"]
+            if ":consumed_at" in ExpressionAttributeValues:
+                existing["consumed_at"] = ExpressionAttributeValues[":consumed_at"]
+            if ":consumed_stage" in ExpressionAttributeValues:
+                existing["consumed_stage"] = ExpressionAttributeValues[":consumed_stage"]
+        self.items[key_tuple] = copy.deepcopy(existing)
+        return {}
+
     def delete_item(self, Key):
         self.items.pop(self._key_tuple(Key), None)
         return {}
