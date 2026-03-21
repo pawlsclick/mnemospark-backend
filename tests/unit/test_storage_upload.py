@@ -911,6 +911,120 @@ class StorageUploadLambdaTests(unittest.TestCase):
         idem_item = self.idempotency_table.items[(("idempotency_key", "idem-presigned"),)]
         self.assertEqual(idem_item["status"], "pending_confirmation")
 
+    def test_inline_replay_with_new_idempotency_key_returns_existing_upload_without_writing_s3(self):
+        first_event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-inline-first"},
+        )
+        replay_event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-inline-replay"},
+        )
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xinline-replay",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            first_response = app.lambda_handler(first_event, None)
+            replay_response = app.lambda_handler(replay_event, None)
+
+        self.assertEqual(first_response["statusCode"], 200)
+        self.assertEqual(replay_response["statusCode"], 200)
+        self.assertEqual(len(self.s3_client.put_calls), 1)
+        self.assertEqual(len(self.transaction_log_table.items), 1)
+
+        first_body = json.loads(first_response["body"])
+        replay_body = json.loads(replay_response["body"])
+        self.assertEqual(replay_body["quote_id"], first_body["quote_id"])
+        self.assertEqual(replay_body["trans_id"], first_body["trans_id"])
+        self.assertEqual(replay_body["bucket_name"], first_body["bucket_name"])
+        self.assertNotIn("upload_url", replay_body)
+
+        replay_idem = self.idempotency_table.items[(("idempotency_key", "idem-inline-replay"),)]
+        self.assertEqual(replay_idem["status"], "completed")
+
+    def test_inline_replay_with_different_object_key_is_rejected_and_releases_lock(self):
+        first_event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-inline-first-key"},
+        )
+        replay_event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-inline-replay-key"},
+            object_key="alternate-object-key.bin",
+        )
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xinline-replay-key",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            first_response = app.lambda_handler(first_event, None)
+            replay_response = app.lambda_handler(replay_event, None)
+
+        self.assertEqual(first_response["statusCode"], 200)
+        self.assertEqual(replay_response["statusCode"], 409)
+        self.assertEqual(len(self.s3_client.put_calls), 1)
+
+        replay_body = json.loads(replay_response["body"])
+        self.assertEqual(replay_body["error"], "conflict")
+        self.assertIn("quote_already_consumed", replay_body["message"])
+        self.assertNotIn((("idempotency_key", "idem-inline-replay-key"),), self.idempotency_table.items)
+
+    def test_presigned_replay_with_new_idempotency_key_returns_completed_response(self):
+        first_event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-presigned-first"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        first_body_payload = json.loads(first_event["body"])
+        first_body_payload.pop("ciphertext", None)
+        first_event["body"] = json.dumps(first_body_payload)
+
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xpresigned-replay",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            first_response = app.lambda_handler(first_event, None)
+
+        self.assertEqual(first_response["statusCode"], 200)
+        first_body = json.loads(first_response["body"])
+        self.s3_client.objects.add((first_body["bucket_name"], first_body["object_key"]))
+        confirm_event = self._make_confirm_event(idempotency_key="idem-presigned-first")
+        confirm_response = app.confirm_upload_handler(confirm_event, None)
+        self.assertEqual(confirm_response["statusCode"], 200)
+
+        replay_event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-presigned-replay"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        replay_body_payload = json.loads(replay_event["body"])
+        replay_body_payload.pop("ciphertext", None)
+        replay_event["body"] = json.dumps(replay_body_payload)
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            replay_response = app.lambda_handler(replay_event, None)
+
+        self.assertEqual(replay_response["statusCode"], 200)
+        replay_body = json.loads(replay_response["body"])
+        self.assertNotIn("upload_url", replay_body)
+        self.assertNotIn("upload_headers", replay_body)
+        self.assertNotIn("confirmation_required", replay_body)
+        self.assertEqual(replay_body["quote_id"], self.quote_id)
+        self.assertEqual(replay_body["trans_id"], self.default_payment_trans_id)
+        self.assertEqual(len(self.s3_client.presigned_calls), 1)
+        self.assertEqual(len(self.transaction_log_table.items), 1)
+        replay_idem = self.idempotency_table.items[(("idempotency_key", "idem-presigned-replay"),)]
+        self.assertEqual(replay_idem["status"], "completed")
+
     def test_confirm_upload_succeeds_when_s3_object_exists(self):
         event = self._make_event(
             headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-confirm-success"},
@@ -944,7 +1058,9 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertNotIn("upload_headers", response_body)
         self.assertNotIn("confirmation_required", response_body)
         self.assertEqual(len(self.transaction_log_table.items), 1)
-        self.assertNotIn((("quote_id", self.quote_id),), self.quotes_table.items)
+        # Quote is no longer deleted on confirm - it expires via TTL to support
+        # dashboard funnel visibility (quote_created -> ... -> upload_confirmed).
+        self.assertIn((("quote_id", self.quote_id),), self.quotes_table.items)
         idem_item = self.idempotency_table.items[(("idempotency_key", "idem-confirm-success"),)]
         self.assertEqual(idem_item["status"], "completed")
 
