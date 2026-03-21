@@ -19,6 +19,7 @@ _Use this file as the Cursor implementation plan (tracked in git; `.cursor/` is 
 | Wallet count | **Single** relayer wallet; PK design `WALLET#<one address>` only. |
 | **Q4 — Relayer tx rows** | **Agreed: write-on-success-only.** **No** pending state, **no** pending reconciliation loop, **no** “reconcile every 5 minutes” requirement in v1. |
 | **Q5 — History** | **Agreed: forward-only.** **No** automatic backfill from `UploadTransactionLog` in this feature. |
+| **SNS encryption** | **Agreed: no topic encryption beyond SNS defaults** (no SSE-KMS on the topic). Monitor role needs only **`sns:Publish`** on the topic ARN — **no** extra KMS permissions. |
 
 ### 0.1 Where to set `MNEMOSPARK_RELAYER_WALLET_ADDRESS`
 
@@ -131,7 +132,7 @@ Reference: [AWS::Events::Rule](https://docs.aws.amazon.com/AWSCloudFormation/lat
 
 #### SNS topic + email subscription
 
-1. **`AWS::SNS::Topic`** (alerts).
+1. **`AWS::SNS::Topic`** (alerts). **Do not** set SSE-KMS on the topic — **defaults only** per **§0** (no extra KMS IAM on the monitor role).
 2. **`AWS::SNS::Subscription`** as a **standalone** resource (recommended for explicit control): `TopicArn`, `Protocol: email`, `Endpoint: alerts@mnemospark.ai`.  
    - CloudFormation creates the subscription; the address stays **pending** until the recipient **confirms** via AWS’s email.  
    Reference: [AWS::SNS::Subscription](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-sns-subscription.html).
@@ -190,9 +191,7 @@ Add **`AWS::Logs::LogGroup`** for `/aws/lambda/<BaseRelayerMonitorFunction>` wit
 
 ## 7. Pending questions for the product owner
 
-**None required to start implementation** — Q4/Q5 are locked in **§0**.
-
-**One optional clarification (only if you change defaults):** Will the SNS topic use **SSE-KMS** encryption? If yes, the monitor role needs **`kms:Decrypt`** / **`kms:GenerateDataKey`** (and possibly **`sns:Publish`**) scoped to that CMK per your org’s pattern. v1 assumes **no topic encryption** beyond SNS defaults.
+**None** — Q4/Q5 and **SNS encryption** (defaults only, no SSE-KMS) are locked in **§0**.
 
 **Operational reminders (not blockers):**
 
