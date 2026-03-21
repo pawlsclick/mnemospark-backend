@@ -100,7 +100,7 @@ Execute **steps 1–4** in one coherent `template.yaml` (and related SAM) edit i
 |------|------------|------------|
 | **1** | Define **DynamoDB** tables: `RelayerTransactions`, `RelayerStats`, `RelayerHealth` (`${AWS::StackName}-…`), keys per spec. | — |
 | **2** | Add **parameter** `RelayerWalletAddress` (required for production; optional `Default: ""` only if you want `sam validate` / partial local flows without it—then monitor must no-op when empty). | — |
-| **3** | Create **SNS topic** + **email subscription** → `alerts@mnemospark.ai`. Pass topic ARN to monitor via env. | — |
+| **3** | Create **`AWS::SNS::Topic`** + standalone **`AWS::SNS::Subscription`** (`Protocol: email`, `Endpoint: alerts@mnemospark.ai`). Pass topic ARN to monitor via env. | — |
 | **4** | Create **`BaseRelayerMonitorFunction`** + **dedicated IAM role**: DynamoDB read/write on the three tables; `sns:Publish` on topic; env: `MNEMOSPARK_RELAYER_WALLET_ADDRESS`, `MNEMOSPARK_BASE_RPC_URL`, table names, `RELAYER_ALERTS_TOPIC_ARN` (or equivalent). Add **EventBridge rule** → Lambda (e.g. `rate(30 minutes)` default; tune later). Add **Lambda permission** for EventBridge. | 1–3 |
 | **5** | Extend **`PaymentSettleFunction`**: env `RELAYER_TRANSACTIONS_TABLE_NAME`; IAM **`PutItem`** on **RelayerTransactions** table ARN only. | 1 |
 | **6** | Implement **`services/common/relayer_ledger.py`**: normalize address, build pk/sk, compute fee wei from receipt, **conditional PutItem** for idempotency. | 1 (schema) |
@@ -111,6 +111,61 @@ Execute **steps 1–4** in one coherent `template.yaml` (and related SAM) edit i
 | **11** | **Deploy / ops (human):** set `RelayerWalletAddress`, deploy stack, **confirm SNS email** for `alerts@mnemospark.ai`, smoke-test one settlement + one monitor invocation. | 10 |
 
 **Why this order:** Tables and topic ARNs must exist before Lambdas reference them. **PaymentSettle** must have IAM + env **before** settlement code performs writes. **Monitor** can be implemented after ledger helper exists; **tests last** before merge.
+
+### 4.1 AWS IAM & CloudFormation checklist (AWS docs / MCP)
+
+Cross-checked with **AWS documentation search** (CloudFormation + IAM). Implement exactly one **execution role per Lambda** (do not reuse PaymentSettle’s role for the monitor).
+
+#### EventBridge schedule → monitor Lambda
+
+Match the existing **`StorageHousekeepingScheduleRule`** + **`StorageHousekeepingInvokePermission`** pattern:
+
+1. **`AWS::Events::Rule`** — `ScheduleExpression` (e.g. `rate(30 minutes)`), `State: ENABLED`, `Targets` entry with Lambda **Arn** and a stable **Id** (string unique per target).
+2. **`AWS::Lambda::Permission`** — required so EventBridge can invoke the function:
+   - `Action: lambda:InvokeFunction`
+   - `Principal: events.amazonaws.com`
+   - `FunctionName: !Ref BaseRelayerMonitorFunction` (or logical ID used)
+   - `SourceArn: !GetAtt <RuleLogicalId>.Arn`
+
+Reference: [AWS::Events::Rule](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-events-rule.html) (scheduled Lambda example + permission).
+
+#### SNS topic + email subscription
+
+1. **`AWS::SNS::Topic`** (alerts).
+2. **`AWS::SNS::Subscription`** as a **standalone** resource (recommended for explicit control): `TopicArn`, `Protocol: email`, `Endpoint: alerts@mnemospark.ai`.  
+   - CloudFormation creates the subscription; the address stays **pending** until the recipient **confirms** via AWS’s email.  
+   Reference: [AWS::SNS::Subscription](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-sns-subscription.html).
+
+3. Monitor Lambda env: e.g. **`RELAYER_ALERTS_TOPIC_ARN`** = topic ARN (or `!Ref` / `!GetAtt` as appropriate).
+
+#### BaseRelayerMonitor Lambda execution role (new IAM role)
+
+| Need | IAM |
+|------|-----|
+| CloudWatch Logs | Attach managed policy **`arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole`** (same pattern as other functions in this repo). |
+| DynamoDB | **Identity-based** policy on the **three new table ARNs** only. Minimum actions for the described design: **`dynamodb:Query`**, **`GetItem`**, **`PutItem`**, **`UpdateItem`** on each of `RelayerTransactionsTable`, `RelayerStatsTable`, `RelayerHealthTable`. Add **`dynamodb:DescribeTable`** if the code calls describe (optional). **Do not** use `dynamodb:*` or `Resource: *`. |
+| DynamoDB indexes (future) | If you add GSI/LSI later, extend **`Resource`** to include index ARNs (e.g. `!Sub '${TableArn}/index/*'`) per [DynamoDB IAM table + indexes](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/iam-policy-specific-table-indexes.html). v1 has **no** GSIs — table ARN only. |
+| Publish alerts | **`sns:Publish`** on the **topic ARN** (`!Ref RelayerAlertsTopic` or equivalent). Same-account publish does **not** require a separate topic resource policy when the role is identity-based. |
+
+**Not** granted on the monitor role: Secrets Manager, relayer private key, `PaymentSettle` resources.
+
+#### PaymentSettleLambdaRole (extend existing role only)
+
+Add one inline (or named) policy statement:
+
+- **`dynamodb:PutItem`** (and only what idempotency needs — **`PutItem`** is sufficient for conditional put)  
+- **`Resource`**: **`!GetAtt RelayerTransactionsTable.Arn`** only.
+
+Do **not** add `Query`/`UpdateItem` on Stats/Health here unless a new API requires it.
+
+#### Networking (Base RPC)
+
+- If the monitor Lambda has **no VPC config** (like typical API Lambdas here), **HTTPS** to `MNEMOSPARK_BASE_RPC_URL` uses the default public path — no extra IAM.
+- If you ever attach a **VPC**, you must provide **outbound internet** (e.g. NAT) or a **VPC interface endpoint** path compatible with your RPC provider; otherwise `eth_getBalance` / receipts will fail.
+
+#### Log group (optional but consistent)
+
+Add **`AWS::Logs::LogGroup`** for `/aws/lambda/<BaseRelayerMonitorFunction>` with **`RetentionInDays`** from **`ObservabilityLogRetentionDays`**, matching **`StorageHousekeepingFunction`** / **`PaymentSettleFunction`**.
 
 ---
 
@@ -136,6 +191,8 @@ Execute **steps 1–4** in one coherent `template.yaml` (and related SAM) edit i
 ## 7. Pending questions for the product owner
 
 **None required to start implementation** — Q4/Q5 are locked in **§0**.
+
+**One optional clarification (only if you change defaults):** Will the SNS topic use **SSE-KMS** encryption? If yes, the monitor role needs **`kms:Decrypt`** / **`kms:GenerateDataKey`** (and possibly **`sns:Publish`**) scoped to that CMK per your org’s pattern. v1 assumes **no topic encryption** beyond SNS defaults.
 
 **Operational reminders (not blockers):**
 
