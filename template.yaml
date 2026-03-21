@@ -82,10 +82,10 @@ Parameters:
     Description: If true, housekeeping reports overdue objects without deleting
   RelayerWalletAddress:
     Type: String
-    Default: ""
+    Default: "0x604d308201626a0A8a67B46112943D08dbd99bC8"
     Description: >-
       Base relayer wallet address (0x...) for monitoring and RelayerTransactions pk.
-      Required in production; monitor Lambda no-ops when empty.
+      Override per environment if needed; monitor Lambda no-ops when set empty.
   RelayerMonitorScheduleExpression:
     Type: String
     Default: rate(30 minutes)

@@ -45,7 +45,7 @@ The subsystem must:
 
 ### Relayer address configuration
 
-- Set **`MNEMOSPARK_RELAYER_WALLET_ADDRESS`** at deploy time (CloudFormation **parameter** → Lambda environment variable). The monitor Lambda uses this for DynamoDB partition keys and `eth_getBalance`; it does **not** need the private key.
+- Set **`MNEMOSPARK_RELAYER_WALLET_ADDRESS`** via CloudFormation parameter **`RelayerWalletAddress`** (default in `template.yaml`: **`0x604d308201626a0A8a67B46112943D08dbd99bC8`**; override per environment if needed). The monitor Lambda uses this for DynamoDB partition keys and `eth_getBalance`; it does **not** need the private key.
 
 ---
 
