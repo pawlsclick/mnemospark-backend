@@ -51,7 +51,7 @@ def record_relayer_transaction_success(
     now = datetime.now(timezone.utc)
     iso = now.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
     pk = f"WALLET#{wallet}"
-    sk = f"TX#{iso}#{txh}"
+    sk = f"TX#{txh}"
     fee_wei = gas_used * effective_gas_price
     item: dict[str, Any] = {
         "pk": pk,
