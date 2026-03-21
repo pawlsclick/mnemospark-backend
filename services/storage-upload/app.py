@@ -927,11 +927,12 @@ def _onchain_settle_payment(authorization: TransferAuthorization) -> str:
     if getattr(receipt, "status", 0) != 1:
         raise RuntimeError("USDC transferWithAuthorization transaction failed")
     tx_hex = tx_hash.hex() if hasattr(tx_hash, "hex") else str(tx_hash)
-    gas_used = int(receipt["gasUsed"])
-    eff_raw = receipt.get("effectiveGasPrice") or receipt.get("gasPrice")
-    effective_gas_price = int(eff_raw)
-    block_number = int(receipt["blockNumber"])
     try:
+        gas_used = int(receipt["gasUsed"])
+        eff_raw = receipt.get("effectiveGasPrice") or receipt.get("gasPrice")
+        effective_gas_price = int(eff_raw)
+        block_number = int(receipt["blockNumber"])
+
         from common.relayer_ledger import record_relayer_transaction_success
 
         record_relayer_transaction_success(
