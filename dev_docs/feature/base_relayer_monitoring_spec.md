@@ -2,201 +2,172 @@
 
 ## Objective
 
-Implement a scheduled monitoring subsystem for a Base relayer wallet used in AWS Lambda transaction settlement.
+Implement a scheduled monitoring subsystem for the **single** Base relayer wallet used in AWS Lambda payment settlement.
+
+**Engineering principles**
+
+- Prefer **minimal changes** to the existing codebase; **do not** introduce new stacks, languages, or client libraries unless necessary (this backend is **Python 3.13** + **Web3.py**, same as settlement today).
+- **On-chain settlement is centralized** on **`POST /payment/settle`**; design monitoring and ledger writes around that flow.
+- Use **polling only** (no WebSockets).
 
 The subsystem must:
-- Track daily, weekly, monthly transaction counts
-- Track gas used and fee paid per transaction
-- Monitor ETH balance sufficiency for gas
-- Persist data in DynamoDB (transactions + aggregates)
-- Use polling only (no WebSockets)
-- Use relayer-submitted transactions as primary source of truth
+
+- Track daily, weekly, monthly transaction counts (aggregates)
+- Track gas used and fee paid per relayer-submitted transaction
+- Monitor ETH balance sufficiency for gas (runway)
+- Persist data in DynamoDB (transactions + aggregates + latest health)
+- Use relayer-submitted transactions recorded by the product as the source of truth for “what to account for”
 
 ---
 
-## Required Documentation (DO NOT REDISCOVER)
+## Required documentation (do not rediscover)
 
-- Base Docs: https://docs.base.org/get-started/base
-- Base RPC Methods: https://docs.base.org/base-account/reference/core/provider-rpc-methods/standard-rpc-methods
-- Base Fees: https://docs.base.org/base-chain/network-information/network-fees
-- viem Docs: https://viem.sh
-- viem getTransactionReceipt: https://viem.sh/docs/actions/public/getTransactionReceipt
-- viem getBalance: https://viem.sh/docs/actions/public/getBalance
+- Base: https://docs.base.org/get-started/base  
+- Base RPC methods: https://docs.base.org/base-account/reference/core/provider-rpc-methods/standard-rpc-methods  
+- Base fees: https://docs.base.org/base-chain/network-information/network-fees  
+- Web3.py: https://web3py.readthedocs.io/  
+- Receipt / effective gas price: use `eth_getTransactionReceipt` (via `web3.eth.get_transaction_receipt`)  
+- Balance: `eth_getBalance` (via `web3.eth.get_balance`)
 
 ---
 
 ## Architecture
 
-### Components
+### Lambda A (existing — settlement)
 
-**Lambda A (existing – settlement)**
-- Submits transactions
-- Writes transaction metadata to DynamoDB
+- **`POST /payment/settle`** (and shared payment core) submits transactions and, after confirmation, **records each successful relayer tx** in **`RelayerTransactions`** (gas + fee from the receipt already held in process).
 
-**Lambda B (new – monitor)**
-- Runs on schedule (EventBridge)
-- Fetches transaction receipts
-- Computes gas + aggregates
-- Monitors wallet balance
-- Writes stats to DynamoDB
+### Lambda B (new — monitor)
+
+- Runs on **EventBridge** schedule(s).
+- Recomputes **aggregates** and **health** (balance, 7d averages, runway).
+- Publishes to **SNS** when health is **warning** or **critical** (email to **alerts@mnemospark.ai** per infra; see plan).
+
+### Relayer address configuration
+
+- Set **`MNEMOSPARK_RELAYER_WALLET_ADDRESS`** at deploy time (CloudFormation **parameter** → Lambda environment variable). The monitor Lambda uses this for DynamoDB partition keys and `eth_getBalance`; it does **not** need the private key.
 
 ---
 
-## DynamoDB Schema
+## DynamoDB schema
 
 ### Table: RelayerTransactions
 
 | Field | Type | Description |
-|------|------|------------|
-| pk | string | WALLET#<address> |
-| sk | string | TX#<timestamp>#<txHash> |
+|------|------|-------------|
+| pk | string | WALLET#&lt;address&gt; |
+| sk | string | TX#&lt;timestamp&gt;#&lt;txHash&gt; |
 | txHash | string | Transaction hash |
-| status | string | pending \| success \| reverted |
+| status | string | success \| reverted (v1 may be success-only; see plan) |
 | gasUsed | string | From receipt |
 | effectiveGasPriceWei | string | From receipt |
-| feePaidWei | string | gasUsed * effectiveGasPrice |
+| feePaidWei | string | gasUsed × effectiveGasPrice (integer wei as string) |
 | blockNumber | number | Confirmation block |
 | submittedAt | string | ISO timestamp |
 | confirmedAt | string | ISO timestamp |
 
----
-
 ### Table: RelayerStats
 
 | Field | Type | Description |
-|------|------|------------|
-| pk | string | WALLET#<address>#PERIOD#<type>#<value> |
+|------|------|-------------|
+| pk | string | WALLET#&lt;address&gt;#PERIOD#&lt;type&gt;#&lt;value&gt; |
 | txCount | number | Total transactions |
 | successCount | number | Successful txs |
 | revertCount | number | Failed txs |
 | totalGasUsed | string | Sum of gas |
-| totalFeePaidWei | string | Total cost |
-| avgFeePaidWei | string | Average fee |
+| totalFeePaidWei | string | Total cost (wei string) |
+| avgFeePaidWei | string | Average fee (wei string) |
 | updatedAt | string | Timestamp |
-
----
 
 ### Table: RelayerHealth
 
 | Field | Type | Description |
-|------|------|------------|
-| pk | string | WALLET#<address> |
+|------|------|-------------|
+| pk | string | WALLET#&lt;address&gt; |
 | sk | string | HEALTH#LATEST |
 | ethBalanceWei | string | Wallet balance |
 | avgFeePerTxWei_7d | string | Rolling average |
 | avgTxPerDay_7d | number | Rolling volume |
-| estimatedDaysRemaining | number | Runway |
+| estimatedDaysRemaining | number | Runway (nullable / sentinel if undefined) |
 | status | string | ok \| warning \| critical |
 
 ---
 
-## Gas Calculation
+## Gas calculation
 
 ```
 feePaidWei = gasUsed * effectiveGasPrice
 ```
 
-Source: transaction receipt via `getTransactionReceipt`
+Source: transaction receipt from RPC (same fields Web3.py exposes on the receipt object).
 
 ---
 
-## Balance Monitoring Logic
+## Balance monitoring logic
 
 ```
 estimatedDailyGasSpend = avgTxPerDay_7d * avgFeePerTxWei_7d
 estimatedDaysRemaining = balanceWei / estimatedDailyGasSpend
 ```
 
+Handle division by zero (no txs or zero fee) with an explicit **unknown / safe default** in implementation.
+
 ### Thresholds
 
 | Status | Condition |
-|--------|----------|
-| OK | >= 3 days runway |
-| WARNING | < 3 days |
-| CRITICAL | < 1 day |
+|--------|-----------|
+| OK | ≥ 3 days runway |
+| WARNING | &lt; 3 days |
+| CRITICAL | &lt; 1 day |
 
 ---
 
-## Lambda Monitor Flow
+## Lambda monitor flow
 
-1. Load relayer wallet address
-2. Query DynamoDB for pending transactions
-3. Fetch receipts using viem
-4. Update transaction records
-5. Compute daily / weekly / monthly aggregates
-6. Fetch wallet balance via RPC
-7. Compute gas runway
-8. Persist stats + health
-9. Emit alert if needed
+1. Load **`MNEMOSPARK_RELAYER_WALLET_ADDRESS`** and Base RPC URL from environment.
+2. (Optional) Reconcile **pending** rows if the product ever writes them; v1 may omit pending state (see plan).
+3. Load **confirmed** transactions for the wallet from **`RelayerTransactions`** (query by pk) for aggregation windows.
+4. Compute daily / weekly / monthly aggregates → **`RelayerStats`**.
+5. **`eth_getBalance`** for relayer address.
+6. Compute runway → **`RelayerHealth`**.
+7. If status is warning or critical, **publish message to SNS topic** (email subscription to **alerts@mnemospark.ai**).
 
 ---
 
-## Implementation Notes
+## Scheduling (EventBridge)
 
-### viem client setup
+Suggested defaults (tunable per environment):
 
-```ts
-import { createPublicClient, http } from 'viem'
-import { base } from 'viem/chains'
-
-export const client = createPublicClient({
-  chain: base,
-  transport: http(process.env.BASE_RPC_URL!)
-})
-```
+- **Frequent:** stats + health + balance (e.g. every 15–60 minutes).
+- **Optional faster rule:** only if pending reconciliation is required later.
 
 ---
 
-### Fetch receipt
+## Production requirements
 
-```ts
-const receipt = await client.getTransactionReceipt({ hash })
-```
-
----
-
-### Fetch balance
-
-```ts
-const balance = await client.getBalance({ address })
-```
+- Dedicated Base RPC provider (not an unauthenticated public endpoint in production).
+- RPC URL supplied the same way as today for settlement (parameter / secrets pattern already used for **`MNEMOSPARK_BASE_RPC_URL`**).
+- RPC retries and timeouts.
+- Idempotent DynamoDB writes.
 
 ---
 
-## Scheduling
+## Alerts (SNS email)
 
-Use AWS EventBridge:
-
-- Every 5 minutes → reconcile pending transactions
-- Every 15–60 minutes → recompute stats + health
-- Daily → finalize aggregates
+- **Yes:** Amazon SNS can deliver to **email** by creating a topic subscription with **Protocol `email`** and **Endpoint `alerts@mnemospark.ai`**.
+- The recipient must **confirm** the subscription once via the link AWS sends (standard SNS behavior).
 
 ---
 
-## Production Requirements
+## Future extensions (not required now)
 
-- Use a dedicated Base RPC provider (not public endpoint)
-- Store RPC URL in AWS Secrets Manager or SSM
-- Handle RPC retries and timeouts
-- Ensure idempotent updates to DynamoDB
-
----
-
-## Future Extensions (NOT REQUIRED NOW)
-
-- ERC20 transfer tracking via logs
-- Full chain indexing
-- Real-time dashboards via WebSockets
-- Multi-wallet support
+- ERC-20 transfer tracking via logs  
+- Full chain indexing  
+- Real-time dashboards via WebSockets  
+- Multi-wallet support  
 
 ---
 
 ## Summary
 
-This system uses:
-
-- viem for Base RPC interaction
-- DynamoDB for state + analytics
-- Lambda for scheduled monitoring
-
-It avoids unnecessary complexity while providing full visibility into relayer performance, cost, and operational health.
+This system uses **Web3.py** (existing stack) for Base RPC, **DynamoDB** for analytics state, **Lambda** for settlement-side writes and scheduled monitoring, and **SNS** for email alerts—without introducing parallel TypeScript/viem clients or unnecessary new patterns.
