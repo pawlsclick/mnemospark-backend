@@ -427,6 +427,112 @@ class StorageUploadHelperTests(unittest.TestCase):
         self.assertEqual(payload["event"], "mock_settlement_mode_active")
         self.assertIn("No real USDC transfers will occur", payload["message"])
 
+    def test_onchain_settle_payment_uses_zero_effective_gas_price(self):
+        class _FakeTxHash:
+            def __init__(self, value: str):
+                self._value = value
+
+            def hex(self) -> str:
+                return self._value
+
+        class _FakeContractFn:
+            def build_transaction(self, _params):
+                return {"tx": "built"}
+
+        class _FakeContractFunctions:
+            def transferWithAuthorization(self, *_args):
+                return _FakeContractFn()
+
+        class _FakeContract:
+            functions = _FakeContractFunctions()
+
+        class _FakeEth:
+            gas_price = 123
+
+            def __init__(self):
+                self.account = mock.Mock()
+                self.account.sign_transaction.return_value = mock.Mock(raw_transaction=b"signed")
+
+            def contract(self, address, abi):
+                del address, abi
+                return _FakeContract()
+
+            def get_transaction_count(self, _address):
+                return 1
+
+            def send_raw_transaction(self, _raw_transaction):
+                return _FakeTxHash("0x" + ("ab" * 32))
+
+            def wait_for_transaction_receipt(self, _tx_hash, timeout):
+                del timeout
+                class _FakeReceipt(dict):
+                    status = 1
+
+                return _FakeReceipt(
+                    {
+                        "gasUsed": 21000,
+                        "effectiveGasPrice": 0,
+                        "gasPrice": 999,
+                        "blockNumber": 7,
+                    }
+                )
+
+        class _FakeWeb3:
+            @staticmethod
+            def HTTPProvider(url, request_kwargs=None):
+                del url, request_kwargs
+                return object()
+
+            @staticmethod
+            def to_checksum_address(address):
+                return address
+
+            def __init__(self, _provider):
+                self.eth = _FakeEth()
+
+            def is_connected(self):
+                return True
+
+        authorization = app.TransferAuthorization(
+            signature="0x" + ("11" * 65),
+            from_address="0x1111111111111111111111111111111111111111",
+            to_address="0x2222222222222222222222222222222222222222",
+            value=1,
+            valid_after=0,
+            valid_before=9999999999,
+            nonce="0x" + ("ab" * 32),
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            domain_name="USD Coin",
+            domain_version="2",
+        )
+        record_mock = mock.Mock()
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "MNEMOSPARK_BASE_RPC_URL": "https://base.example.invalid",
+                    "MNEMOSPARK_RELAYER_SECRET_ID": "relayer-secret",
+                },
+                clear=False,
+            ),
+            mock.patch.object(app, "_resolve_relayer_private_key", return_value="0x" + ("12" * 32)),
+            mock.patch.dict(
+                sys.modules,
+                {
+                    "web3": mock.Mock(Web3=_FakeWeb3),
+                    "eth_account": mock.Mock(Account=mock.Mock(from_key=mock.Mock(return_value=mock.Mock(address="0x3333333333333333333333333333333333333333")))),
+                    "common.relayer_ledger": mock.Mock(record_relayer_transaction_success=record_mock),
+                },
+            ),
+        ):
+            tx_id = app._onchain_settle_payment(authorization)
+
+        self.assertEqual(tx_id, "0x" + ("ab" * 32))
+        record_mock.assert_called_once()
+        self.assertEqual(record_mock.call_args.kwargs["effective_gas_price"], 0)
+
 
 class StorageUploadLambdaTests(unittest.TestCase):
     def setUp(self):
