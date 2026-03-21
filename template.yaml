@@ -80,6 +80,16 @@ Parameters:
       - "true"
       - "false"
     Description: If true, housekeeping reports overdue objects without deleting
+  RelayerWalletAddress:
+    Type: String
+    Default: "0x604d308201626a0A8a67B46112943D08dbd99bC8"
+    Description: >-
+      Base relayer wallet address (0x...) for monitoring and RelayerTransactions pk.
+      Override per environment if needed; monitor Lambda no-ops when set empty.
+  RelayerMonitorScheduleExpression:
+    Type: String
+    Default: rate(30 minutes)
+    Description: EventBridge schedule for Base relayer monitor (stats, health, alerts)
 
 Globals:
   Function:
@@ -199,6 +209,74 @@ Resources:
       Tags:
         - Key: Project
           Value: mnemospark
+
+  RelayerTransactionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-relayer-transactions"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  RelayerStatsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-relayer-stats"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  RelayerHealthTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-relayer-health"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  RelayerAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub "${AWS::StackName}-relayer-alerts"
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  RelayerAlertsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      Endpoint: alerts@mnemospark.ai
+      TopicArn: !Ref RelayerAlertsTopic
 
   PriceStorageLambdaRole:
     Type: AWS::IAM::Role
@@ -363,6 +441,53 @@ Resources:
                 Action:
                   - dynamodb:PutItem
                 Resource: !GetAtt ApiCallsTable.Arn
+        - PolicyName: payment-settle-relayer-transactions-write
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt RelayerTransactionsTable.Arn
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  BaseRelayerMonitorLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: base-relayer-monitor-dynamodb
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !GetAtt RelayerTransactionsTable.Arn
+                  - !GetAtt RelayerStatsTable.Arn
+                  - !GetAtt RelayerHealthTable.Arn
+        - PolicyName: base-relayer-monitor-sns-publish
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref RelayerAlertsTopic
       Tags:
         - Key: Project
           Value: mnemospark
@@ -689,6 +814,7 @@ Resources:
           MNEMOSPARK_PAYMENT_SETTLEMENT_MODE: !Ref PaymentSettlementMode
           MNEMOSPARK_BASE_RPC_URL: !Ref BaseRpcUrl
           MNEMOSPARK_RELAYER_SECRET_ID: mnemospark/relayer-private-key
+          RELAYER_TRANSACTIONS_TABLE_NAME: !Ref RelayerTransactionsTable
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
       Events:
@@ -942,6 +1068,45 @@ Resources:
       Principal: events.amazonaws.com
       SourceArn: !GetAtt StorageHousekeepingScheduleRule.Arn
 
+  BaseRelayerMonitorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: services/base-relayer-monitor
+      Role: !GetAtt BaseRelayerMonitorLambdaRole.Arn
+      Timeout: 120
+      Description: Scheduled relayer wallet stats, health, runway, and SNS alerts.
+      Environment:
+        Variables:
+          RELAYER_TRANSACTIONS_TABLE_NAME: !Ref RelayerTransactionsTable
+          RELAYER_STATS_TABLE_NAME: !Ref RelayerStatsTable
+          RELAYER_HEALTH_TABLE_NAME: !Ref RelayerHealthTable
+          MNEMOSPARK_RELAYER_WALLET_ADDRESS: !Ref RelayerWalletAddress
+          MNEMOSPARK_BASE_RPC_URL: !Ref BaseRpcUrl
+          RELAYER_ALERTS_TOPIC_ARN: !Ref RelayerAlertsTopic
+
+  BaseRelayerMonitorScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-base-relayer-monitor"
+      Description: Recompute relayer aggregates, health, and publish SNS alerts if needed.
+      ScheduleExpression: !Ref RelayerMonitorScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt BaseRelayerMonitorFunction.Arn
+          Id: BaseRelayerMonitorLambdaTarget
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  BaseRelayerMonitorInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BaseRelayerMonitorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt BaseRelayerMonitorScheduleRule.Arn
+
   PriceStorageFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -1000,6 +1165,15 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${StorageHousekeepingFunction}"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  BaseRelayerMonitorFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${BaseRelayerMonitorFunction}"
       RetentionInDays: !Ref ObservabilityLogRetentionDays
       Tags:
         - Key: Project
@@ -1276,3 +1450,29 @@ Outputs:
   StorageHousekeepingScheduleRuleArn:
     Description: EventBridge rule ARN for scheduled storage housekeeping
     Value: !GetAtt StorageHousekeepingScheduleRule.Arn
+  RelayerTransactionsTableName:
+    Description: DynamoDB table name for relayer per-transaction gas records
+    Value: !Ref RelayerTransactionsTable
+    Export:
+      Name: !Sub "${AWS::StackName}-RelayerTransactionsTableName"
+  RelayerStatsTableName:
+    Description: DynamoDB table name for relayer period aggregates
+    Value: !Ref RelayerStatsTable
+    Export:
+      Name: !Sub "${AWS::StackName}-RelayerStatsTableName"
+  RelayerHealthTableName:
+    Description: DynamoDB table name for relayer health snapshot
+    Value: !Ref RelayerHealthTable
+    Export:
+      Name: !Sub "${AWS::StackName}-RelayerHealthTableName"
+  RelayerAlertsTopicArn:
+    Description: SNS topic ARN for relayer runway / health alerts
+    Value: !Ref RelayerAlertsTopic
+    Export:
+      Name: !Sub "${AWS::StackName}-RelayerAlertsTopicArn"
+  BaseRelayerMonitorFunctionArn:
+    Description: Lambda function ARN for scheduled Base relayer monitoring
+    Value: !GetAtt BaseRelayerMonitorFunction.Arn
+  BaseRelayerMonitorScheduleRuleArn:
+    Description: EventBridge rule ARN for Base relayer monitor schedule
+    Value: !GetAtt BaseRelayerMonitorScheduleRule.Arn

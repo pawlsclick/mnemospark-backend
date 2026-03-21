@@ -3,3 +3,4 @@ boto3
 eth-account
 web3
 pytest
+ruff

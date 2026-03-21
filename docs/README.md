@@ -25,7 +25,8 @@ The current internet-facing API Gateway routes are:
 - `POST /storage/delete`
 
 There are no additional public routes at this time; scheduled/internal functions
-(for example storage housekeeping) are not part of the public API contract.
+(for example storage housekeeping and [Base relayer monitoring](base-relayer-monitoring.md))
+are not part of the public API contract.
 
 ## Observability conventions
 
