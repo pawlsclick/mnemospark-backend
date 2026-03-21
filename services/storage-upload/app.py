@@ -926,7 +926,28 @@ def _onchain_settle_payment(authorization: TransferAuthorization) -> str:
     receipt = web3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
     if getattr(receipt, "status", 0) != 1:
         raise RuntimeError("USDC transferWithAuthorization transaction failed")
-    return tx_hash.hex()
+    tx_hex = tx_hash.hex() if hasattr(tx_hash, "hex") else str(tx_hash)
+    gas_used = int(receipt["gasUsed"])
+    eff_raw = receipt.get("effectiveGasPrice") or receipt.get("gasPrice")
+    effective_gas_price = int(eff_raw)
+    block_number = int(receipt["blockNumber"])
+    try:
+        from common.relayer_ledger import record_relayer_transaction_success
+
+        record_relayer_transaction_success(
+            relayer_address=relayer.address,
+            tx_hash_hex=tx_hex,
+            gas_used=gas_used,
+            effective_gas_price=effective_gas_price,
+            block_number=block_number,
+        )
+    except Exception:
+        # Best-effort: on-chain settlement already succeeded; do not fail the caller.
+        logger.exception(
+            "relayer_ledger_write_failed",
+            extra={"tx_hash": tx_hex},
+        )
+    return tx_hex
 
 
 def verify_and_settle_payment(
