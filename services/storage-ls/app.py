@@ -73,6 +73,9 @@ NOT_FOUND_S3_ERROR_CODES = {
     "NoSuchKey",
     "NotFound",
 }
+INVALID_LIST_ARGUMENT_S3_ERROR_CODES = {
+    "InvalidArgument",
+}
 
 
 class BadRequestError(ValueError):
@@ -310,8 +313,11 @@ def _list_objects(
     try:
         return s3_client.list_objects_v2(**kwargs)
     except ClientError as exc:
-        if _error_code(exc) in NOT_FOUND_S3_ERROR_CODES:
+        error_code = _error_code(exc)
+        if error_code in NOT_FOUND_S3_ERROR_CODES:
             raise NotFoundError("bucket_not_found", "Bucket not found for this wallet") from exc
+        if error_code in INVALID_LIST_ARGUMENT_S3_ERROR_CODES:
+            raise BadRequestError("continuation_token is invalid or expired") from exc
         raise
 
 
