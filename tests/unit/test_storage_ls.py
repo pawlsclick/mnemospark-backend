@@ -386,6 +386,36 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertEqual(body["error"], "forbidden")
         self.assertIn("wallet_address does not match authorized wallet", body["message"])
 
+    def test_lambda_handler_list_mode_invalid_continuation_token_returns_400(self):
+        class FailingS3Client(FakeS3Client):
+            def list_objects_v2(self, Bucket, MaxKeys=1000, ContinuationToken=None, Prefix=None):
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "InvalidArgument",
+                            "Message": "The continuation token provided is incorrect",
+                        }
+                    },
+                    "ListObjectsV2",
+                )
+
+        event = {
+            "httpMethod": "GET",
+            "queryStringParameters": {
+                "wallet_address": self.wallet,
+                "continuation_token": "not-a-valid-token",
+            },
+            "requestContext": {"authorizer": {"walletAddress": self.wallet}},
+        }
+
+        with mock.patch.object(app.boto3, "client", return_value=FailingS3Client({self.bucket: {}})):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 400)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "Bad request")
+        self.assertEqual(body["message"], "continuation_token is invalid or expired")
+
     def test_lambda_handler_unexpected_s3_error_returns_500(self):
         class FailingS3Client(FakeS3Client):
             def head_bucket(self, Bucket):
