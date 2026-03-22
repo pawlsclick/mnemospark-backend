@@ -266,16 +266,6 @@ def _last_modified_iso(dt: Any) -> str | None:
     return dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
 
 
-def _parse_optional_object_key(params: dict[str, Any]) -> str | None:
-    raw = params.get("object_key")
-    if raw is None:
-        return None
-    if not isinstance(raw, str):
-        raise BadRequestError("object_key must be a string")
-    stripped = raw.strip()
-    return stripped or None
-
-
 def _parse_max_keys(params: dict[str, Any]) -> int:
     raw = params.get("max_keys")
     if raw in (None, ""):
@@ -329,7 +319,7 @@ def parse_input(event: dict[str, Any]) -> ParsedLsRequest:
     params = _collect_request_params(event)
 
     wallet_address = _normalize_address(_require_string_field(params, "wallet_address"), "wallet_address")
-    object_key_raw = _parse_optional_object_key(params)
+    object_key_raw = _parse_optional_string(params, "object_key")
     location = str(params.get("location") or params.get("region") or DEFAULT_LOCATION).strip() or DEFAULT_LOCATION
 
     if object_key_raw is not None:
