@@ -1,5 +1,6 @@
 import importlib.util
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import unittest
@@ -27,6 +28,7 @@ class FakeS3Client:
         self.objects_by_bucket = objects_by_bucket
         self.head_bucket_calls = []
         self.head_object_calls = []
+        self.list_calls = []
 
     def head_bucket(self, Bucket):
         self.head_bucket_calls.append(Bucket)
@@ -46,6 +48,29 @@ class FakeS3Client:
                 "HeadObject",
             )
         return {"ContentLength": objects[Key]}
+
+    def list_objects_v2(self, Bucket, MaxKeys=1000, ContinuationToken=None, Prefix=None):
+        self.list_calls.append(
+            {
+                "Bucket": Bucket,
+                "MaxKeys": MaxKeys,
+                "ContinuationToken": ContinuationToken,
+                "Prefix": Prefix,
+            }
+        )
+        objects = self.objects_by_bucket.get(Bucket, {})
+        pfx = Prefix or ""
+        keys = sorted(k for k in objects if k.startswith(pfx))
+        start = int(ContinuationToken) if ContinuationToken else 0
+        page_keys = keys[start : start + MaxKeys]
+        fixed_dt = datetime(2024, 3, 10, 8, 0, 0, tzinfo=timezone.utc)
+        contents = [{"Key": k, "Size": objects[k], "LastModified": fixed_dt} for k in page_keys]
+        next_index = start + len(page_keys)
+        truncated = next_index < len(keys)
+        out = {"Contents": contents, "IsTruncated": truncated}
+        if truncated:
+            out["NextContinuationToken"] = str(next_index)
+        return out
 
 
 class StorageLsIntegrationTests(unittest.TestCase):
@@ -132,3 +157,24 @@ class StorageLsIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(len(fake_s3.head_bucket_calls), 2)
         self.assertEqual(len(fake_s3.head_object_calls), 2)
+
+    def test_list_mode_post_without_object_key(self):
+        wallet = "0x" + ("4" * 40)
+        bucket = app._bucket_name(wallet)
+        fake_s3 = FakeS3Client({bucket: {"x.dat": 10, "y.dat": 20}})
+
+        post_event = {
+            "httpMethod": "POST",
+            "body": json.dumps({"wallet_address": wallet}),
+            "requestContext": {"authorizer": {"walletAddress": wallet}},
+        }
+
+        with mock.patch.object(app.boto3, "client", return_value=fake_s3):
+            response = app.lambda_handler(post_event, None)
+
+        self.assertEqual(response["statusCode"], 200)
+        body = json.loads(response["body"])
+        self.assertTrue(body["list_mode"])
+        self.assertEqual(len(body["objects"]), 2)
+        self.assertFalse(body["is_truncated"])
+        self.assertEqual(len(fake_s3.list_calls), 1)
