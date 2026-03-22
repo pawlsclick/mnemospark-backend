@@ -1,7 +1,7 @@
 openapi: "3.2.0"
 info:
   title: mnemospark-backend API
-  version: "0.1.0"
+  version: "0.1.1"
   license:
     name: Proprietary
   description: >
@@ -178,22 +178,30 @@ paths:
   /storage/ls:
     get:
       tags: [storage]
-      summary: Get object metadata
-      description: Retrieves metadata for a wallet-scoped object key.
+      summary: Stat or list wallet bucket objects
+      description: >
+        With `object_key`, returns metadata for that key (head_object). Without
+        `object_key`, lists object keys in the wallet bucket via S3 ListObjectsV2
+        (paginated).
       operationId: getStorageLs
       security:
         - walletProof: []
       parameters:
         - $ref: "#/components/parameters/WalletAddressQuery"
-        - $ref: "#/components/parameters/ObjectKeyQuery"
+        - $ref: "#/components/parameters/StorageLsObjectKeyQuery"
         - $ref: "#/components/parameters/LocationQuery"
+        - $ref: "#/components/parameters/StorageLsContinuationTokenQuery"
+        - $ref: "#/components/parameters/StorageLsMaxKeysQuery"
+        - $ref: "#/components/parameters/StorageLsPrefixQuery"
       responses:
         "200":
-          description: Object metadata found
+          description: Stat (single object) or list response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StorageLsResponse"
+                oneOf:
+                  - $ref: "#/components/schemas/StorageLsStatResponse"
+                  - $ref: "#/components/schemas/StorageLsListResponse"
         "400":
           $ref: "#/components/responses/BadRequestError"
         "403":
@@ -204,8 +212,10 @@ paths:
           $ref: "#/components/responses/InternalServerError"
     post:
       tags: [storage]
-      summary: Get object metadata (JSON body variant)
-      description: POST variant of /storage/ls using JSON body payload.
+      summary: Stat or list wallet bucket objects (JSON body)
+      description: >
+        Same semantics as GET. `object_key` optional; omit for list mode.
+        Optional `continuation_token`, `max_keys` (1–1000), and `prefix`.
       operationId: postStorageLs
       security:
         - walletProof: []
@@ -214,14 +224,16 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/StorageObjectRequest"
+              $ref: "#/components/schemas/StorageLsRequest"
       responses:
         "200":
-          description: Object metadata found
+          description: Stat (single object) or list response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StorageLsResponse"
+                oneOf:
+                  - $ref: "#/components/schemas/StorageLsStatResponse"
+                  - $ref: "#/components/schemas/StorageLsListResponse"
         "400":
           $ref: "#/components/responses/BadRequestError"
         "403":
@@ -392,6 +404,38 @@ components:
       schema:
         type: string
       description: Wallet-scoped object key (single path segment).
+    StorageLsObjectKeyQuery:
+      name: object_key
+      in: query
+      required: false
+      schema:
+        type: string
+      description: >
+        Object key for stat mode (single path segment). Omit to list all keys
+        in the wallet bucket (S3 list).
+    StorageLsContinuationTokenQuery:
+      name: continuation_token
+      in: query
+      required: false
+      schema:
+        type: string
+      description: S3 list pagination continuation token (list mode only).
+    StorageLsMaxKeysQuery:
+      name: max_keys
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+      description: Maximum keys per list page (default 1000, capped at 1000).
+    StorageLsPrefixQuery:
+      name: prefix
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Optional S3 key prefix filter (list mode only).
     LocationQuery:
       name: location
       in: query
@@ -585,6 +629,27 @@ components:
         location:
           type: string
 
+    StorageLsRequest:
+      type: object
+      required:
+        - wallet_address
+      properties:
+        wallet_address:
+          type: string
+        object_key:
+          type: string
+          description: Omit for list mode.
+        location:
+          type: string
+        continuation_token:
+          type: string
+        max_keys:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        prefix:
+          type: string
+
     PriceStorageResponse:
       type: object
       properties:
@@ -681,7 +746,7 @@ components:
         timestamp:
           type: string
 
-    StorageLsResponse:
+    StorageLsStatResponse:
       type: object
       required:
         - success
@@ -695,8 +760,55 @@ components:
           type: string
         size_bytes:
           type: integer
+          minimum: 0
         bucket:
           type: string
+
+    StorageLsListObject:
+      type: object
+      required:
+        - key
+        - size_bytes
+      properties:
+        key:
+          type: string
+        size_bytes:
+          type: integer
+          minimum: 0
+        last_modified:
+          type: string
+          description: ISO 8601 UTC timestamp when present (from S3 LastModified).
+
+    StorageLsListResponse:
+      type: object
+      required:
+        - success
+        - list_mode
+        - bucket
+        - objects
+        - is_truncated
+      properties:
+        success:
+          type: boolean
+        list_mode:
+          type: boolean
+          enum: [true]
+        bucket:
+          type: string
+        objects:
+          type: array
+          items:
+            $ref: "#/components/schemas/StorageLsListObject"
+        is_truncated:
+          type: boolean
+        next_continuation_token:
+          type: string
+          nullable: true
+
+    StorageLsResponse:
+      description: Deprecated alias; use StorageLsStatResponse for single-object stat.
+      allOf:
+        - $ref: "#/components/schemas/StorageLsStatResponse"
 
     StorageDownloadResponse:
       type: object
