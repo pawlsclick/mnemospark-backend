@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import unittest
@@ -24,8 +25,11 @@ app = load_app_module()
 
 
 class FakeS3Client:
+    """In-memory S3 stub: head_bucket, head_object, list_objects_v2."""
+
     def __init__(self, objects_by_bucket):
         self.objects_by_bucket = objects_by_bucket
+        self.list_calls: list[dict] = []
 
     def head_bucket(self, Bucket):
         if Bucket not in self.objects_by_bucket:
@@ -43,6 +47,30 @@ class FakeS3Client:
                 "HeadObject",
             )
         return {"ContentLength": objects[Key]}
+
+    def list_objects_v2(self, Bucket, MaxKeys=1000, ContinuationToken=None, Prefix=None):
+        kwargs = {"Bucket": Bucket, "MaxKeys": MaxKeys}
+        if ContinuationToken is not None:
+            kwargs["ContinuationToken"] = ContinuationToken
+        if Prefix:
+            kwargs["Prefix"] = Prefix
+        self.list_calls.append(kwargs)
+
+        objects = self.objects_by_bucket.get(Bucket, {})
+        pfx = Prefix or ""
+        keys = sorted(k for k in objects if k.startswith(pfx))
+        start = int(ContinuationToken) if ContinuationToken else 0
+        page_keys = keys[start : start + MaxKeys]
+        fixed_dt = datetime(2024, 6, 1, 15, 30, 0, tzinfo=timezone.utc)
+        contents = [
+            {"Key": k, "Size": objects[k], "LastModified": fixed_dt} for k in page_keys
+        ]
+        next_index = start + len(page_keys)
+        truncated = next_index < len(keys)
+        out: dict = {"Contents": contents, "IsTruncated": truncated}
+        if truncated:
+            out["NextContinuationToken"] = str(next_index)
+        return out
 
 
 class ParseInputTests(unittest.TestCase):
@@ -63,6 +91,7 @@ class ParseInputTests(unittest.TestCase):
         self.assertEqual(parsed.wallet_address, self.wallet)
         self.assertEqual(parsed.object_key, "backup.tar.gz")
         self.assertEqual(parsed.location, "eu-west-1")
+        self.assertFalse(parsed.list_mode)
 
     def test_parse_input_prefers_json_body_over_query(self):
         event = {
@@ -84,6 +113,7 @@ class ParseInputTests(unittest.TestCase):
 
         self.assertEqual(parsed.object_key, "right.txt")
         self.assertEqual(parsed.location, "ap-south-1")
+        self.assertFalse(parsed.list_mode)
 
     def test_parse_input_supports_base64_encoded_body(self):
         body = json.dumps(
@@ -102,6 +132,54 @@ class ParseInputTests(unittest.TestCase):
         self.assertEqual(parsed.wallet_address, self.wallet)
         self.assertEqual(parsed.object_key, "encoded.txt")
         self.assertEqual(parsed.location, app.DEFAULT_LOCATION)
+        self.assertFalse(parsed.list_mode)
+
+    def test_parse_input_list_mode_without_object_key(self):
+        event = {
+            "queryStringParameters": {
+                "wallet_address": self.wallet,
+                "max_keys": "10",
+            }
+        }
+        parsed = app.parse_input(event)
+        self.assertTrue(parsed.list_mode)
+        self.assertIsNone(parsed.object_key)
+        self.assertEqual(parsed.max_keys, 10)
+
+    def test_parse_input_list_mode_empty_object_key_string(self):
+        event = {
+            "queryStringParameters": {
+                "wallet_address": self.wallet,
+                "object_key": "   ",
+            }
+        }
+        parsed = app.parse_input(event)
+        self.assertTrue(parsed.list_mode)
+
+    def test_parse_input_list_mode_continuation_and_prefix(self):
+        event = {
+            "body": json.dumps(
+                {
+                    "wallet_address": self.wallet,
+                    "continuation_token": "5",
+                    "prefix": "p/",
+                }
+            )
+        }
+        parsed = app.parse_input(event)
+        self.assertTrue(parsed.list_mode)
+        self.assertEqual(parsed.continuation_token, "5")
+        self.assertEqual(parsed.prefix, "p/")
+
+    def test_parse_input_max_keys_invalid(self):
+        event = {
+            "queryStringParameters": {
+                "wallet_address": self.wallet,
+                "max_keys": "0",
+            }
+        }
+        with self.assertRaises(app.BadRequestError):
+            app.parse_input(event)
 
     def test_parse_input_requires_wallet(self):
         with self.assertRaises(app.BadRequestError):
@@ -204,6 +282,57 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertEqual(body["key"], self.object_key)
         self.assertEqual(body["bucket"], self.bucket)
 
+    def test_lambda_handler_list_mode_empty_bucket(self):
+        empty_client = FakeS3Client({self.bucket: {}})
+        event = {
+            "httpMethod": "GET",
+            "queryStringParameters": {"wallet_address": self.wallet, "location": "us-west-2"},
+            "requestContext": {"authorizer": {"walletAddress": self.wallet}},
+        }
+        with mock.patch.object(app.boto3, "client", return_value=empty_client):
+            response = app.lambda_handler(event, None)
+        self.assertEqual(response["statusCode"], 200)
+        body = json.loads(response["body"])
+        self.assertTrue(body["success"])
+        self.assertTrue(body["list_mode"])
+        self.assertEqual(body["objects"], [])
+        self.assertFalse(body["is_truncated"])
+        self.assertIsNone(body["next_continuation_token"])
+
+    def test_lambda_handler_list_mode_returns_objects(self):
+        data = {self.bucket: {"a.bin": 100, "b.bin": 200}}
+        client = FakeS3Client(data)
+        event = {
+            "httpMethod": "GET",
+            "queryStringParameters": {"wallet_address": self.wallet},
+            "requestContext": {"authorizer": {"walletAddress": self.wallet}},
+        }
+        with mock.patch.object(app.boto3, "client", return_value=client):
+            response = app.lambda_handler(event, None)
+        self.assertEqual(response["statusCode"], 200)
+        body = json.loads(response["body"])
+        self.assertTrue(body["list_mode"])
+        keys = {o["key"] for o in body["objects"]}
+        self.assertEqual(keys, {"a.bin", "b.bin"})
+        for o in body["objects"]:
+            self.assertIn("last_modified", o)
+            self.assertTrue(o["last_modified"].endswith("Z"))
+
+    def test_lambda_handler_list_mode_truncated(self):
+        keys_dict = {self.bucket: {f"k{i}": i for i in range(3)}}
+        client = FakeS3Client(keys_dict)
+        event = {
+            "httpMethod": "GET",
+            "queryStringParameters": {"wallet_address": self.wallet, "max_keys": "1"},
+            "requestContext": {"authorizer": {"walletAddress": self.wallet}},
+        }
+        with mock.patch.object(app.boto3, "client", return_value=client):
+            response = app.lambda_handler(event, None)
+        body = json.loads(response["body"])
+        self.assertTrue(body["is_truncated"])
+        self.assertEqual(body["next_continuation_token"], "1")
+        self.assertEqual(len(body["objects"]), 1)
+
     def test_lambda_handler_bucket_not_found_returns_404(self):
         with mock.patch.object(app.boto3, "client", return_value=FakeS3Client({})):
             response = app.lambda_handler(self._get_event(), None)
@@ -221,7 +350,13 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertEqual(body["error"], "object_not_found")
 
     def test_lambda_handler_bad_request_returns_400(self):
-        event = {"queryStringParameters": {"wallet_address": self.wallet}}
+        event = {
+            "queryStringParameters": {
+                "wallet_address": self.wallet,
+                "max_keys": "2000",
+            },
+            "requestContext": {"authorizer": {"walletAddress": self.wallet}},
+        }
         with mock.patch.object(app.boto3, "client", return_value=self.s3_client):
             response = app.lambda_handler(event, None)
 

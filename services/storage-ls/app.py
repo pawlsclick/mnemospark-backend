@@ -1,12 +1,22 @@
 """
 Lambda handler for GET/POST /storage/ls.
 
-Returns metadata for one object in the wallet-scoped bucket:
+Stat mode (object_key present): head_object metadata:
 {
   "success": true,
   "key": "<object-key>",
   "size_bytes": <size>,
   "bucket": "mnemospark-<wallet-hash>"
+}
+
+List mode (object_key omitted): list_objects_v2:
+{
+  "success": true,
+  "list_mode": true,
+  "bucket": "...",
+  "objects": [{"key", "size_bytes", "last_modified"}, ...],
+  "is_truncated": bool,
+  "next_continuation_token": str | null
 }
 """
 
@@ -19,7 +29,8 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, cast
 
 import boto3
 from botocore.exceptions import ClientError
@@ -42,6 +53,8 @@ logger.setLevel(logging.INFO)
 
 US_EAST_1_REGION = "us-" + "east-1"
 DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
+DEFAULT_LIST_MAX_KEYS = 1000
+LIST_MAX_KEYS_CAP = 1000
 
 ADDRESS_PATTERN = re.compile(r"^0x[a-fA-F0-9]{40}$")
 BUCKET_NAME_MIN_LEN = 3
@@ -79,8 +92,12 @@ class NotFoundError(Exception):
 @dataclass(frozen=True)
 class ParsedLsRequest:
     wallet_address: str
-    object_key: str
     location: str
+    list_mode: bool
+    object_key: str | None
+    continuation_token: str | None
+    max_keys: int
+    prefix: str | None
 
 
 def _log_event(level: int, event_name: str, **fields: Any) -> None:
@@ -239,15 +256,107 @@ def _get_object_size(s3_client: Any, bucket_name: str, object_key: str) -> int:
     return int(response.get("ContentLength", 0))
 
 
+def _last_modified_iso(dt: Any) -> str | None:
+    if dt is None or not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+
+
+def _parse_optional_object_key(params: dict[str, Any]) -> str | None:
+    raw = params.get("object_key")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise BadRequestError("object_key must be a string")
+    stripped = raw.strip()
+    return stripped or None
+
+
+def _parse_max_keys(params: dict[str, Any]) -> int:
+    raw = params.get("max_keys")
+    if raw in (None, ""):
+        return DEFAULT_LIST_MAX_KEYS
+    if isinstance(raw, bool):
+        raise BadRequestError("max_keys must be an integer between 1 and 1000")
+    if isinstance(raw, str):
+        try:
+            raw = int(raw.strip(), 10)
+        except ValueError as exc:
+            raise BadRequestError("max_keys must be an integer between 1 and 1000") from exc
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        raise BadRequestError("max_keys must be an integer between 1 and 1000")
+    if raw < 1 or raw > LIST_MAX_KEYS_CAP:
+        raise BadRequestError("max_keys must be an integer between 1 and 1000")
+    return raw
+
+
+def _parse_optional_string(params: dict[str, Any], field: str) -> str | None:
+    raw = params.get(field)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise BadRequestError(f"{field} must be a string")
+    s = raw.strip()
+    return s or None
+
+
+def _list_objects(
+    s3_client: Any,
+    bucket_name: str,
+    *,
+    max_keys: int,
+    continuation_token: str | None,
+    prefix: str | None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"Bucket": bucket_name, "MaxKeys": max_keys}
+    if continuation_token:
+        kwargs["ContinuationToken"] = continuation_token
+    if prefix:
+        kwargs["Prefix"] = prefix
+    try:
+        return s3_client.list_objects_v2(**kwargs)
+    except ClientError as exc:
+        if _error_code(exc) in NOT_FOUND_S3_ERROR_CODES:
+            raise NotFoundError("bucket_not_found", "Bucket not found for this wallet") from exc
+        raise
+
+
 def parse_input(event: dict[str, Any]) -> ParsedLsRequest:
     params = _collect_request_params(event)
 
     wallet_address = _normalize_address(_require_string_field(params, "wallet_address"), "wallet_address")
-    object_key = _require_string_field(params, "object_key")
-    _validate_object_key(object_key)
+    object_key_raw = _parse_optional_object_key(params)
     location = str(params.get("location") or params.get("region") or DEFAULT_LOCATION).strip() or DEFAULT_LOCATION
 
-    return ParsedLsRequest(wallet_address=wallet_address, object_key=object_key, location=location)
+    if object_key_raw is not None:
+        _validate_object_key(object_key_raw)
+        return ParsedLsRequest(
+            wallet_address=wallet_address,
+            location=location,
+            list_mode=False,
+            object_key=object_key_raw,
+            continuation_token=None,
+            max_keys=DEFAULT_LIST_MAX_KEYS,
+            prefix=None,
+        )
+
+    continuation_token = _parse_optional_string(params, "continuation_token")
+    prefix = _parse_optional_string(params, "prefix")
+    max_keys = _parse_max_keys(params)
+
+    return ParsedLsRequest(
+        wallet_address=wallet_address,
+        location=location,
+        list_mode=True,
+        object_key=None,
+        continuation_token=continuation_token,
+        max_keys=max_keys,
+        prefix=prefix,
+    )
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -260,6 +369,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "storage_ls_request_parsed",
             wallet_address=request.wallet_address,
             object_key=request.object_key,
+            list_mode=request.list_mode,
             location=request.location,
         )
         _require_authorized_wallet(event, request.wallet_address)
@@ -277,12 +387,70 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             raise BadRequestError(str(exc)) from exc
 
         _assert_bucket_access(s3_client, bucket_name)
-        object_size = _get_object_size(s3_client, bucket_name, request.object_key)
+
+        if request.list_mode:
+            list_resp = _list_objects(
+                s3_client,
+                bucket_name,
+                max_keys=request.max_keys,
+                continuation_token=request.continuation_token,
+                prefix=request.prefix,
+            )
+            contents = list_resp.get("Contents") or []
+            objects_out: list[dict[str, Any]] = []
+            for item in contents:
+                key = item.get("Key")
+                if not isinstance(key, str):
+                    continue
+                size_bytes = int(item.get("Size") or 0)
+                lm = item.get("LastModified")
+                objects_out.append(
+                    {
+                        "key": key,
+                        "size_bytes": size_bytes,
+                        "last_modified": _last_modified_iso(lm),
+                    }
+                )
+            is_truncated = bool(list_resp.get("IsTruncated"))
+            next_token = list_resp.get("NextContinuationToken")
+            next_out: str | None = next_token if isinstance(next_token, str) else None
+
+            _log_event(
+                logging.INFO,
+                "storage_ls_list_succeeded",
+                wallet_address=request.wallet_address,
+                bucket_name=bucket_name,
+                object_count=len(objects_out),
+                is_truncated=is_truncated,
+            )
+            _log_api_call_result(
+                event,
+                context,
+                status_code=200,
+                result="success",
+                wallet_address=request.wallet_address,
+                object_key=None,
+                list_mode=True,
+            )
+            return _response(
+                200,
+                {
+                    "success": True,
+                    "list_mode": True,
+                    "bucket": bucket_name,
+                    "objects": objects_out,
+                    "is_truncated": is_truncated,
+                    "next_continuation_token": next_out,
+                },
+            )
+
+        object_key = cast(str, request.object_key)
+        object_size = _get_object_size(s3_client, bucket_name, object_key)
         _log_event(
             logging.INFO,
             "storage_ls_succeeded",
             wallet_address=request.wallet_address,
-            object_key=request.object_key,
+            object_key=object_key,
             bucket_name=bucket_name,
             size_bytes=object_size,
         )
@@ -292,14 +460,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             status_code=200,
             result="success",
             wallet_address=request.wallet_address,
-            object_key=request.object_key,
+            object_key=object_key,
         )
 
         return _response(
             200,
             {
                 "success": True,
-                "key": request.object_key,
+                "key": object_key,
                 "size_bytes": object_size,
                 "bucket": bucket_name,
             },
