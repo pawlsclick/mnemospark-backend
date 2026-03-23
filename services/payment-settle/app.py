@@ -834,6 +834,48 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             except Exception:
                 existing = None
             if existing is not None:
+                if request.renewal and request.object_key and renewal_table is not None:
+                    billing_period = billing_period_utc(now)
+                    expected_bucket = payment_core._bucket_name(request.wallet_address)
+                    amount_value = existing.get("amount")
+                    amount_micro = quote_context.storage_price_micro
+                    if amount_value is not None:
+                        try:
+                            amount_micro = int(amount_value)
+                        except (TypeError, ValueError):
+                            pass
+                    paid_at_iso = existing.get("payment_received_at")
+                    if not isinstance(paid_at_iso, str) or not paid_at_iso.strip():
+                        paid_at_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+                    try:
+                        _put_renewal_transaction_log(
+                            renewal_table,
+                            bucket_name=expected_bucket,
+                            object_key=request.object_key,
+                            billing_period=billing_period,
+                            wallet_address=request.wallet_address,
+                            recipient_wallet=str(
+                                existing.get("recipient_wallet") or payment_config["recipient_wallet"]
+                            ),
+                            trans_id=str(existing.get("trans_id") or ""),
+                            amount_micro=amount_micro,
+                            amount_str=str(amount_value) if amount_value is not None else str(amount_micro),
+                            network=str(existing.get("network") or payment_config["payment_network"]),
+                            asset=str(existing.get("asset") or payment_config["payment_asset"]),
+                            paid_at_iso=paid_at_iso,
+                        )
+                    except ClientError as renewal_exc:
+                        if renewal_exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                            _log_api_call_result(
+                                event,
+                                context,
+                                status_code=500,
+                                result="internal_error",
+                                request=request,
+                                error_code="internal_error",
+                                error_message=str(renewal_exc),
+                            )
+                            return _error_response(500, "Internal error", str(renewal_exc))
                 response_body = {
                     "quote_id": request.quote_id,
                     "wallet_address": request.wallet_address,

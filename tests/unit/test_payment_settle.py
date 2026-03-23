@@ -490,6 +490,35 @@ class PaymentSettleRenewalTests(unittest.TestCase):
         self.assertEqual(second_body.get("object_key"), self.object_key)
         self.assertEqual(second_body.get("billing_period"), first_body.get("billing_period"))
 
+    def test_renewal_retry_backfills_missing_renewal_log_after_transient_failure(self):
+        original_put_item = self.renewal_table.put_item
+        first_call = {"pending": True}
+
+        def flaky_put_item(*, Item, ConditionExpression=None, ExpressionAttributeValues=None):
+            if first_call["pending"]:
+                first_call["pending"] = False
+                raise ClientError(
+                    {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "throttled"}},
+                    "PutItem",
+                )
+            return original_put_item(
+                Item=Item,
+                ConditionExpression=ConditionExpression,
+                ExpressionAttributeValues=ExpressionAttributeValues,
+            )
+
+        self.renewal_table.put_item = flaky_put_item
+
+        first = app.lambda_handler(self._event(), None)
+        second = app.lambda_handler(self._event(), None)
+
+        self.assertEqual(first["statusCode"], 500)
+        self.assertEqual(second["statusCode"], 200)
+        second_body = json.loads(second["body"])
+        self.assertEqual(second_body["result"], "already_settled")
+        self.assertTrue(second_body.get("renewal"))
+        self.assertEqual(len(self.renewal_table.items), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
