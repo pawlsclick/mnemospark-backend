@@ -490,8 +490,9 @@ def _ensure_bucket_exists(s3_client: Any, bucket_name: str, location: str) -> No
             if bucket_home is not None:
                 enforce_requested_matches_bucket_home(location, bucket_home)
                 return
-        # Only 404-style errors mean the bucket truly does not exist and may be created.
-        if error_code not in {"404", "NotFound", "NoSuchBucket"}:
+        # Treat 400/BadRequest like 404-style responses during eventual-consistency windows
+        # after deletion so we can proceed to create the bucket.
+        if error_code not in {"404", "NotFound", "NoSuchBucket", "400", "BadRequest"}:
             if error_code in {"403", "Forbidden"}:
                 logger.warning(
                     "HeadBucket 403 for %s: ensure bucket is in this account and Lambda role has s3:ListBucket on mnemospark-*",
