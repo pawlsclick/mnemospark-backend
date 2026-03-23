@@ -5,6 +5,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 import unittest
@@ -455,6 +456,39 @@ class PaymentSettleRenewalTests(unittest.TestCase):
         self.assertTrue(body.get("renewal"))
         self.assertEqual(body.get("object_key"), self.object_key)
         self.assertEqual(len(self.renewal_table.items), 1)
+
+    def test_renewal_uses_single_timestamp_for_quote_id_and_billing_period(self):
+        month_end_ts = int(datetime(2024, 3, 31, 23, 59, 59, tzinfo=timezone.utc).timestamp())
+        next_month_ts = int(datetime(2024, 4, 1, 0, 0, 0, tzinfo=timezone.utc).timestamp())
+
+        with mock.patch.object(app.time, "time", return_value=next_month_ts):
+            request = app.parse_input(self._event(), now_ts=month_end_ts)
+            self.assertTrue(request.quote_id.startswith("renewal#2024-03#"))
+
+        with mock.patch.object(app.time, "time", return_value=month_end_ts):
+            with mock.patch.object(app, "parse_input", wraps=app.parse_input) as parse_input_mock:
+                response = app.lambda_handler(self._event(), None)
+
+        self.assertEqual(response["statusCode"], 200)
+        parse_input_mock.assert_called_once()
+        self.assertEqual(parse_input_mock.call_args.kwargs.get("now_ts"), month_end_ts)
+        body = json.loads(response["body"])
+        self.assertEqual(body.get("billing_period"), "2024-03")
+        self.assertTrue(body["quote_id"].startswith("renewal#2024-03#"))
+
+    def test_renewal_idempotent_retry_includes_renewal_fields(self):
+        first = app.lambda_handler(self._event(), None)
+        second = app.lambda_handler(self._event(), None)
+
+        self.assertEqual(first["statusCode"], 200)
+        self.assertEqual(second["statusCode"], 200)
+
+        first_body = json.loads(first["body"])
+        second_body = json.loads(second["body"])
+        self.assertEqual(second_body["result"], "already_settled")
+        self.assertTrue(second_body.get("renewal"))
+        self.assertEqual(second_body.get("object_key"), self.object_key)
+        self.assertEqual(second_body.get("billing_period"), first_body.get("billing_period"))
 
 
 if __name__ == "__main__":
