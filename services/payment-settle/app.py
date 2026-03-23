@@ -887,7 +887,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     "timestamp": existing.get("timestamp"),
                     "result": "already_settled",
                 }
-                if request.renewal and request.object_key:
+                if request.renewal and request.object_key and renewal_table is not None:
                     response_body["renewal"] = True
                     response_body["object_key"] = request.object_key
                     response_body["billing_period"] = billing_period_utc(now)
