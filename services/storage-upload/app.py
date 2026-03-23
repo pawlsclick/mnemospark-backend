@@ -80,6 +80,15 @@ USDC_DECIMALS = Decimal("1000000")
 
 IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
 PRESIGNED_URL_EXPIRES_IN_SECONDS = 60 * 60
+ACTIVE_STORAGE_WRITE_MAX_ATTEMPTS = 3
+ACTIVE_STORAGE_WRITE_INITIAL_BACKOFF_SECONDS = 0.1
+RETRYABLE_DDB_WRITE_ERROR_CODES = {
+    "ProvisionedThroughputExceededException",
+    "RequestLimitExceeded",
+    "ThrottlingException",
+    "InternalServerError",
+    "ServiceUnavailable",
+}
 
 QUOTES_TABLE_ENV = "QUOTES_TABLE_NAME"
 UPLOAD_TRANSACTION_LOG_TABLE_ENV = "UPLOAD_TRANSACTION_LOG_TABLE_NAME"
@@ -1552,6 +1561,38 @@ def _put_active_storage_object_record(
     )
 
 
+def _put_active_storage_object_record_with_retry(
+    *,
+    table: Any,
+    wallet_address: str,
+    object_key: str,
+    bucket_name: str,
+    location: str,
+    storage_price: Decimal,
+    created_at_iso: str,
+) -> None:
+    for attempt in range(ACTIVE_STORAGE_WRITE_MAX_ATTEMPTS):
+        try:
+            _put_active_storage_object_record(
+                table=table,
+                wallet_address=wallet_address,
+                object_key=object_key,
+                bucket_name=bucket_name,
+                location=location,
+                storage_price=storage_price,
+                created_at_iso=created_at_iso,
+            )
+            return
+        except ClientError as exc:
+            error_code = str(exc.response.get("Error", {}).get("Code") or "").strip()
+            if (
+                error_code not in RETRYABLE_DDB_WRITE_ERROR_CODES
+                or attempt + 1 >= ACTIVE_STORAGE_WRITE_MAX_ATTEMPTS
+            ):
+                raise
+            time.sleep(ACTIVE_STORAGE_WRITE_INITIAL_BACKOFF_SECONDS * (2**attempt))
+
+
 def _load_existing_upload_transaction(
     transaction_log_table: Any,
     *,
@@ -2489,7 +2530,7 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
         )
         active_table = dynamodb.Table(_require_env(ACTIVE_STORAGE_OBJECT_TABLE_ENV))
         created_at_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
-        _put_active_storage_object_record(
+        _put_active_storage_object_record_with_retry(
             table=active_table,
             wallet_address=request.wallet_address,
             object_key=request.object_key,
