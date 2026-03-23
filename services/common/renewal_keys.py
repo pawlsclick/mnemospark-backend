@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 from datetime import datetime, timezone
 
+ACTIVE_STORAGE_GSI_PARTITION = "ACTIVE"
+
 
 def object_key_to_url_safe_segment(object_key: str) -> str:
     raw = object_key.encode("utf-8")
