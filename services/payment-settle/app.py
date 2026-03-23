@@ -290,7 +290,7 @@ def _extract_inline_payment_header(params: dict[str, Any]) -> str | None:
     return None
 
 
-def parse_input(event: dict[str, Any]) -> ParsedPaymentSettleRequest:
+def parse_input(event: dict[str, Any], *, now_ts: int | None = None) -> ParsedPaymentSettleRequest:
     params = _decode_event_body(event)
     headers = _normalize_headers(event.get("headers"))
     wallet_address = _normalize_address(_require_string_field(params, "wallet_address"), "wallet_address")
@@ -300,7 +300,8 @@ def parse_input(event: dict[str, Any]) -> ParsedPaymentSettleRequest:
     if renewal_raw is not None and renewal_raw is not False and not is_renewal:
         raise BadRequestError("renewal must be true or omitted")
 
-    now_ts = int(time.time())
+    if now_ts is None:
+        now_ts = int(time.time())
     if is_renewal:
         if params.get("quote_id") is not None:
             raise BadRequestError("quote_id must not be sent when renewal is true")
@@ -615,7 +616,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     try:
         now = int(time.time())
-        request = parse_input(event)
+        request = parse_input(event, now_ts=now)
         _require_authorized_wallet(event, request.wallet_address)
         _log_event(
             logging.INFO,
@@ -854,6 +855,10 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     "timestamp": existing.get("timestamp"),
                     "result": "already_settled",
                 }
+                if request.renewal and request.object_key:
+                    response_body["renewal"] = True
+                    response_body["object_key"] = request.object_key
+                    response_body["billing_period"] = billing_period_utc(now)
                 _log_api_call_result(
                     event,
                     context,
