@@ -2090,6 +2090,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     wrapped_dek=request.wrapped_dek,
                     location=quote_context.location,
                 )
+            except BucketRegionMismatchError:
+                raise
             except Exception as s3_exc:
                 # Payment was already settled, so preserve the idempotency lock and
                 # surface a resumable upload response for operational recovery.

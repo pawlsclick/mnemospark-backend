@@ -33,6 +33,7 @@ try:
     )
     from common.storage_bucket_region import (
         BucketRegionMismatchError,
+        actual_region_from_head_bucket_error_response,
         enforce_requested_matches_bucket_home,
         resolve_bucket_home_region,
         resolve_bucket_home_region_from_head_bucket_error,
@@ -52,6 +53,7 @@ except ModuleNotFoundError:
     )
     from common.storage_bucket_region import (
         BucketRegionMismatchError,
+        actual_region_from_head_bucket_error_response,
         enforce_requested_matches_bucket_home,
         resolve_bucket_home_region,
         resolve_bucket_home_region_from_head_bucket_error,
@@ -281,19 +283,24 @@ def generate_download_url(request: ParsedDownloadRequest, s3_client: Any | None 
     try:
         head_resp = s3_client.head_bucket(Bucket=bucket_name)
     except ClientError as exc:
-        bucket_home = resolve_bucket_home_region_from_head_bucket_error(
-            s3_client,
-            bucket_name,
-            exc.response,
-        )
-        if bucket_home is not None:
-            enforce_requested_matches_bucket_home(request.location, bucket_home)
         if _is_not_found_error(exc):
             raise NotFoundError(
                 error="bucket_not_found",
                 message="Bucket not found for this wallet.",
                 details=_error_message(exc),
             ) from exc
+        error_code = _error_code(exc)
+        bucket_home_raw = actual_region_from_head_bucket_error_response(exc.response)
+        if bucket_home_raw:
+            enforce_requested_matches_bucket_home(request.location, bucket_home_raw)
+        elif error_code in {"301", "PermanentRedirect", "400", "BadRequest"}:
+            bucket_home = resolve_bucket_home_region_from_head_bucket_error(
+                s3_client,
+                bucket_name,
+                exc.response,
+            )
+            if bucket_home is not None:
+                enforce_requested_matches_bucket_home(request.location, bucket_home)
         raise
     bucket_home = resolve_bucket_home_region(s3_client, bucket_name, head_resp)
     enforce_requested_matches_bucket_home(request.location, bucket_home)

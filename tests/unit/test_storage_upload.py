@@ -999,7 +999,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         )
         self.assertEqual(self.s3_client.presigned_calls[0]["Params"]["ContentLength"], 12345)
 
-    def test_lambda_handler_head_bucket_301_wrong_region_returns_400(self):
+    def test_lambda_handler_head_bucket_301_wrong_region_returns_207_and_retryable_payload(self):
         bucket_name = app._bucket_name(self.wallet_address)
         wrong_region_client = HeadBucketWrongRegionS3(error_code="301", bucket_region_header="eu-west-1")
         wrong_region_client.buckets.add(bucket_name)
@@ -1017,7 +1017,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         body = json.loads(response["body"])
         self.assertEqual(body["error"], "bucket_region_mismatch")
         self.assertEqual(body["details"]["bucket_region"], "eu-west-1")
-        self.assertEqual(body["details"]["requested_region"], "us-west-2")
+        self.assertEqual(body["details"]["requested_region"], "[REDACTED]")
         self.assertEqual(len(wrong_region_client.created_buckets), 0)
 
     def test_presigned_idempotent_retry_returns_fresh_upload_url(self):

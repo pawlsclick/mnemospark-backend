@@ -34,6 +34,8 @@ class FakeS3Client:
         self.head_bucket_error: dict | None = None
 
     def head_bucket(self, Bucket):
+        if self.head_bucket_error is not None:
+            raise self.head_bucket_error
         if Bucket not in self.objects_by_bucket:
             raise ClientError(
                 {"Error": {"Code": "404", "Message": "bucket not found"}},

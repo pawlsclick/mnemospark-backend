@@ -256,11 +256,14 @@ def _assert_bucket_access(s3_client: Any, bucket_name: str, requested_location: 
     try:
         head_resp = s3_client.head_bucket(Bucket=bucket_name)
     except ClientError as exc:
+        error_code = _error_code(exc)
+        if error_code in NOT_FOUND_S3_ERROR_CODES:
+            raise NotFoundError("bucket_not_found", "Bucket not found for this wallet") from exc
+        if error_code not in {"301", "PermanentRedirect", "400", "BadRequest"}:
+            raise
         bucket_home = resolve_bucket_home_region_from_head_bucket_error(
             s3_client, bucket_name, exc.response
         )
-        if bucket_home is None and _error_code(exc) in NOT_FOUND_S3_ERROR_CODES:
-            raise NotFoundError("bucket_not_found", "Bucket not found for this wallet") from exc
         if bucket_home is not None:
             enforce_requested_matches_bucket_home(requested_location, bucket_home)
         raise
