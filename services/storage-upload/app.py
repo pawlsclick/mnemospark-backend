@@ -49,6 +49,15 @@ except ModuleNotFoundError:
         sanitize_error_message,
     )
 
+try:
+    from common.renewal_keys import active_inventory_sk
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.renewal_keys import active_inventory_sk
+
 
 log_api_call = load_log_api_call(emit_warning=True, logger=logging.getLogger(__name__))
 
@@ -76,6 +85,8 @@ QUOTES_TABLE_ENV = "QUOTES_TABLE_NAME"
 UPLOAD_TRANSACTION_LOG_TABLE_ENV = "UPLOAD_TRANSACTION_LOG_TABLE_NAME"
 UPLOAD_IDEMPOTENCY_TABLE_ENV = "UPLOAD_IDEMPOTENCY_TABLE_NAME"
 PAYMENT_LEDGER_TABLE_ENV = "PAYMENT_LEDGER_TABLE_NAME"
+ACTIVE_STORAGE_OBJECT_TABLE_ENV = "ACTIVE_STORAGE_OBJECT_TABLE_NAME"
+ACTIVE_STORAGE_GSI_PARTITION = "ACTIVE"
 RELAYER_SECRET_ID_ENV = "MNEMOSPARK_RELAYER_SECRET_ID"
 
 _RELAYER_PRIVATE_KEY_CACHE: str | None = None
@@ -1516,6 +1527,32 @@ def _write_transaction_log(
             raise
 
 
+def _put_active_storage_object_record(
+    *,
+    table: Any,
+    wallet_address: str,
+    object_key: str,
+    bucket_name: str,
+    location: str,
+    storage_price: Decimal,
+    created_at_iso: str,
+) -> None:
+    sk = active_inventory_sk(bucket_name, object_key)
+    table.put_item(
+        Item={
+            "wallet_address": wallet_address,
+            "object_key": object_key,
+            "bucket_name": bucket_name,
+            "location": location,
+            "storage_price": str(storage_price),
+            "created_at": created_at_iso,
+            "status": "active",
+            "status_active": ACTIVE_STORAGE_GSI_PARTITION,
+            "active_inventory_sk": sk,
+        }
+    )
+
+
 def _load_existing_upload_transaction(
     transaction_log_table: Any,
     *,
@@ -2292,7 +2329,6 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
         _require_authorized_wallet(event, request.wallet_address)
 
         dynamodb = boto3.resource("dynamodb")
-        quotes_table = dynamodb.Table(_require_env(QUOTES_TABLE_ENV))
         transaction_log_table = dynamodb.Table(_require_env(UPLOAD_TRANSACTION_LOG_TABLE_ENV))
         idempotency_table = dynamodb.Table(_require_env(UPLOAD_IDEMPOTENCY_TABLE_ENV))
 
@@ -2451,6 +2487,17 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
             recipient_wallet=payment_config["recipient_wallet"],
             trans_id=payment_result.trans_id,
             bucket_name=bucket_name,
+        )
+        active_table = dynamodb.Table(_require_env(ACTIVE_STORAGE_OBJECT_TABLE_ENV))
+        created_at_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+        _put_active_storage_object_record(
+            table=active_table,
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+            bucket_name=bucket_name,
+            location=quote_context.location,
+            storage_price=quote_context.storage_price,
+            created_at_iso=created_at_iso,
         )
         _log_event(
             logging.INFO,

@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 import os
@@ -46,6 +47,11 @@ class PaymentRequiredError(Exception):
 class FakePaymentCore:
     PAYMENT_SIGNATURE_HEADER_NAMES = ("payment-signature", "x-payment")
     USDC_DECIMALS = Decimal("1000000")
+
+    @staticmethod
+    def _bucket_name(wallet_address: str) -> str:
+        h = hashlib.sha256(wallet_address.encode("utf-8")).hexdigest()[:16]
+        return f"mnemospark-{h}"
 
     def __init__(self):
         self.verify_calls = []
@@ -127,6 +133,12 @@ class FakeDynamoTable:
             if existing is None or existing.get("payment_status") != expected_status:
                 raise ClientError(
                     {"Error": {"Code": "ConditionalCheckFailedException", "Message": "missing claim"}},
+                    "PutItem",
+                )
+        if ConditionExpression == "attribute_not_exists(billing_period_object_key)":
+            if key_tuple in self.items:
+                raise ClientError(
+                    {"Error": {"Code": "ConditionalCheckFailedException", "Message": "duplicate"}},
                     "PutItem",
                 )
         self.items[key_tuple] = dict(Item)
@@ -356,6 +368,93 @@ class PaymentSettleHandlerTests(unittest.TestCase):
         verify_kwargs = self.fake_payment_core.verify_calls[-1]
         self.assertIsInstance(verify_kwargs["payment_header"], str)
         self.assertTrue(verify_kwargs["payment_header"].startswith("{"))
+
+
+class PaymentSettleRenewalTests(unittest.TestCase):
+    def setUp(self):
+        self.wallet_address = "0x1111111111111111111111111111111111111111"
+        self.object_key = "blob.enc"
+        self.now = int(time.time())
+
+        self.payments_table = FakeDynamoTable(["wallet_address", "quote_id"])
+        self.active_table = FakeDynamoTable(["wallet_address", "object_key"])
+        self.renewal_table = FakeDynamoTable(["bucket_name", "billing_period_object_key"])
+
+        wallet_hash = hashlib.sha256(self.wallet_address.encode("utf-8")).hexdigest()[:16]
+        expected_bucket = f"mnemospark-{wallet_hash}"
+        self.active_table.put_item(
+            Item={
+                "wallet_address": self.wallet_address,
+                "object_key": self.object_key,
+                "bucket_name": expected_bucket,
+                "location": "us-east-1",
+                "storage_price": "1.25",
+                "status": "active",
+            }
+        )
+
+        self.dynamodb_resource = FakeDynamoResource(
+            {
+                "quotes-table": FakeDynamoTable(["quote_id"]),
+                "payments-table": self.payments_table,
+                "active-table": self.active_table,
+                "renewal-table": self.renewal_table,
+            }
+        )
+
+        self.fake_payment_core = FakePaymentCore()
+        self.original_payment_core = app._PAYMENT_CORE
+        app._PAYMENT_CORE = self.fake_payment_core
+
+        self.env_patch = mock.patch.dict(
+            os.environ,
+            {
+                "QUOTES_TABLE_NAME": "quotes-table",
+                "PAYMENT_LEDGER_TABLE_NAME": "payments-table",
+                "ACTIVE_STORAGE_OBJECT_TABLE_NAME": "active-table",
+                "RENEWAL_TRANSACTION_LOG_TABLE_NAME": "renewal-table",
+                "MNEMOSPARK_PAYMENT_SETTLEMENT_MODE": "mock",
+            },
+            clear=False,
+        )
+        self.env_patch.start()
+        self.resource_patch = mock.patch.object(app.boto3, "resource", return_value=self.dynamodb_resource)
+        self.resource_patch.start()
+
+        def fake_client(name, **_kwargs):
+            if name != "s3":
+                raise AssertionError(f"unexpected boto3.client({name!r})")
+            c = mock.MagicMock()
+            c.head_object.return_value = {}
+            return c
+
+        self.s3_patcher = mock.patch.object(app.boto3, "client", side_effect=fake_client)
+        self.s3_patcher.start()
+
+    def tearDown(self):
+        self.s3_patcher.stop()
+        self.resource_patch.stop()
+        self.env_patch.stop()
+        app._PAYMENT_CORE = self.original_payment_core
+
+    def _event(self, **body_updates):
+        body = {
+            "renewal": True,
+            "wallet_address": self.wallet_address,
+            "object_key": self.object_key,
+        }
+        body.update(body_updates)
+        event = {"body": json.dumps(body), "headers": {"PAYMENT-SIGNATURE": "signed-payload"}}
+        event["requestContext"] = {"authorizer": {"walletAddress": self.wallet_address}}
+        return event
+
+    def test_renewal_success_writes_renewal_row(self):
+        response = app.lambda_handler(self._event(), None)
+        self.assertEqual(response["statusCode"], 200)
+        body = json.loads(response["body"])
+        self.assertTrue(body.get("renewal"))
+        self.assertEqual(body.get("object_key"), self.object_key)
+        self.assertEqual(len(self.renewal_table.items), 1)
 
 
 if __name__ == "__main__":

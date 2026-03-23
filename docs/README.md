@@ -14,7 +14,7 @@ of the supported API surface documented here.
 The current internet-facing API Gateway routes are:
 
 - `POST /price-storage`
-- `POST /payment/settle`
+- `POST /payment/settle` (quote settlement after price-storage, or monthly **renewal** without a new quote; see [payment-settle.md](payment-settle.md))
 - `POST /storage/upload`
 - `POST /storage/upload/confirm`
 - `GET /storage/ls`
@@ -26,7 +26,9 @@ The current internet-facing API Gateway routes are:
 
 There are no additional public routes at this time; scheduled/internal functions
 (for example storage housekeeping and [Base relayer monitoring](base-relayer-monitoring.md))
-are not part of the public API contract.
+are not part of the public API contract. When housekeeping runs in **renewal calendar**
+mode, it enforces payment by querying active inventory and renewal rows (UTC billing month),
+rather than scanning upload logs on a fixed day interval.
 
 ## Observability conventions
 
