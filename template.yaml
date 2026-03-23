@@ -547,6 +547,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:HeadBucket
+                  - s3:ListBucket
                   - s3:GetObject
                 Resource:
                   - !Sub "arn:aws:s3:::mnemospark-*"
