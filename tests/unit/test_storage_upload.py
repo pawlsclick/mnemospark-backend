@@ -558,6 +558,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
         )
         self.transaction_log_table = FakeDynamoTable(["quote_id", "trans_id"])
         self.idempotency_table = FakeDynamoTable(["idempotency_key"])
+        self.active_storage_table = FakeDynamoTable(["wallet_address", "object_key"])
         self.payments_table = FakeDynamoTable(["wallet_address", "quote_id"])
         self.payments_table.put_item(
             Item={
@@ -578,6 +579,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
                 "quotes-table": self.quotes_table,
                 "txn-table": self.transaction_log_table,
                 "idem-table": self.idempotency_table,
+                "active-storage-table": self.active_storage_table,
                 "payments-table": self.payments_table,
             }
         )
@@ -588,6 +590,7 @@ class StorageUploadLambdaTests(unittest.TestCase):
                 "QUOTES_TABLE_NAME": "quotes-table",
                 "UPLOAD_TRANSACTION_LOG_TABLE_NAME": "txn-table",
                 "UPLOAD_IDEMPOTENCY_TABLE_NAME": "idem-table",
+                "ACTIVE_STORAGE_OBJECT_TABLE_NAME": "active-storage-table",
                 "PAYMENT_LEDGER_TABLE_NAME": "payments-table",
                 "MNEMOSPARK_RECIPIENT_WALLET": "0x47D241ae97fE37186AC59894290CA1c54c060A6c",
                 "MNEMOSPARK_PAYMENT_NETWORK": "eip155:8453",

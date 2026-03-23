@@ -10,6 +10,11 @@ from unittest import mock
 
 from botocore.exceptions import ClientError
 
+_SERVICES_ROOT = Path(__file__).resolve().parents[2] / "services"
+if str(_SERVICES_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SERVICES_ROOT))
+from common.renewal_keys import billing_period_object_key  # noqa: E402
+
 
 def load_app_module():
     module_path = Path(__file__).resolve().parents[2] / "services" / "storage-housekeeping" / "app.py"
@@ -39,6 +44,13 @@ class FakeDynamoTable:
         self.items[self._key_tuple(Item)] = copy.deepcopy(Item)
         return {}
 
+    def get_item(self, Key, ConsistentRead=False):
+        del ConsistentRead
+        item = self.items.get(self._key_tuple(Key))
+        if item is None:
+            return {}
+        return {"Item": copy.deepcopy(item)}
+
     def scan(self, Limit=100, ExclusiveStartKey=None):
         keys = sorted(self.items.keys())
         start_index = 0
@@ -57,6 +69,14 @@ class FakeDynamoTable:
                 field: value for field, value in last_key
             }
         return response
+
+    def query(self, IndexName=None, KeyConditionExpression=None, ExpressionAttributeValues=None, ExclusiveStartKey=None):
+        del IndexName, KeyConditionExpression, ExclusiveStartKey
+        want = (ExpressionAttributeValues or {}).get(":s")
+        items = [
+            copy.deepcopy(row) for row in self.items.values() if row.get("status_active") == want
+        ]
+        return {"Items": items}
 
     def delete_item(self, Key):
         self.deleted_keys.append(copy.deepcopy(Key))
@@ -196,6 +216,7 @@ class StorageHousekeepingLambdaTests(unittest.TestCase):
 
         self.assertEqual(response["statusCode"], 200)
         self.assertTrue(body["success"])
+        self.assertEqual(body["housekeeping_mode"], "legacy_interval")
         self.assertEqual(body["objects_due"], 1)
         self.assertEqual(body["objects_deleted"], 1)
         self.assertEqual(body["buckets_deleted"], 1)
@@ -360,3 +381,128 @@ class StorageHousekeepingLambdaTests(unittest.TestCase):
         self.assertEqual(body["rows_confirmed"], 0)
         self.assertEqual(body["objects_due"], 0)
         self.assertEqual(body["objects_deleted"], 0)
+
+
+class RenewalCalendarHousekeepingTests(unittest.TestCase):
+    def setUp(self):
+        self.active_table = FakeDynamoTable(["wallet_address", "object_key"])
+        self.renewal_table = FakeDynamoTable(["bucket_name", "billing_period_object_key"])
+        self.dynamodb_resource = FakeDynamoResource(
+            {
+                "active-inv": self.active_table,
+                "renewal-log": self.renewal_table,
+            }
+        )
+        self.s3_client = FakeS3Client()
+        self.env_patch = mock.patch.dict(
+            os.environ,
+            {
+                "UPLOAD_TRANSACTION_LOG_TABLE_NAME": "txn-unused",
+                "ACTIVE_STORAGE_OBJECT_TABLE_NAME": "active-inv",
+                "RENEWAL_TRANSACTION_LOG_TABLE_NAME": "renewal-log",
+                "MNEMOSPARK_RECIPIENT_WALLET": "0x47D241ae97fE37186AC59894290CA1c54c060A6c",
+                "HOUSEKEEPING_MODE": "renewal_calendar",
+            },
+            clear=False,
+        )
+        self.env_patch.start()
+        self.resource_patch = mock.patch.object(app.boto3, "resource", return_value=self.dynamodb_resource)
+        self.resource_patch.start()
+        self.client_patch = mock.patch.object(app.boto3, "client", return_value=self.s3_client)
+        self.client_patch.start()
+
+    def tearDown(self):
+        self.client_patch.stop()
+        self.resource_patch.stop()
+        self.env_patch.stop()
+
+    def test_deletes_when_no_renewal_row_and_not_first_month(self):
+        now = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+        wallet = "0x1111111111111111111111111111111111111111"
+        object_key = "obj.enc"
+        bucket = app._default_bucket_name(wallet)
+        self.active_table.put_item(
+            Item={
+                "wallet_address": wallet,
+                "object_key": object_key,
+                "bucket_name": bucket,
+                "location": app.US_EAST_1_REGION,
+                "created_at": "2026-03-15T00:00:00+00:00",
+                "status": "active",
+                "status_active": "ACTIVE",
+                "active_inventory_sk": f"{bucket}#x",
+            }
+        )
+        self.s3_client.seed_object(bucket, object_key)
+
+        response = app.lambda_handler({"now": now.isoformat()}, None)
+        body = json.loads(response["body"])
+
+        self.assertEqual(response["statusCode"], 200)
+        self.assertEqual(body["housekeeping_mode"], "renewal_calendar")
+        self.assertEqual(body["objects_due"], 1)
+        self.assertEqual(body["objects_deleted"], 1)
+        self.assertEqual(body["inventory_rows_deleted"], 1)
+        self.assertEqual(len(self.active_table.items), 0)
+        self.assertIn(bucket, self.s3_client.deleted_buckets)
+
+    def test_skips_when_renewal_row_exists(self):
+        now = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+        wallet = "0x2222222222222222222222222222222222222222"
+        object_key = "paid.enc"
+        bucket = app._default_bucket_name(wallet)
+        bp_ok = billing_period_object_key("2026-04", object_key)
+        self.active_table.put_item(
+            Item={
+                "wallet_address": wallet,
+                "object_key": object_key,
+                "bucket_name": bucket,
+                "location": app.US_EAST_1_REGION,
+                "created_at": "2026-03-01T00:00:00+00:00",
+                "status": "active",
+                "status_active": "ACTIVE",
+                "active_inventory_sk": f"{bucket}#y",
+            }
+        )
+        self.renewal_table.put_item(
+            Item={
+                "bucket_name": bucket,
+                "billing_period_object_key": bp_ok,
+                "billing_period": "2026-04",
+                "object_key": object_key,
+            }
+        )
+        self.s3_client.seed_object(bucket, object_key)
+
+        response = app.lambda_handler({"now": now.isoformat()}, None)
+        body = json.loads(response["body"])
+
+        self.assertEqual(body["objects_due"], 0)
+        self.assertEqual(body["objects_deleted"], 0)
+        self.assertEqual(len(self.active_table.items), 1)
+
+    def test_first_month_grace_skips_delete(self):
+        now = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+        wallet = "0x3333333333333333333333333333333333333333"
+        object_key = "new.enc"
+        bucket = app._default_bucket_name(wallet)
+        self.active_table.put_item(
+            Item={
+                "wallet_address": wallet,
+                "object_key": object_key,
+                "bucket_name": bucket,
+                "location": app.US_EAST_1_REGION,
+                "created_at": "2026-04-01T00:00:00+00:00",
+                "status": "active",
+                "status_active": "ACTIVE",
+                "active_inventory_sk": f"{bucket}#z",
+            }
+        )
+        self.s3_client.seed_object(bucket, object_key)
+
+        response = app.lambda_handler({"now": now.isoformat()}, None)
+        body = json.loads(response["body"])
+
+        self.assertEqual(body["objects_due"], 0)
+        self.assertEqual(body["objects_deleted"], 0)
+        self.assertEqual(len(self.active_table.items), 1)

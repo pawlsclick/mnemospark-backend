@@ -1,7 +1,7 @@
 openapi: "3.2.0"
 info:
   title: mnemospark-backend API
-  version: "0.1.1"
+  version: "0.1.2"
   license:
     name: Proprietary
   description: >
@@ -61,10 +61,15 @@ paths:
   /payment/settle:
     post:
       tags: [payments]
-      summary: Verify and settle quote payment
+      summary: Verify and settle storage payment (quote or monthly renewal)
       description: >
-        Verifies EIP-712 TransferWithAuthorization payloads and settles payment in
-        mock or on-chain mode, then stores a durable payment ledger record.
+        Two modes: (1) **Quote settlement** after price-storage: requires `quote_id`
+        and a valid quote row. (2) **Monthly renewal**: `renewal: true` and
+        `object_key`; uses active storage inventory for price and S3 head check;
+        writes `RENEWAL_TRANSACTION_LOG` with a synthetic ledger `quote_id`
+        `renewal#YYYY-MM#<url_safe_object_key>` (UTC month). Both modes use the same
+        x402 / EIP-712 flow. Errors may include `renewal_not_registered` or
+        `object_not_in_storage` (404) for renewal mode.
       operationId: postPaymentSettle
       security:
         - walletProof: []
@@ -580,15 +585,15 @@ components:
         location:
           type: string
 
-    PaymentSettleRequest:
+    PaymentSettleQuoteRequest:
       type: object
       required:
-        - quote_id
         - wallet_address
+        - quote_id
       properties:
-        quote_id:
-          type: string
         wallet_address:
+          type: string
+        quote_id:
           type: string
         payment:
           type: object
@@ -598,6 +603,31 @@ components:
             - type: object
             - type: string
           description: Alternate inline payment authorization envelope.
+
+    PaymentSettleRenewalRequest:
+      type: object
+      required:
+        - wallet_address
+        - renewal
+        - object_key
+      properties:
+        wallet_address:
+          type: string
+        renewal:
+          const: true
+        object_key:
+          type: string
+        payment:
+          type: object
+        payment_authorization:
+          oneOf:
+            - type: object
+            - type: string
+
+    PaymentSettleRequest:
+      oneOf:
+        - $ref: "#/components/schemas/PaymentSettleQuoteRequest"
+        - $ref: "#/components/schemas/PaymentSettleRenewalRequest"
 
     UploadConfirmRequest:
       type: object
@@ -730,6 +760,7 @@ components:
       properties:
         quote_id:
           type: string
+          description: Upload quote UUID or synthetic renewal id for the payment ledger.
         wallet_address:
           type: string
         trans_id:
@@ -745,6 +776,17 @@ components:
           enum: [confirmed]
         timestamp:
           type: string
+        result:
+          type: string
+          enum: [already_settled]
+          description: Present on idempotent retries (quote or renewal log duplicate).
+        renewal:
+          type: boolean
+        object_key:
+          type: string
+        billing_period:
+          type: string
+          description: UTC YYYY-MM for renewal responses.
 
     StorageLsStatResponse:
       type: object

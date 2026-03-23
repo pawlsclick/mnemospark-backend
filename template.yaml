@@ -64,7 +64,23 @@ Parameters:
   HousekeepingScheduleExpression:
     Type: String
     Default: rate(1 day)
-    Description: EventBridge schedule expression for storage housekeeping
+    Description: >
+      EventBridge schedule for storage housekeeping. Use rate(1 day) with
+      HousekeepingMode legacy_interval. For renewal_calendar use cron(0 12 3 * ? *)
+      (3rd of month, 12:00 UTC).
+  HousekeepingMode:
+    Type: String
+    Default: legacy_interval
+    AllowedValues:
+      - legacy_interval
+      - renewal_calendar
+    Description: >
+      legacy_interval: 32-day scan of upload transaction log (default schedule rate(1 day)).
+      renewal_calendar: require monthly renewal row; pair with cron on day 3 UTC.
+  HousekeepingRenewalCheckHourUtc:
+    Type: Number
+    Default: 12
+    Description: Hour (0-23 UTC) for renewal_calendar description only; encode in cron expression.
   HousekeepingBillingIntervalDays:
     Type: Number
     Default: 30
@@ -206,6 +222,70 @@ Resources:
           KeyType: HASH
         - AttributeName: quote_id
           KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  ActiveStorageObjectTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-active-storage-objects"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: wallet_address
+          AttributeType: S
+        - AttributeName: object_key
+          AttributeType: S
+        - AttributeName: status_active
+          AttributeType: S
+        - AttributeName: active_inventory_sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: wallet_address
+          KeyType: HASH
+        - AttributeName: object_key
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GsiActiveInventory
+          KeySchema:
+            - AttributeName: status_active
+              KeyType: HASH
+            - AttributeName: active_inventory_sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  RenewalTransactionLogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-renewal-transaction-log"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: bucket_name
+          AttributeType: S
+        - AttributeName: billing_period_object_key
+          AttributeType: S
+        - AttributeName: billing_period
+          AttributeType: S
+        - AttributeName: wallet_period_sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: bucket_name
+          KeyType: HASH
+        - AttributeName: billing_period_object_key
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GsiRenewalsByPeriodWallet
+          KeySchema:
+            - AttributeName: billing_period
+              KeyType: HASH
+            - AttributeName: wallet_period_sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
       Tags:
         - Key: Project
           Value: mnemospark
@@ -369,6 +449,16 @@ Resources:
                 Action:
                   - dynamodb:GetItem
                 Resource: !GetAtt PaymentLedgerTable.Arn
+        - PolicyName: upload-dynamodb-active-storage-object
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt ActiveStorageObjectTable.Arn
         - PolicyName: upload-s3-storage-write
           PolicyDocument:
             Version: "2012-10-17"
@@ -450,6 +540,28 @@ Resources:
                 Action:
                   - dynamodb:PutItem
                 Resource: !GetAtt RelayerTransactionsTable.Arn
+        - PolicyName: payment-settle-renewal-s3-head
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:HeadBucket
+                  - s3:HeadObject
+                Resource:
+                  - !Sub "arn:aws:s3:::mnemospark-*"
+                  - !Sub "arn:aws:s3:::mnemospark-*/*"
+        - PolicyName: payment-settle-renewal-dynamodb
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource:
+                  - !GetAtt ActiveStorageObjectTable.Arn
+                  - !GetAtt RenewalTransactionLogTable.Arn
       Tags:
         - Key: Project
           Value: mnemospark
@@ -685,13 +797,19 @@ Resources:
         PaymentSettleRequest:
           type: object
           required:
-            - quote_id
             - wallet_address
           properties:
-            quote_id:
-              type: string
             wallet_address:
               type: string
+            quote_id:
+              type: string
+              description: Required for quote settlement; omit for renewal mode.
+            object_key:
+              type: string
+              description: Required when renewal is true.
+            renewal:
+              type: boolean
+              description: When true, settle monthly renewal without QUOTES_TABLE (Lambda validates).
             payment:
               type: object
               description: Inline payment authorization payload.
@@ -748,6 +866,7 @@ Resources:
           MNEMOSPARK_PAYMENT_ASSET: !Ref PaymentAssetAddress
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
+          ACTIVE_STORAGE_OBJECT_TABLE_NAME: !Ref ActiveStorageObjectTable
       Events:
         StorageUploadPost:
           Type: Api
@@ -793,6 +912,7 @@ Resources:
           MNEMOSPARK_PAYMENT_ASSET: !Ref PaymentAssetAddress
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
+          ACTIVE_STORAGE_OBJECT_TABLE_NAME: !Ref ActiveStorageObjectTable
       Events:
         StorageUploadConfirmPost:
           Type: Api
@@ -837,6 +957,8 @@ Resources:
           RELAYER_TRANSACTIONS_TABLE_NAME: !Ref RelayerTransactionsTable
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
+          ACTIVE_STORAGE_OBJECT_TABLE_NAME: !Ref ActiveStorageObjectTable
+          RENEWAL_TRANSACTION_LOG_TABLE_NAME: !Ref RenewalTransactionLogTable
       Events:
         PaymentSettlePost:
           Type: Api
@@ -994,6 +1116,7 @@ Resources:
         Variables:
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
+          ACTIVE_STORAGE_OBJECT_TABLE_NAME: !Ref ActiveStorageObjectTable
       Events:
         StorageDeleteDelete:
           Type: Api
@@ -1043,6 +1166,11 @@ Resources:
               Action:
                 - dynamodb:PutItem
               Resource: !GetAtt ApiCallsTable.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:DeleteItem
+              Resource: !GetAtt ActiveStorageObjectTable.Arn
 
   StorageHousekeepingFunction:
     Type: AWS::Serverless::Function
@@ -1052,10 +1180,14 @@ Resources:
       Environment:
         Variables:
           UPLOAD_TRANSACTION_LOG_TABLE_NAME: !Ref UploadTransactionLogTable
+          ACTIVE_STORAGE_OBJECT_TABLE_NAME: !Ref ActiveStorageObjectTable
+          RENEWAL_TRANSACTION_LOG_TABLE_NAME: !Ref RenewalTransactionLogTable
           MNEMOSPARK_RECIPIENT_WALLET: !Ref MnemosparkRecipientWallet
+          HOUSEKEEPING_MODE: !Ref HousekeepingMode
           HOUSEKEEPING_BILLING_INTERVAL_DAYS: !Ref HousekeepingBillingIntervalDays
           HOUSEKEEPING_GRACE_PERIOD_DAYS: !Ref HousekeepingGracePeriodDays
           HOUSEKEEPING_DRY_RUN: !Ref HousekeepingDryRun
+          HOUSEKEEPING_RENEWAL_CHECK_HOUR_UTC: !Ref HousekeepingRenewalCheckHourUtc
       Policies:
         - Version: "2012-10-17"
           Statement:
@@ -1064,6 +1196,20 @@ Resources:
                 - dynamodb:Scan
                 - dynamodb:DeleteItem
               Resource: !GetAtt UploadTransactionLogTable.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+                - dynamodb:DeleteItem
+              Resource:
+                - !GetAtt ActiveStorageObjectTable.Arn
+                - !Sub "${ActiveStorageObjectTable.Arn}/index/*"
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource:
+                - !GetAtt RenewalTransactionLogTable.Arn
+                - !Sub "${RenewalTransactionLogTable.Arn}/index/*"
             - Effect: Allow
               Action:
                 - s3:ListBucket
@@ -1079,7 +1225,9 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub "${AWS::StackName}-storage-housekeeping"
-      Description: Deletes overdue storage objects after 30-day billing plus 2-day grace.
+      Description: >
+        legacy_interval: upload-log scan (default rate(1 day)). renewal_calendar: set
+        HousekeepingScheduleExpression to day-3 UTC cron and HOUSEKEEPING_MODE=renewal_calendar.
       ScheduleExpression: !Ref HousekeepingScheduleExpression
       State: ENABLED
       Targets:
