@@ -58,6 +58,23 @@ except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from common.renewal_keys import ACTIVE_STORAGE_GSI_PARTITION, active_inventory_sk
 
+try:
+    from common.storage_bucket_region import (
+        BucketRegionMismatchError,
+        enforce_requested_matches_bucket_home,
+        resolve_bucket_home_region,
+    )
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.storage_bucket_region import (
+        BucketRegionMismatchError,
+        enforce_requested_matches_bucket_home,
+        resolve_bucket_home_region,
+    )
+
 
 log_api_call = load_log_api_call(emit_warning=True, logger=logging.getLogger(__name__))
 
@@ -452,8 +469,7 @@ def _validate_bucket_name(name: str) -> None:
 
 def _ensure_bucket_exists(s3_client: Any, bucket_name: str, location: str) -> None:
     try:
-        s3_client.head_bucket(Bucket=bucket_name)
-        return
+        head_resp = s3_client.head_bucket(Bucket=bucket_name)
     except ClientError as exc:
         error_code = exc.response.get("Error", {}).get("Code", "")
         # Treat 400/BadRequest the same as 404-style "bucket does not exist" responses so we
@@ -466,6 +482,10 @@ def _ensure_bucket_exists(s3_client: Any, bucket_name: str, location: str) -> No
                     bucket_name,
                 )
             raise
+    else:
+        bucket_home = resolve_bucket_home_region(s3_client, bucket_name, head_resp)
+        enforce_requested_matches_bucket_home(location, bucket_home)
+        return
 
     normalized_location = (location or "").strip()
     # S3 CreateBucket for [REDACTED] must omit LocationConstraint.
@@ -2232,6 +2252,39 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         return _error_response(403, "forbidden", str(exc))
 
+    except BucketRegionMismatchError as exc:
+        _log_event(
+            logging.WARNING,
+            "upload_request_bucket_region_mismatch",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            quote_id=request.quote_id if request else None,
+            wallet_address=request.wallet_address if request else None,
+            requested_region=exc.requested_region,
+            bucket_region=exc.bucket_home_region,
+        )
+        if idempotency_lock_acquired and idempotency_table and idempotency_key:
+            _release_idempotency_lock(idempotency_table, idempotency_key)
+        _log_api_call_result(
+            event,
+            context,
+            route="/storage/upload",
+            status_code=400,
+            result="bad_request",
+            error_code="bucket_region_mismatch",
+            error_message=str(exc),
+            request=request,
+        )
+        return _error_response(
+            400,
+            "bucket_region_mismatch",
+            str(exc),
+            details={
+                "requested_region": exc.requested_region,
+                "bucket_region": exc.bucket_home_region,
+            },
+        )
+
     except BadRequestError as exc:
         _log_event(
             logging.WARNING,
@@ -2471,6 +2524,16 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
         bucket_name = _bucket_name(request.wallet_address)
         s3_client = boto3.client("s3", region_name=quote_context.location)
         try:
+            head_resp = s3_client.head_bucket(Bucket=bucket_name)
+        except ClientError as hb_exc:
+            hb_code = hb_exc.response.get("Error", {}).get("Code", "")
+            if hb_code not in {"404", "NotFound", "NoSuchBucket", "400", "BadRequest"}:
+                raise
+        else:
+            bucket_home = resolve_bucket_home_region(s3_client, bucket_name, head_resp)
+            enforce_requested_matches_bucket_home(quote_context.location, bucket_home)
+
+        try:
             s3_client.head_object(Bucket=bucket_name, Key=request.object_key)
         except ClientError as exc:
             error_code = exc.response.get("Error", {}).get("Code")
@@ -2612,6 +2675,36 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
             request=request,
         )
         return _error_response(403, "forbidden", str(exc))
+    except BucketRegionMismatchError as exc:
+        _log_event(
+            logging.WARNING,
+            "confirm_upload_bucket_region_mismatch",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            quote_id=request.quote_id if request else None,
+            wallet_address=request.wallet_address if request else None,
+            requested_region=exc.requested_region,
+            bucket_region=exc.bucket_home_region,
+        )
+        _log_api_call_result(
+            event,
+            context,
+            route="/storage/upload/confirm",
+            status_code=400,
+            result="bad_request",
+            error_code="bucket_region_mismatch",
+            error_message=str(exc),
+            request=request,
+        )
+        return _error_response(
+            400,
+            "bucket_region_mismatch",
+            str(exc),
+            details={
+                "requested_region": exc.requested_region,
+                "bucket_region": exc.bucket_home_region,
+            },
+        )
     except BadRequestError as exc:
         _log_api_call_result(
             event,

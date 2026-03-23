@@ -31,6 +31,11 @@ try:
         request_path,
         sanitize_error_message,
     )
+    from common.storage_bucket_region import (
+        BucketRegionMismatchError,
+        enforce_requested_matches_bucket_home,
+        resolve_bucket_home_region,
+    )
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
@@ -43,6 +48,11 @@ except ModuleNotFoundError:
         request_method,
         request_path,
         sanitize_error_message,
+    )
+    from common.storage_bucket_region import (
+        BucketRegionMismatchError,
+        enforce_requested_matches_bucket_home,
+        resolve_bucket_home_region,
     )
 
 
@@ -267,7 +277,7 @@ def generate_download_url(request: ParsedDownloadRequest, s3_client: Any | None 
     bucket_name = _bucket_name(request.wallet_address)
 
     try:
-        s3_client.head_bucket(Bucket=bucket_name)
+        head_resp = s3_client.head_bucket(Bucket=bucket_name)
     except ClientError as exc:
         if _is_not_found_error(exc):
             raise NotFoundError(
@@ -276,6 +286,8 @@ def generate_download_url(request: ParsedDownloadRequest, s3_client: Any | None 
                 details=_error_message(exc),
             ) from exc
         raise
+    bucket_home = resolve_bucket_home_region(s3_client, bucket_name, head_resp)
+    enforce_requested_matches_bucket_home(request.location, bucket_home)
 
     try:
         s3_client.head_object(Bucket=bucket_name, Key=request.object_key)
@@ -359,6 +371,40 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             object_key=request.object_key if request else None,
         )
         return _error_response(403, "forbidden", str(exc))
+    except BucketRegionMismatchError as exc:
+        _log_event(
+            logging.WARNING,
+            "storage_download_bucket_region_mismatch",
+            request_id=_request_id(event, context),
+            method=_request_method(event),
+            path=_request_path(event),
+            status=400,
+            error_code="bucket_region_mismatch",
+            error_message=_sanitize_error_message(str(exc)),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+            requested_region=exc.requested_region,
+            bucket_region=exc.bucket_home_region,
+        )
+        _log_api_call_result(
+            event,
+            context,
+            status_code=400,
+            result="bad_request",
+            error_code="bucket_region_mismatch",
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
+        return _error_response(
+            400,
+            "bucket_region_mismatch",
+            str(exc),
+            details={
+                "requested_region": exc.requested_region,
+                "bucket_region": exc.bucket_home_region,
+            },
+        )
     except BadRequestError as exc:
         _log_event(
             logging.WARNING,

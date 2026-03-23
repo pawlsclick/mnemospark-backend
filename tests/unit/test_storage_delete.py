@@ -24,9 +24,10 @@ app = load_app_module()
 
 
 class FakeS3Client:
-    def __init__(self):
+    def __init__(self, *, bucket_home_region=None):
         self.buckets: dict[str, set[str]] = {}
         self.deleted_buckets: list[str] = []
+        self.bucket_home_region = bucket_home_region or app.DEFAULT_LOCATION
 
     def seed_object(self, bucket: str, key: str):
         self.buckets.setdefault(bucket, set()).add(key)
@@ -37,7 +38,11 @@ class FakeS3Client:
                 {"Error": {"Code": "404", "Message": "bucket missing"}},
                 "HeadBucket",
             )
-        return {}
+        return {"BucketRegion": self.bucket_home_region}
+
+    def get_bucket_location(self, Bucket):
+        r = self.bucket_home_region
+        return {"LocationConstraint": None if r == "us-east-1" else r}
 
     def head_object(self, Bucket, Key):
         keys = self.buckets.get(Bucket)
@@ -298,4 +303,34 @@ class StorageDeleteLambdaTests(unittest.TestCase):
         body = json.loads(response["body"])
         self.assertEqual(body["error"], "forbidden")
         self.assertIn("wallet_address does not match authorized wallet", body["message"])
+
+    def test_bucket_region_mismatch_returns_400(self):
+        wallet_address = "0xcccccccccccccccccccccccccccccccccccccccc"
+        object_key = "x.bin"
+        bucket = app._bucket_name(wallet_address)
+        s3_client = FakeS3Client(bucket_home_region="eu-west-1")
+        s3_client.seed_object(bucket, object_key)
+
+        event = {
+            "httpMethod": "DELETE",
+            "queryStringParameters": {
+                "wallet_address": wallet_address,
+                "object_key": object_key,
+                "location": "us-west-2",
+            },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": wallet_address,
+                }
+            },
+        }
+
+        with mock.patch.object(app.boto3, "client", return_value=s3_client):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 400)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "bucket_region_mismatch")
+        self.assertEqual(body["details"]["bucket_region"], "eu-west-1")
+        self.assertEqual(body["details"]["requested_region"], "us-west-2")
 

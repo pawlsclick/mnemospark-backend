@@ -37,12 +37,22 @@ from botocore.exceptions import ClientError
 
 try:
     from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
+    from common.storage_bucket_region import (
+        BucketRegionMismatchError,
+        enforce_requested_matches_bucket_home,
+        resolve_bucket_home_region,
+    )
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
+    from common.storage_bucket_region import (
+        BucketRegionMismatchError,
+        enforce_requested_matches_bucket_home,
+        resolve_bucket_home_region,
+    )
 
 
 log_api_call = load_log_api_call()
@@ -240,13 +250,15 @@ def _error_code(exc: ClientError) -> str:
     return exc.response.get("Error", {}).get("Code", "")
 
 
-def _assert_bucket_access(s3_client: Any, bucket_name: str) -> None:
+def _assert_bucket_access(s3_client: Any, bucket_name: str, requested_location: str) -> None:
     try:
-        s3_client.head_bucket(Bucket=bucket_name)
+        head_resp = s3_client.head_bucket(Bucket=bucket_name)
     except ClientError as exc:
         if _error_code(exc) in NOT_FOUND_S3_ERROR_CODES:
             raise NotFoundError("bucket_not_found", "Bucket not found for this wallet") from exc
         raise
+    bucket_home = resolve_bucket_home_region(s3_client, bucket_name, head_resp)
+    enforce_requested_matches_bucket_home(requested_location, bucket_home)
 
 
 def _get_object_size(s3_client: Any, bucket_name: str, object_key: str) -> int:
@@ -382,7 +394,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         except ValueError as exc:
             raise BadRequestError(str(exc)) from exc
 
-        _assert_bucket_access(s3_client, bucket_name)
+        _assert_bucket_access(s3_client, bucket_name, request.location)
 
         if request.list_mode:
             list_resp = _list_objects(
@@ -488,6 +500,36 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             object_key=request.object_key if request else None,
         )
         return _error_response(403, "forbidden", str(exc))
+    except BucketRegionMismatchError as exc:
+        _log_event(
+            logging.WARNING,
+            "storage_ls_bucket_region_mismatch",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+            requested_region=exc.requested_region,
+            bucket_region=exc.bucket_home_region,
+        )
+        _log_api_call_result(
+            event,
+            context,
+            status_code=400,
+            result="bad_request",
+            error_code="bucket_region_mismatch",
+            error_message=str(exc),
+            wallet_address=request.wallet_address if request else None,
+            object_key=request.object_key if request else None,
+        )
+        return _error_response(
+            400,
+            "bucket_region_mismatch",
+            str(exc),
+            details={
+                "requested_region": exc.requested_region,
+                "bucket_region": exc.bucket_home_region,
+            },
+        )
     except BadRequestError as exc:
         _log_event(
             logging.WARNING,
