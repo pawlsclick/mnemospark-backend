@@ -30,6 +30,12 @@ from botocore.exceptions import ClientError
 
 try:
     from common.log_api_call_loader import load_log_api_call
+    from common.renewal_keys import (
+        billing_period_object_key,
+        billing_period_utc,
+        synthetic_renewal_quote_id,
+        wallet_period_sk,
+    )
     from common.request_log_utils import (
         build_log_event,
         request_id,
@@ -42,6 +48,12 @@ except ModuleNotFoundError:
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from common.log_api_call_loader import load_log_api_call
+    from common.renewal_keys import (
+        billing_period_object_key,
+        billing_period_utc,
+        synthetic_renewal_quote_id,
+        wallet_period_sk,
+    )
     from common.request_log_utils import (
         build_log_event,
         request_id,
@@ -61,6 +73,8 @@ _request_method = request_method
 ROUTE_PATH = "/payment/settle"
 QUOTES_TABLE_ENV = "QUOTES_TABLE_NAME"
 PAYMENT_LEDGER_TABLE_ENV = "PAYMENT_LEDGER_TABLE_NAME"
+ACTIVE_STORAGE_OBJECT_TABLE_ENV = "ACTIVE_STORAGE_OBJECT_TABLE_NAME"
+RENEWAL_TRANSACTION_LOG_TABLE_ENV = "RENEWAL_TRANSACTION_LOG_TABLE_NAME"
 MAX_LOG_ERROR_MESSAGE_LENGTH = 512
 _request_path = partial(request_path, default_path=ROUTE_PATH)
 
@@ -92,9 +106,11 @@ class PaymentRequiredError(Exception):
 
 @dataclass(frozen=True)
 class ParsedPaymentSettleRequest:
-    quote_id: str
     wallet_address: str
     payment_header: str | None
+    renewal: bool
+    quote_id: str
+    object_key: str | None
 
 
 @dataclass(frozen=True)
@@ -274,12 +290,27 @@ def _extract_inline_payment_header(params: dict[str, Any]) -> str | None:
     return None
 
 
-def parse_input(event: dict[str, Any]) -> ParsedPaymentSettleRequest:
+def parse_input(event: dict[str, Any], *, now_ts: int | None = None) -> ParsedPaymentSettleRequest:
     params = _decode_event_body(event)
     headers = _normalize_headers(event.get("headers"))
-
-    quote_id = _require_string_field(params, "quote_id")
     wallet_address = _normalize_address(_require_string_field(params, "wallet_address"), "wallet_address")
+
+    renewal_raw = params.get("renewal")
+    is_renewal = renewal_raw is True
+    if renewal_raw is not None and renewal_raw is not False and not is_renewal:
+        raise BadRequestError("renewal must be true or omitted")
+
+    if now_ts is None:
+        now_ts = int(time.time())
+    if is_renewal:
+        if params.get("quote_id") is not None:
+            raise BadRequestError("quote_id must not be sent when renewal is true")
+        object_key = _require_string_field(params, "object_key")
+        billing_period = billing_period_utc(now_ts)
+        quote_id = synthetic_renewal_quote_id(billing_period, object_key)
+    else:
+        quote_id = _require_string_field(params, "quote_id")
+        object_key = None
 
     payment_header: str | None = None
     payment_core = _payment_core()
@@ -292,9 +323,11 @@ def parse_input(event: dict[str, Any]) -> ParsedPaymentSettleRequest:
         payment_header = _extract_inline_payment_header(params)
 
     return ParsedPaymentSettleRequest(
-        quote_id=quote_id,
         wallet_address=wallet_address,
         payment_header=payment_header,
+        renewal=is_renewal,
+        quote_id=quote_id,
+        object_key=object_key,
     )
 
 
@@ -303,6 +336,24 @@ def _require_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"{name} environment variable is required")
     return value
+
+
+def _quote_context_from_storage_price_and_item(storage_price: Decimal, item: dict[str, Any]) -> QuoteContext:
+    payment_core = _payment_core()
+    storage_price_micro = int(
+        (storage_price * payment_core.USDC_DECIMALS).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    )
+
+    provider = str(item.get("provider") or "aws").strip() or "aws"
+    default_location = "us-" + "east-1"
+    location = str(item.get("location") or item.get("region") or default_location).strip() or default_location
+
+    return QuoteContext(
+        storage_price=storage_price,
+        storage_price_micro=storage_price_micro,
+        provider=provider,
+        location=location,
+    )
 
 
 def _build_quote_context(quote_item: dict[str, Any] | None, request: ParsedPaymentSettleRequest, now: int) -> QuoteContext:
@@ -326,20 +377,80 @@ def _build_quote_context(quote_item: dict[str, Any] | None, request: ParsedPayme
     if storage_price <= 0:
         raise BadRequestError("quote.storage_price must be greater than 0")
 
-    payment_core = _payment_core()
-    storage_price_micro = int(
-        (storage_price * payment_core.USDC_DECIMALS).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-    )
+    return _quote_context_from_storage_price_and_item(storage_price, quote_item)
 
-    provider = str(quote_item.get("provider") or "aws").strip() or "aws"
-    default_location = "us-" + "east-1"
-    location = str(quote_item.get("location") or quote_item.get("region") or default_location).strip() or default_location
 
-    return QuoteContext(
-        storage_price=storage_price,
-        storage_price_micro=storage_price_micro,
-        provider=provider,
-        location=location,
+def _quote_context_from_active_inventory(
+    item: dict[str, Any] | None,
+    *,
+    wallet_address: str,
+    object_key: str,
+    expected_bucket: str,
+) -> QuoteContext:
+    if not item:
+        raise NotFoundError("renewal_not_registered")
+    status = str(item.get("status") or "").strip().lower()
+    if status != "active":
+        raise NotFoundError("renewal_not_registered")
+    row_key = str(item.get("object_key") or "").strip()
+    if row_key != object_key:
+        raise NotFoundError("renewal_not_registered")
+    bucket = str(item.get("bucket_name") or "").strip()
+    if bucket != expected_bucket:
+        raise NotFoundError("renewal_not_registered")
+
+    storage_price = _coerce_decimal(item.get("storage_price"), "inventory.storage_price")
+    if storage_price <= 0:
+        raise BadRequestError("inventory.storage_price must be greater than 0")
+
+    return _quote_context_from_storage_price_and_item(storage_price, item)
+
+
+def _head_object_or_not_found(s3_client: Any, bucket_name: str, object_key: str) -> None:
+    try:
+        s3_client.head_object(Bucket=bucket_name, Key=object_key)
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        if code in {"404", "NotFound", "NoSuchKey", "NoSuchBucket"}:
+            raise NotFoundError("object_not_in_storage") from exc
+        raise
+
+
+def _put_renewal_transaction_log(
+    renewal_table: Any,
+    *,
+    bucket_name: str,
+    object_key: str,
+    billing_period: str,
+    wallet_address: str,
+    recipient_wallet: str,
+    trans_id: str,
+    amount_micro: int,
+    amount_str: str,
+    network: str,
+    asset: str,
+    paid_at_iso: str,
+) -> None:
+    bp_ok = billing_period_object_key(billing_period, object_key)
+    wpsk = wallet_period_sk(wallet_address, object_key)
+    asset_lower = asset.lower() if isinstance(asset, str) else str(asset)
+    renewal_table.put_item(
+        Item={
+            "bucket_name": bucket_name,
+            "billing_period_object_key": bp_ok,
+            "object_key": object_key,
+            "billing_period": billing_period,
+            "paid_at": paid_at_iso,
+            "wallet_address": wallet_address,
+            "recipient_wallet": recipient_wallet,
+            "trans_id": trans_id,
+            "amount_micro": amount_micro,
+            "amount": amount_str,
+            "network": network,
+            "asset": asset_lower,
+            "wallet_period_sk": wpsk,
+        },
+        ConditionExpression="attribute_not_exists(billing_period_object_key)",
     )
 
 
@@ -495,7 +606,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     try:
         now = int(time.time())
-        request = parse_input(event)
+        request = parse_input(event, now_ts=now)
         _require_authorized_wallet(event, request.wallet_address)
         _log_event(
             logging.INFO,
@@ -508,11 +619,31 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
 
         dynamodb = boto3.resource("dynamodb")
-        quotes_table = dynamodb.Table(_require_env(QUOTES_TABLE_ENV))
         payments_table = dynamodb.Table(_require_env(PAYMENT_LEDGER_TABLE_ENV))
+        renewal_table: Any | None = None
 
-        quote_resp = quotes_table.get_item(Key={"quote_id": request.quote_id}, ConsistentRead=True)
-        quote_context = _build_quote_context(quote_resp.get("Item"), request=request, now=now)
+        if request.renewal:
+            if not request.object_key:
+                raise BadRequestError("object_key is required")
+            active_table = dynamodb.Table(_require_env(ACTIVE_STORAGE_OBJECT_TABLE_ENV))
+            renewal_table = dynamodb.Table(_require_env(RENEWAL_TRANSACTION_LOG_TABLE_ENV))
+            expected_bucket = payment_core._bucket_name(request.wallet_address)
+            inv = active_table.get_item(
+                Key={"wallet_address": request.wallet_address, "object_key": request.object_key},
+                ConsistentRead=True,
+            ).get("Item")
+            quote_context = _quote_context_from_active_inventory(
+                inv,
+                wallet_address=request.wallet_address,
+                object_key=request.object_key,
+                expected_bucket=expected_bucket,
+            )
+            s3_client = boto3.client("s3", region_name=quote_context.location)
+            _head_object_or_not_found(s3_client, expected_bucket, request.object_key)
+        else:
+            quotes_table = dynamodb.Table(_require_env(QUOTES_TABLE_ENV))
+            quote_resp = quotes_table.get_item(Key={"quote_id": request.quote_id}, ConsistentRead=True)
+            quote_context = _build_quote_context(quote_resp.get("Item"), request=request, now=now)
 
         payment_config = payment_core._payment_config()
         requirements = payment_core._payment_requirements(quote_context, payment_config)
@@ -558,7 +689,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         ledger_claimed = False
 
-        response_body = {
+        response_body: dict[str, Any] = {
             "quote_id": request.quote_id,
             "wallet_address": request.wallet_address,
             "trans_id": payment_result.trans_id,
@@ -568,6 +699,44 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "payment_status": "confirmed",
             "timestamp": datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         }
+        if request.renewal and request.object_key and renewal_table is not None:
+            billing_period = billing_period_utc(now)
+            expected_bucket = payment_core._bucket_name(request.wallet_address)
+            paid_at_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+            bp_ok = billing_period_object_key(billing_period, request.object_key)
+            try:
+                _put_renewal_transaction_log(
+                    renewal_table,
+                    bucket_name=expected_bucket,
+                    object_key=request.object_key,
+                    billing_period=billing_period,
+                    wallet_address=request.wallet_address,
+                    recipient_wallet=payment_config["recipient_wallet"],
+                    trans_id=payment_result.trans_id,
+                    amount_micro=quote_context.storage_price_micro,
+                    amount_str=str(payment_result.amount),
+                    network=payment_result.network,
+                    asset=payment_result.asset,
+                    paid_at_iso=paid_at_iso,
+                )
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                existing_renewal = (
+                    renewal_table.get_item(
+                        Key={"bucket_name": expected_bucket, "billing_period_object_key": bp_ok},
+                        ConsistentRead=True,
+                    ).get("Item")
+                    or {}
+                )
+                response_body["result"] = "already_settled"
+                if existing_renewal.get("trans_id"):
+                    response_body["trans_id"] = str(existing_renewal["trans_id"])
+            if request.renewal and request.object_key:
+                response_body["renewal"] = True
+                response_body["object_key"] = request.object_key
+                response_body["billing_period"] = billing_period
+
         _log_event(
             logging.INFO,
             "payment_settlement_succeeded",
@@ -611,17 +780,27 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             error_message=str(exc),
         )
         return _error_response(400, "Bad request", str(exc))
-    except NotFoundError:
+    except NotFoundError as exc:
+        code = str(exc)
+        if code == "renewal_not_registered":
+            err = "renewal_not_registered"
+            msg = "No active inventory record for this wallet and object_key"
+        elif code == "object_not_in_storage":
+            err = "object_not_in_storage"
+            msg = "Object not found in storage for this wallet"
+        else:
+            err = "quote_not_found"
+            msg = "Quote not found or expired"
         _log_api_call_result(
             event,
             context,
             status_code=404,
             result="not_found",
             request=request,
-            error_code="quote_not_found",
-            error_message="Quote not found or expired",
+            error_code=err,
+            error_message=msg,
         )
-        return _error_response(404, "quote_not_found", "Quote not found or expired")
+        return _error_response(404, err, msg)
     except PaymentRequiredError as exc:
         headers = payment_core._payment_required_headers(exc.requirements)
         if exc.details:
@@ -655,6 +834,48 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             except Exception:
                 existing = None
             if existing is not None:
+                if request.renewal and request.object_key and renewal_table is not None:
+                    billing_period = billing_period_utc(now)
+                    expected_bucket = payment_core._bucket_name(request.wallet_address)
+                    amount_value = existing.get("amount")
+                    amount_micro = quote_context.storage_price_micro
+                    if amount_value is not None:
+                        try:
+                            amount_micro = int(amount_value)
+                        except (TypeError, ValueError):
+                            pass
+                    paid_at_iso = existing.get("payment_received_at")
+                    if not isinstance(paid_at_iso, str) or not paid_at_iso.strip():
+                        paid_at_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+                    try:
+                        _put_renewal_transaction_log(
+                            renewal_table,
+                            bucket_name=expected_bucket,
+                            object_key=request.object_key,
+                            billing_period=billing_period,
+                            wallet_address=request.wallet_address,
+                            recipient_wallet=str(
+                                existing.get("recipient_wallet") or payment_config["recipient_wallet"]
+                            ),
+                            trans_id=str(existing.get("trans_id") or ""),
+                            amount_micro=amount_micro,
+                            amount_str=str(amount_value) if amount_value is not None else str(amount_micro),
+                            network=str(existing.get("network") or payment_config["payment_network"]),
+                            asset=str(existing.get("asset") or payment_config["payment_asset"]),
+                            paid_at_iso=paid_at_iso,
+                        )
+                    except ClientError as renewal_exc:
+                        if renewal_exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                            _log_api_call_result(
+                                event,
+                                context,
+                                status_code=500,
+                                result="internal_error",
+                                request=request,
+                                error_code="internal_error",
+                                error_message=str(renewal_exc),
+                            )
+                            return _error_response(500, "Internal error", str(renewal_exc))
                 response_body = {
                     "quote_id": request.quote_id,
                     "wallet_address": request.wallet_address,
@@ -666,6 +887,10 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     "timestamp": existing.get("timestamp"),
                     "result": "already_settled",
                 }
+                if request.renewal and request.object_key and renewal_table is not None:
+                    response_body["renewal"] = True
+                    response_body["object_key"] = request.object_key
+                    response_body["billing_period"] = billing_period_utc(now)
                 _log_api_call_result(
                     event,
                     context,

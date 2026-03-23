@@ -29,6 +29,15 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
+try:
+    from common.renewal_keys import ACTIVE_STORAGE_GSI_PARTITION, billing_period_object_key, billing_period_utc
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.renewal_keys import ACTIVE_STORAGE_GSI_PARTITION, billing_period_object_key, billing_period_utc
+
 US_EAST_1_REGION = "us-" + "east-1"
 DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
 DEFAULT_BILLING_INTERVAL_DAYS = 30
@@ -36,6 +45,9 @@ DEFAULT_GRACE_PERIOD_DAYS = 2
 DEFAULT_SCAN_LIMIT = 100
 
 TRANSACTION_LOG_TABLE_ENV = "UPLOAD_TRANSACTION_LOG_TABLE_NAME"
+ACTIVE_STORAGE_OBJECT_TABLE_ENV = "ACTIVE_STORAGE_OBJECT_TABLE_NAME"
+RENEWAL_TRANSACTION_LOG_TABLE_ENV = "RENEWAL_TRANSACTION_LOG_TABLE_NAME"
+HOUSEKEEPING_MODE_ENV = "HOUSEKEEPING_MODE"
 RECIPIENT_WALLET_ENV = "MNEMOSPARK_RECIPIENT_WALLET"
 BILLING_INTERVAL_DAYS_ENV = "HOUSEKEEPING_BILLING_INTERVAL_DAYS"
 GRACE_PERIOD_DAYS_ENV = "HOUSEKEEPING_GRACE_PERIOD_DAYS"
@@ -386,85 +398,206 @@ def _delete_transaction_rows(transaction_log_table: Any, keys: list[dict[str, An
     return deleted
 
 
-def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    del context
-    try:
-        event = event or {}
-        table_name = _require_env(TRANSACTION_LOG_TABLE_ENV)
-        recipient_wallet = _normalize_address(_require_env(RECIPIENT_WALLET_ENV), RECIPIENT_WALLET_ENV)
-        billing_interval_days = _read_int_env(BILLING_INTERVAL_DAYS_ENV, DEFAULT_BILLING_INTERVAL_DAYS)
-        grace_period_days = _read_int_env(GRACE_PERIOD_DAYS_ENV, DEFAULT_GRACE_PERIOD_DAYS, minimum=0)
-        scan_limit = _read_int_env(SCAN_LIMIT_ENV, DEFAULT_SCAN_LIMIT)
-        dry_run = _read_bool(os.environ.get(DRY_RUN_ENV)) or _read_bool(event.get("dry_run"))
+def _created_billing_period_from_inventory(item: dict[str, Any]) -> str | None:
+    parsed = _parse_timestamp(item.get("created_at"))
+    if not parsed:
+        return None
+    return billing_period_utc(int(parsed.timestamp()))
 
-        now = _parse_event_now(event)
-        deadline_days = billing_interval_days + grace_period_days
-        deadline_delta = timedelta(days=deadline_days)
 
-        dynamodb = boto3.resource("dynamodb")
-        transaction_log_table = dynamodb.Table(table_name)
-        rows = _scan_transaction_rows(transaction_log_table, scan_limit=scan_limit)
-        ledgers, counters = _build_object_ledgers(rows, expected_recipient_wallet=recipient_wallet)
+def _run_legacy_interval_housekeeping(event: dict[str, Any]) -> dict[str, Any]:
+    table_name = _require_env(TRANSACTION_LOG_TABLE_ENV)
+    recipient_wallet = _normalize_address(_require_env(RECIPIENT_WALLET_ENV), RECIPIENT_WALLET_ENV)
+    billing_interval_days = _read_int_env(BILLING_INTERVAL_DAYS_ENV, DEFAULT_BILLING_INTERVAL_DAYS)
+    grace_period_days = _read_int_env(GRACE_PERIOD_DAYS_ENV, DEFAULT_GRACE_PERIOD_DAYS, minimum=0)
+    scan_limit = _read_int_env(SCAN_LIMIT_ENV, DEFAULT_SCAN_LIMIT)
+    dry_run = _read_bool(os.environ.get(DRY_RUN_ENV)) or _read_bool(event.get("dry_run"))
 
-        s3_clients: dict[str, Any] = {}
-        objects_due = 0
-        objects_deleted = 0
-        buckets_deleted = 0
-        transaction_rows_deleted = 0
-        objects_due_details: list[dict[str, Any]] = []
+    now = _parse_event_now(event)
+    deadline_days = billing_interval_days + grace_period_days
+    deadline_delta = timedelta(days=deadline_days)
 
-        for ledger in ledgers.values():
-            deadline_at = ledger.latest_payment_at + deadline_delta
-            is_due = now > deadline_at
-            if not is_due:
+    dynamodb = boto3.resource("dynamodb")
+    transaction_log_table = dynamodb.Table(table_name)
+    rows = _scan_transaction_rows(transaction_log_table, scan_limit=scan_limit)
+    ledgers, counters = _build_object_ledgers(rows, expected_recipient_wallet=recipient_wallet)
+
+    s3_clients: dict[str, Any] = {}
+    objects_due = 0
+    objects_deleted = 0
+    buckets_deleted = 0
+    transaction_rows_deleted = 0
+    objects_due_details: list[dict[str, Any]] = []
+
+    for ledger in ledgers.values():
+        deadline_at = ledger.latest_payment_at + deadline_delta
+        is_due = now > deadline_at
+        if not is_due:
+            continue
+        objects_due += 1
+
+        detail = {
+            "wallet_address": ledger.identity.wallet_address,
+            "bucket_name": ledger.identity.bucket_name,
+            "object_key": ledger.identity.object_key,
+            "location": ledger.identity.location,
+            "latest_payment_at": ledger.latest_payment_at.isoformat(),
+            "deadline_at": deadline_at.isoformat(),
+        }
+        objects_due_details.append(detail)
+
+        if dry_run:
+            continue
+
+        s3_client = s3_clients.get(ledger.identity.location)
+        if s3_client is None:
+            s3_client = boto3.client("s3", region_name=ledger.identity.location)
+            s3_clients[ledger.identity.location] = s3_client
+
+        object_deleted, bucket_deleted = _cleanup_s3_for_object(
+            s3_client=s3_client,
+            identity=ledger.identity,
+        )
+        if object_deleted:
+            objects_deleted += 1
+        if bucket_deleted:
+            buckets_deleted += 1
+
+        transaction_rows_deleted += _delete_transaction_rows(transaction_log_table, ledger.transaction_keys)
+
+    return {
+        "success": True,
+        "housekeeping_mode": "legacy_interval",
+        "dry_run": dry_run,
+        "recipient_wallet": recipient_wallet,
+        "billing_interval_days": billing_interval_days,
+        "grace_period_days": grace_period_days,
+        "deadline_days": deadline_days,
+        "now": now.isoformat(),
+        "objects_evaluated": len(ledgers),
+        "objects_due": objects_due,
+        "objects_deleted": objects_deleted,
+        "buckets_deleted": buckets_deleted,
+        "transaction_rows_deleted": transaction_rows_deleted,
+        "objects_due_details": objects_due_details,
+        **counters,
+    }
+
+
+def _run_renewal_calendar_housekeeping(event: dict[str, Any]) -> dict[str, Any]:
+    active_table_name = _require_env(ACTIVE_STORAGE_OBJECT_TABLE_ENV)
+    renewal_table_name = _require_env(RENEWAL_TRANSACTION_LOG_TABLE_ENV)
+    dry_run = _read_bool(os.environ.get(DRY_RUN_ENV)) or _read_bool(event.get("dry_run"))
+    now = _parse_event_now(event)
+    billing_period = billing_period_utc(int(now.timestamp()))
+
+    dynamodb = boto3.resource("dynamodb")
+    active_table = dynamodb.Table(active_table_name)
+    renewal_table = dynamodb.Table(renewal_table_name)
+
+    s3_clients: dict[str, Any] = {}
+    objects_evaluated = 0
+    objects_due = 0
+    objects_deleted = 0
+    buckets_deleted = 0
+    inventory_rows_deleted = 0
+    objects_due_details: list[dict[str, Any]] = []
+    query_kwargs: dict[str, Any] = {
+        "IndexName": "GsiActiveInventory",
+        "KeyConditionExpression": "status_active = :s",
+        "ExpressionAttributeValues": {":s": ACTIVE_STORAGE_GSI_PARTITION},
+    }
+
+    while True:
+        response = active_table.query(**query_kwargs)
+        for item in response.get("Items") or []:
+            objects_evaluated += 1
+            wallet_address = _optional_normalized_address(item.get("wallet_address"))
+            object_key_raw = item.get("object_key")
+            bucket_name_raw = item.get("bucket_name")
+            location_raw = item.get("location") or item.get("region") or DEFAULT_LOCATION
+            if not wallet_address or not isinstance(object_key_raw, str) or not object_key_raw.strip():
                 continue
+            object_key = object_key_raw.strip()
+            bucket_name = str(bucket_name_raw).strip() if isinstance(bucket_name_raw, str) else ""
+            if not bucket_name:
+                bucket_name = _default_bucket_name(wallet_address)
+            location = str(location_raw).strip() or DEFAULT_LOCATION
+
+            created_period = _created_billing_period_from_inventory(item)
+            if created_period is not None and created_period == billing_period:
+                continue
+
+            bp_ok = billing_period_object_key(billing_period, object_key)
+            renewal_item = renewal_table.get_item(
+                Key={"bucket_name": bucket_name, "billing_period_object_key": bp_ok},
+                ConsistentRead=True,
+            ).get("Item")
+            if renewal_item:
+                continue
+
             objects_due += 1
-
-            detail = {
-                "wallet_address": ledger.identity.wallet_address,
-                "bucket_name": ledger.identity.bucket_name,
-                "object_key": ledger.identity.object_key,
-                "location": ledger.identity.location,
-                "latest_payment_at": ledger.latest_payment_at.isoformat(),
-                "deadline_at": deadline_at.isoformat(),
-            }
-            objects_due_details.append(detail)
-
+            objects_due_details.append(
+                {
+                    "wallet_address": wallet_address,
+                    "bucket_name": bucket_name,
+                    "object_key": object_key,
+                    "location": location,
+                    "billing_period": billing_period,
+                }
+            )
             if dry_run:
                 continue
 
-            s3_client = s3_clients.get(ledger.identity.location)
-            if s3_client is None:
-                s3_client = boto3.client("s3", region_name=ledger.identity.location)
-                s3_clients[ledger.identity.location] = s3_client
-
-            object_deleted, bucket_deleted = _cleanup_s3_for_object(
-                s3_client=s3_client,
-                identity=ledger.identity,
+            identity = ObjectIdentity(
+                wallet_address=wallet_address,
+                bucket_name=bucket_name,
+                object_key=object_key,
+                location=location,
             )
+            s3_client = s3_clients.get(location)
+            if s3_client is None:
+                s3_client = boto3.client("s3", region_name=location)
+                s3_clients[location] = s3_client
+
+            object_deleted, bucket_deleted = _cleanup_s3_for_object(s3_client=s3_client, identity=identity)
             if object_deleted:
                 objects_deleted += 1
             if bucket_deleted:
                 buckets_deleted += 1
 
-            transaction_rows_deleted += _delete_transaction_rows(transaction_log_table, ledger.transaction_keys)
+            active_table.delete_item(Key={"wallet_address": wallet_address, "object_key": object_key})
+            inventory_rows_deleted += 1
 
-        body = {
-            "success": True,
-            "dry_run": dry_run,
-            "recipient_wallet": recipient_wallet,
-            "billing_interval_days": billing_interval_days,
-            "grace_period_days": grace_period_days,
-            "deadline_days": deadline_days,
-            "now": now.isoformat(),
-            "objects_evaluated": len(ledgers),
-            "objects_due": objects_due,
-            "objects_deleted": objects_deleted,
-            "buckets_deleted": buckets_deleted,
-            "transaction_rows_deleted": transaction_rows_deleted,
-            "objects_due_details": objects_due_details,
-            **counters,
-        }
+        lek = response.get("LastEvaluatedKey")
+        if not lek:
+            break
+        query_kwargs["ExclusiveStartKey"] = lek
+
+    return {
+        "success": True,
+        "housekeeping_mode": "renewal_calendar",
+        "dry_run": dry_run,
+        "billing_period_utc": billing_period,
+        "now": now.isoformat(),
+        "objects_evaluated": objects_evaluated,
+        "objects_due": objects_due,
+        "objects_deleted": objects_deleted,
+        "buckets_deleted": buckets_deleted,
+        "inventory_rows_deleted": inventory_rows_deleted,
+        "objects_due_details": objects_due_details,
+    }
+
+
+def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    del context
+    try:
+        event = event or {}
+        mode = os.environ.get(HOUSEKEEPING_MODE_ENV, "legacy_interval").strip().lower()
+        if mode == "renewal_calendar":
+            body = _run_renewal_calendar_housekeeping(event)
+        else:
+            body = _run_legacy_interval_housekeeping(event)
         return _response(200, body)
     except BadRequestError as exc:
         return _error_response(400, "Bad request", str(exc))

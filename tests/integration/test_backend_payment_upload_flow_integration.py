@@ -302,11 +302,13 @@ class BackendFlowIntegrationTests(unittest.TestCase):
         self.payments_table = FakeDynamoTable(["wallet_address", "quote_id"])
         self.txn_table = FakeDynamoTable(["quote_id", "trans_id"])
         self.idem_table = FakeDynamoTable(["idempotency_key"])
+        self.active_storage_table = FakeDynamoTable(["wallet_address", "object_key"])
         self.tables_by_name = {
             "quotes": self.quotes_table,
             "payments": self.payments_table,
             "txn-log": self.txn_table,
             "idem": self.idem_table,
+            "active-storage": self.active_storage_table,
         }
         self.dynamodb_resource = FakeDynamoResource(self.tables_by_name)
         self.price_dynamodb_client = FakeTypedDynamoDbClient(self.tables_by_name)
@@ -323,6 +325,7 @@ class BackendFlowIntegrationTests(unittest.TestCase):
                 "PAYMENT_LEDGER_TABLE_NAME": "payments",
                 "UPLOAD_TRANSACTION_LOG_TABLE_NAME": "txn-log",
                 "UPLOAD_IDEMPOTENCY_TABLE_NAME": "idem",
+                "ACTIVE_STORAGE_OBJECT_TABLE_NAME": "active-storage",
                 "MNEMOSPARK_PAYMENT_SETTLEMENT_MODE": "mock",
                 "MNEMOSPARK_RECIPIENT_WALLET": "0x47D241ae97fE37186AC59894290CA1c54c060A6c",
                 "MNEMOSPARK_PAYMENT_NETWORK": "eip155:8453",
@@ -343,6 +346,8 @@ class BackendFlowIntegrationTests(unittest.TestCase):
             mock.patch.object(payment_app.boto3, "resource", return_value=self.dynamodb_resource),
             mock.patch.object(upload_app.boto3, "resource", return_value=self.dynamodb_resource),
             mock.patch.object(upload_app.boto3, "client", side_effect=self._mock_boto_client),
+            mock.patch.object(delete_app.boto3, "resource", return_value=self.dynamodb_resource),
+            mock.patch.object(delete_app.boto3, "client", side_effect=self._mock_boto_client),
             mock.patch.object(price_app, "log_api_call", side_effect=self.api_call_recorder),
             mock.patch.object(payment_app, "log_api_call", side_effect=self.api_call_recorder),
             mock.patch.object(upload_app, "log_api_call", side_effect=self.api_call_recorder),
