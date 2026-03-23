@@ -40,6 +40,7 @@ try:
     from common.storage_bucket_region import (
         BucketRegionMismatchError,
         enforce_requested_matches_bucket_home,
+        resolve_bucket_home_region_from_head_bucket_error,
         resolve_bucket_home_region,
     )
 except ModuleNotFoundError:
@@ -51,6 +52,7 @@ except ModuleNotFoundError:
     from common.storage_bucket_region import (
         BucketRegionMismatchError,
         enforce_requested_matches_bucket_home,
+        resolve_bucket_home_region_from_head_bucket_error,
         resolve_bucket_home_region,
     )
 
@@ -254,8 +256,13 @@ def _assert_bucket_access(s3_client: Any, bucket_name: str, requested_location: 
     try:
         head_resp = s3_client.head_bucket(Bucket=bucket_name)
     except ClientError as exc:
-        if _error_code(exc) in NOT_FOUND_S3_ERROR_CODES:
+        bucket_home = resolve_bucket_home_region_from_head_bucket_error(
+            s3_client, bucket_name, exc.response
+        )
+        if bucket_home is None and _error_code(exc) in NOT_FOUND_S3_ERROR_CODES:
             raise NotFoundError("bucket_not_found", "Bucket not found for this wallet") from exc
+        if bucket_home is not None:
+            enforce_requested_matches_bucket_home(requested_location, bucket_home)
         raise
     bucket_home = resolve_bucket_home_region(s3_client, bucket_name, head_resp)
     enforce_requested_matches_bucket_home(requested_location, bucket_home)

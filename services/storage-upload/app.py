@@ -61,7 +61,9 @@ except ModuleNotFoundError:
 try:
     from common.storage_bucket_region import (
         BucketRegionMismatchError,
+        actual_region_from_head_bucket_error_response,
         enforce_requested_matches_bucket_home,
+        resolve_bucket_home_region_from_head_bucket_error,
         resolve_bucket_home_region,
     )
 except ModuleNotFoundError:
@@ -71,7 +73,9 @@ except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from common.storage_bucket_region import (
         BucketRegionMismatchError,
+        actual_region_from_head_bucket_error_response,
         enforce_requested_matches_bucket_home,
+        resolve_bucket_home_region_from_head_bucket_error,
         resolve_bucket_home_region,
     )
 
@@ -472,10 +476,22 @@ def _ensure_bucket_exists(s3_client: Any, bucket_name: str, location: str) -> No
         head_resp = s3_client.head_bucket(Bucket=bucket_name)
     except ClientError as exc:
         error_code = exc.response.get("Error", {}).get("Code", "")
-        # Treat 400/BadRequest the same as 404-style "bucket does not exist" responses so we
-        # can proceed to create the bucket. This is observed when a previously deleted bucket
-        # name is probed shortly after deletion.
-        if error_code not in {"404", "NotFound", "NoSuchBucket", "400", "BadRequest"}:
+        bucket_home_raw = actual_region_from_head_bucket_error_response(exc.response)
+        if bucket_home_raw:
+            enforce_requested_matches_bucket_home(location, bucket_home_raw)
+            return
+
+        if error_code in {"400", "BadRequest", "301", "PermanentRedirect"}:
+            bucket_home = resolve_bucket_home_region_from_head_bucket_error(
+                s3_client=s3_client,
+                bucket_name=bucket_name,
+                head_bucket_error_response=exc.response,
+            )
+            if bucket_home is not None:
+                enforce_requested_matches_bucket_home(location, bucket_home)
+                return
+        # Only 404-style errors mean the bucket truly does not exist and may be created.
+        if error_code not in {"404", "NotFound", "NoSuchBucket"}:
             if error_code in {"403", "Forbidden"}:
                 logger.warning(
                     "HeadBucket 403 for %s: ensure bucket is in this account and Lambda role has s3:ListBucket on mnemospark-*",
@@ -2527,7 +2543,18 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
             head_resp = s3_client.head_bucket(Bucket=bucket_name)
         except ClientError as hb_exc:
             hb_code = hb_exc.response.get("Error", {}).get("Code", "")
-            if hb_code not in {"404", "NotFound", "NoSuchBucket", "400", "BadRequest"}:
+            bucket_home_raw = actual_region_from_head_bucket_error_response(hb_exc.response)
+            if bucket_home_raw:
+                enforce_requested_matches_bucket_home(quote_context.location, bucket_home_raw)
+            elif hb_code in {"400", "BadRequest", "301", "PermanentRedirect"}:
+                bucket_home = resolve_bucket_home_region_from_head_bucket_error(
+                    s3_client=s3_client,
+                    bucket_name=bucket_name,
+                    head_bucket_error_response=hb_exc.response,
+                )
+                if bucket_home is not None:
+                    enforce_requested_matches_bucket_home(quote_context.location, bucket_home)
+            elif hb_code not in {"404", "NotFound", "NoSuchBucket"}:
                 raise
         else:
             bucket_home = resolve_bucket_home_region(s3_client, bucket_name, head_resp)

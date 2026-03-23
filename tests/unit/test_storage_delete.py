@@ -28,11 +28,14 @@ class FakeS3Client:
         self.buckets: dict[str, set[str]] = {}
         self.deleted_buckets: list[str] = []
         self.bucket_home_region = bucket_home_region or app.DEFAULT_LOCATION
+        self.head_bucket_error: ClientError | None = None
 
     def seed_object(self, bucket: str, key: str):
         self.buckets.setdefault(bucket, set()).add(key)
 
     def head_bucket(self, Bucket):
+        if self.head_bucket_error is not None:
+            raise self.head_bucket_error
         if Bucket not in self.buckets:
             raise ClientError(
                 {"Error": {"Code": "404", "Message": "bucket missing"}},
@@ -323,6 +326,73 @@ class StorageDeleteLambdaTests(unittest.TestCase):
                     "walletAddress": wallet_address,
                 }
             },
+        }
+
+        with mock.patch.object(app.boto3, "client", return_value=s3_client):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 400)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "bucket_region_mismatch")
+        self.assertEqual(body["details"]["bucket_region"], "eu-west-1")
+        self.assertEqual(body["details"]["requested_region"], "us-west-2")
+
+    def test_bucket_region_mismatch_from_head_bucket_301_returns_400(self):
+        wallet_address = "0xdddddddddddddddddddddddddddddddddddddddd"
+        object_key = "x.bin"
+        bucket = app._bucket_name(wallet_address)
+        s3_client = FakeS3Client(bucket_home_region="eu-west-1")
+        s3_client.head_bucket_error = ClientError(
+            {
+                "Error": {"Code": "301", "Message": "Moved Permanently"},
+                "ResponseMetadata": {"HTTPHeaders": {"x-amz-bucket-region": "eu-west-1"}},
+            },
+            "HeadBucket",
+        )
+        s3_client.seed_object(bucket, object_key)
+
+        event = {
+            "httpMethod": "DELETE",
+            "queryStringParameters": {
+                "wallet_address": wallet_address,
+                "object_key": object_key,
+                "location": "us-west-2",
+            },
+            "requestContext": {
+                "authorizer": {
+                    "walletAddress": wallet_address,
+                }
+            },
+        }
+
+        with mock.patch.object(app.boto3, "client", return_value=s3_client):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 400)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "bucket_region_mismatch")
+        self.assertEqual(body["details"]["bucket_region"], "eu-west-1")
+        self.assertEqual(body["details"]["requested_region"], "us-west-2")
+
+    def test_bucket_region_mismatch_from_head_bucket_400_fallback_returns_400(self):
+        wallet_address = "0xdddddddddddddddddddddddddddddddddddddddd"
+        object_key = "x.bin"
+        bucket = app._bucket_name(wallet_address)
+        s3_client = FakeS3Client(bucket_home_region="eu-west-1")
+        s3_client.seed_object(bucket, object_key)
+        s3_client.head_bucket_error = ClientError(
+            {"Error": {"Code": "400", "Message": "Bad Request"}},
+            "HeadBucket",
+        )
+
+        event = {
+            "httpMethod": "DELETE",
+            "queryStringParameters": {
+                "wallet_address": wallet_address,
+                "object_key": object_key,
+                "location": "us-west-2",
+            },
+            "requestContext": {"authorizer": {"walletAddress": wallet_address}},
         }
 
         with mock.patch.object(app.boto3, "client", return_value=s3_client):

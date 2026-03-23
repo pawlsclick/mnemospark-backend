@@ -68,6 +68,33 @@ class FakeS3Client:
         return f"https://example.test/{Params['Bucket']}/{Params['Key']}?exp={ExpiresIn}"
 
 
+class HeadBucketWrongRegion301S3Client(FakeS3Client):
+    def head_bucket(self, Bucket):
+        del Bucket
+        raise ClientError(
+            {
+                "Error": {"Code": "301", "Message": "Moved Permanently"},
+                "ResponseMetadata": {"HTTPHeaders": {"x-amz-bucket-region": "eu-west-1"}},
+            },
+            "HeadBucket",
+        )
+
+
+class HeadBucketWrongRegion400S3Client(FakeS3Client):
+    def head_bucket(self, Bucket):
+        del Bucket
+        raise ClientError(
+            {
+                "Error": {"Code": "400", "Message": "Bad Request"},
+            },
+            "HeadBucket",
+        )
+
+    def get_bucket_location(self, Bucket):
+        del Bucket
+        return {"LocationConstraint": "eu-west-1"}
+
+
 class ParseInputTests(unittest.TestCase):
     def test_parse_input_get_query(self):
         request = app.parse_input(
@@ -255,6 +282,32 @@ class LambdaHandlerTests(unittest.TestCase):
 
     def test_lambda_handler_bucket_region_mismatch_returns_400(self):
         fake_s3_client = FakeS3Client(bucket_home_region="eu-west-1")
+        event = self._event(location="us-west-2")
+
+        with mock.patch.object(app.boto3, "client", return_value=fake_s3_client):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 400)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "bucket_region_mismatch")
+        self.assertEqual(body["details"]["bucket_region"], "eu-west-1")
+        self.assertEqual(body["details"]["requested_region"], "us-west-2")
+
+    def test_lambda_handler_head_bucket_301_wrong_region_returns_400(self):
+        fake_s3_client = HeadBucketWrongRegion301S3Client()
+        event = self._event(location="us-west-2")
+
+        with mock.patch.object(app.boto3, "client", return_value=fake_s3_client):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 400)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "bucket_region_mismatch")
+        self.assertEqual(body["details"]["bucket_region"], "eu-west-1")
+        self.assertEqual(body["details"]["requested_region"], "us-west-2")
+
+    def test_lambda_handler_head_bucket_400_wrong_region_returns_400(self):
+        fake_s3_client = HeadBucketWrongRegion400S3Client()
         event = self._event(location="us-west-2")
 
         with mock.patch.object(app.boto3, "client", return_value=fake_s3_client):

@@ -35,6 +35,7 @@ try:
         BucketRegionMismatchError,
         enforce_requested_matches_bucket_home,
         resolve_bucket_home_region,
+        resolve_bucket_home_region_from_head_bucket_error,
     )
 except ModuleNotFoundError:
     import sys
@@ -53,6 +54,7 @@ except ModuleNotFoundError:
         BucketRegionMismatchError,
         enforce_requested_matches_bucket_home,
         resolve_bucket_home_region,
+        resolve_bucket_home_region_from_head_bucket_error,
     )
 
 
@@ -279,6 +281,13 @@ def generate_download_url(request: ParsedDownloadRequest, s3_client: Any | None 
     try:
         head_resp = s3_client.head_bucket(Bucket=bucket_name)
     except ClientError as exc:
+        bucket_home = resolve_bucket_home_region_from_head_bucket_error(
+            s3_client,
+            bucket_name,
+            exc.response,
+        )
+        if bucket_home is not None:
+            enforce_requested_matches_bucket_home(request.location, bucket_home)
         if _is_not_found_error(exc):
             raise NotFoundError(
                 error="bucket_not_found",

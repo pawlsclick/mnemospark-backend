@@ -32,6 +32,7 @@ try:
     from common.storage_bucket_region import (
         BucketRegionMismatchError,
         enforce_requested_matches_bucket_home,
+        resolve_bucket_home_region_from_head_bucket_error,
         resolve_bucket_home_region,
     )
 except ModuleNotFoundError:
@@ -50,6 +51,7 @@ except ModuleNotFoundError:
     from common.storage_bucket_region import (
         BucketRegionMismatchError,
         enforce_requested_matches_bucket_home,
+        resolve_bucket_home_region_from_head_bucket_error,
         resolve_bucket_home_region,
     )
 
@@ -235,6 +237,11 @@ def _require_bucket_exists(s3_client: Any, bucket_name: str, requested_location:
     except ClientError as exc:
         if _parse_s3_error_code(exc) in {"404", "NotFound", "NoSuchBucket"}:
             raise NotFoundError("bucket_not_found") from exc
+        bucket_home = resolve_bucket_home_region_from_head_bucket_error(
+            s3_client, bucket_name, exc.response
+        )
+        if bucket_home is not None:
+            enforce_requested_matches_bucket_home(requested_location, bucket_home)
         raise
     bucket_home = resolve_bucket_home_region(s3_client, bucket_name, head_resp)
     enforce_requested_matches_bucket_home(requested_location, bucket_home)

@@ -8,6 +8,8 @@ import sys
 import unittest
 from pathlib import Path
 
+from botocore.exceptions import ClientError
+
 _services = Path(__file__).resolve().parents[2] / "services"
 if str(_services) not in sys.path:
     sys.path.insert(0, str(_services))
@@ -15,9 +17,11 @@ if str(_services) not in sys.path:
 from common.storage_bucket_region import (  # noqa: E402
     US_EAST_1_REGION,
     BucketRegionMismatchError,
+    actual_region_from_head_bucket_error_response,
     actual_region_from_head_bucket_response,
     enforce_requested_matches_bucket_home,
     normalize_s3_region,
+    resolve_bucket_home_region_from_head_bucket_error,
     resolve_bucket_home_region,
 )
 
@@ -52,6 +56,31 @@ class HeadResponseTests(unittest.TestCase):
         )
 
 
+class HeadErrorResponseTests(unittest.TestCase):
+    def test_reads_x_amz_bucket_region_header_from_error_response(self):
+        self.assertEqual(
+            actual_region_from_head_bucket_error_response(
+                {
+                    "Error": {"Code": "301", "Message": "Moved Permanently"},
+                    "ResponseMetadata": {
+                        "HTTPHeaders": {"x-amz-bucket-region": "eu-west-1"},
+                    },
+                }
+            ),
+            "eu-west-1",
+        )
+
+    def test_reads_error_region_field_from_error_response(self):
+        self.assertEqual(
+            actual_region_from_head_bucket_error_response(
+                {
+                    "Error": {"Code": "BadRequest", "Region": "ap-south-1"},
+                }
+            ),
+            "ap-south-1",
+        )
+
+
 class ResolveBucketHomeRegionTests(unittest.TestCase):
     def test_uses_bucket_region_without_get_bucket_location(self):
         class FakeS3:
@@ -80,6 +109,50 @@ class ResolveBucketHomeRegionTests(unittest.TestCase):
         self.assertEqual(home, "eu-west-1")
 
 
+class ResolveBucketHomeRegionFromErrorTests(unittest.TestCase):
+    def test_uses_error_response_header_region_without_get_bucket_location(self):
+        class FakeS3:
+            def get_bucket_location(self, Bucket):
+                raise AssertionError("get_bucket_location should not be called")
+
+        home = resolve_bucket_home_region_from_head_bucket_error(
+            FakeS3(),
+            "my-bucket",
+            {
+                "Error": {"Code": "301"},
+                "ResponseMetadata": {"HTTPHeaders": {"x-amz-bucket-region": "eu-central-1"}},
+            },
+        )
+        self.assertEqual(home, "eu-central-1")
+
+    def test_falls_back_to_get_bucket_location_on_400_without_region_headers(self):
+        class FakeS3:
+            def get_bucket_location(self, Bucket):
+                return {"LocationConstraint": "eu-west-1"}
+
+        home = resolve_bucket_home_region_from_head_bucket_error(
+            FakeS3(),
+            "my-bucket",
+            {"Error": {"Code": "400", "Message": "Bad Request"}},
+        )
+        self.assertEqual(home, "eu-west-1")
+
+    def test_returns_none_when_get_bucket_location_reports_bucket_not_found(self):
+        class FakeS3:
+            def get_bucket_location(self, Bucket):
+                raise ClientError(
+                    {"Error": {"Code": "NoSuchBucket", "Message": "not found"}},
+                    "GetBucketLocation",
+                )
+
+        home = resolve_bucket_home_region_from_head_bucket_error(
+            FakeS3(),
+            "missing-bucket",
+            {"Error": {"Code": "400", "Message": "Bad Request"}},
+        )
+        self.assertIsNone(home)
+
+
 class EnforceRequestedMatchesTests(unittest.TestCase):
     def test_matching_normalized_regions_noop(self):
         enforce_requested_matches_bucket_home("us-east-1", "")
@@ -101,6 +174,11 @@ class EnforceRequestedMatchesTests(unittest.TestCase):
         self.assertEqual(restored.bucket_home_region, "eu-west-1")
         self.assertEqual(cloned.requested_region, "us-west-2")
         self.assertEqual(cloned.bucket_home_region, "eu-west-1")
+
+    def test_bucket_region_mismatch_error_populates_exception_args(self):
+        with self.assertRaises(BucketRegionMismatchError) as ctx:
+            enforce_requested_matches_bucket_home("us-west-2", "eu-west-1")
+        self.assertEqual(ctx.exception.args, ("us-west-2", "eu-west-1"))
 
 
 if __name__ == "__main__":

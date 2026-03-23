@@ -113,8 +113,11 @@ class FakeS3Client:
         self.created_buckets = []
         self.put_calls = []
         self.presigned_calls = []
+        self.head_bucket_client_error: ClientError | None = None
 
     def head_bucket(self, Bucket):
+        if self.head_bucket_client_error is not None:
+            raise self.head_bucket_client_error
         if Bucket not in self.buckets:
             raise ClientError(
                 {"Error": {"Code": "404", "Message": "not found"}},
@@ -182,6 +185,40 @@ class FakeS3Client:
                 "HeadObject",
             )
         return {}
+
+
+class HeadBucketWrongRegionS3(FakeS3Client):
+    def __init__(self, *, error_code: str, bucket_region_header: str | None = "eu-west-1"):
+        super().__init__()
+        self.error_code = error_code
+        self.bucket_region_header = bucket_region_header
+
+    def head_bucket(self, Bucket):
+        if self.error_code in {"301", "PermanentRedirect"}:
+            resp = {
+                "Error": {"Code": "301", "Message": "Moved Permanently"},
+                "ResponseMetadata": {
+                    "HTTPHeaders": {},
+                },
+            }
+            if self.bucket_region_header:
+                resp["ResponseMetadata"]["HTTPHeaders"]["x-amz-bucket-region"] = (
+                    self.bucket_region_header
+                )
+            raise ClientError(resp, "HeadBucket")
+        raise ClientError(
+            {
+                "Error": {"Code": "400", "Message": "Bad Request"},
+                "ResponseMetadata": {
+                    "HTTPHeaders": (
+                        {"x-amz-bucket-region": self.bucket_region_header}
+                        if self.bucket_region_header
+                        else {}
+                    )
+                },
+            },
+            "HeadBucket",
+        )
 
 
 class StorageUploadHelperTests(unittest.TestCase):
@@ -286,6 +323,52 @@ class StorageUploadHelperTests(unittest.TestCase):
                 location="us-west-2",
             )
 
+        self.assertEqual(ctx.exception.bucket_home_region, "eu-west-1")
+        self.assertEqual(ctx.exception.requested_region, "us-west-2")
+        self.assertEqual(len(s3_client.created_buckets), 0)
+
+    def test_ensure_bucket_exists_head_bucket_301_region_header_raises_mismatch(self):
+        class HeadBucket301Client(FakeS3Client):
+            def head_bucket(self, Bucket):
+                raise ClientError(
+                    {
+                        "Error": {"Code": "301", "Message": "Moved Permanently"},
+                        "ResponseMetadata": {
+                            "HTTPHeaders": {"x-amz-bucket-region": "eu-west-1"}
+                        },
+                    },
+                    "HeadBucket",
+                )
+
+        s3_client = HeadBucket301Client()
+        with self.assertRaises(BucketRegionMismatchError) as ctx:
+            app._ensure_bucket_exists(
+                s3_client=s3_client,
+                bucket_name="mnemospark-test-bucket",
+                location="us-west-2",
+            )
+        self.assertEqual(ctx.exception.bucket_home_region, "eu-west-1")
+        self.assertEqual(ctx.exception.requested_region, "us-west-2")
+        self.assertEqual(len(s3_client.created_buckets), 0)
+
+    def test_ensure_bucket_exists_head_bucket_400_fallback_get_bucket_location_raises_mismatch(self):
+        class HeadBucket400Client(FakeS3Client):
+            def head_bucket(self, Bucket):
+                raise ClientError(
+                    {
+                        "Error": {"Code": "400", "Message": "Bad Request"},
+                    },
+                    "HeadBucket",
+                )
+
+        s3_client = HeadBucket400Client()
+        s3_client.bucket_home_regions["mnemospark-test-bucket"] = "eu-west-1"
+        with self.assertRaises(BucketRegionMismatchError) as ctx:
+            app._ensure_bucket_exists(
+                s3_client=s3_client,
+                bucket_name="mnemospark-test-bucket",
+                location="us-west-2",
+            )
         self.assertEqual(ctx.exception.bucket_home_region, "eu-west-1")
         self.assertEqual(ctx.exception.requested_region, "us-west-2")
         self.assertEqual(len(s3_client.created_buckets), 0)
@@ -916,6 +999,27 @@ class StorageUploadLambdaTests(unittest.TestCase):
         )
         self.assertEqual(self.s3_client.presigned_calls[0]["Params"]["ContentLength"], 12345)
 
+    def test_lambda_handler_head_bucket_301_wrong_region_returns_400(self):
+        bucket_name = app._bucket_name(self.wallet_address)
+        wrong_region_client = HeadBucketWrongRegionS3(error_code="301", bucket_region_header="eu-west-1")
+        wrong_region_client.buckets.add(bucket_name)
+
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-region-301"},
+            location="us-west-2",
+        )
+        with mock.patch.object(
+            app.boto3, "client", side_effect=lambda service_name, **kwargs: wrong_region_client
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 400)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "bucket_region_mismatch")
+        self.assertEqual(body["details"]["bucket_region"], "eu-west-1")
+        self.assertEqual(body["details"]["requested_region"], "us-west-2")
+        self.assertEqual(len(wrong_region_client.created_buckets), 0)
+
     def test_presigned_idempotent_retry_returns_fresh_upload_url(self):
         event = self._make_event(
             headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-presigned"},
@@ -1207,6 +1311,47 @@ class StorageUploadLambdaTests(unittest.TestCase):
         self.assertIn((("quote_id", self.quote_id),), self.quotes_table.items)
         idem_item = self.idempotency_table.items[(("idempotency_key", "idem-confirm-404"),)]
         self.assertEqual(idem_item["status"], "pending_confirmation")
+
+    def test_confirm_upload_head_bucket_400_fallback_get_bucket_location_returns_400(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-confirm-region-400"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        body = json.loads(event["body"])
+        body.pop("ciphertext", None)
+        event["body"] = json.dumps(body)
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xconfirm-region-400",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            app.lambda_handler(event, None)
+
+        class HeadBucket400WrongRegionClient(FakeS3Client):
+            def head_bucket(self, Bucket):
+                raise ClientError(
+                    {"Error": {"Code": "400", "Message": "Bad Request"}},
+                    "HeadBucket",
+                )
+
+        bucket_name = app._bucket_name(self.wallet_address)
+        wrong_region_client = HeadBucket400WrongRegionClient()
+        wrong_region_client.bucket_home_regions[bucket_name] = "eu-west-1"
+        with mock.patch.object(app.boto3, "client", side_effect=lambda service_name, **kwargs: wrong_region_client):
+            response = app.confirm_upload_handler(
+                self._make_confirm_event(idempotency_key="idem-confirm-region-400"),
+                None,
+            )
+        self.assertEqual(response["statusCode"], 400)
+        parsed = json.loads(response["body"])
+        self.assertEqual(parsed["error"], "bucket_region_mismatch")
+        self.assertEqual(parsed["details"]["bucket_region"], "eu-west-1")
+        self.assertEqual(parsed["details"]["requested_region"], "[REDACTED]")
 
     def test_confirm_upload_returns_cached_success_when_already_completed(self):
         event = self._make_event(
