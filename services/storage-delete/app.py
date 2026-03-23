@@ -56,6 +56,7 @@ _sanitize_error_message = sanitize_error_message
 
 US_EAST_1_REGION = "us-" + "east-1"
 DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
+ACTIVE_STORAGE_OBJECT_TABLE_ENV = "ACTIVE_STORAGE_OBJECT_TABLE_NAME"
 ADDRESS_PATTERN = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 BUCKET_NAME_MIN_LEN = 3
@@ -300,6 +301,21 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         _require_authorized_wallet(event, request.wallet_address)
         s3_client = boto3.client("s3", region_name=request.location)
         result = delete_object(request, s3_client)
+        inv_table_name = os.environ.get(ACTIVE_STORAGE_OBJECT_TABLE_ENV, "").strip()
+        if inv_table_name:
+            try:
+                boto3.resource("dynamodb").Table(inv_table_name).delete_item(
+                    Key={"wallet_address": request.wallet_address, "object_key": request.object_key},
+                )
+            except Exception as exc:
+                _log_event(
+                    logging.WARNING,
+                    "active_storage_inventory_delete_failed",
+                    request_id=_request_id(event, context),
+                    error_message=_sanitize_error_message(str(exc)),
+                    wallet_address=request.wallet_address,
+                    object_key=request.object_key,
+                )
         _log_event(
             logging.INFO,
             "storage_delete_succeeded",

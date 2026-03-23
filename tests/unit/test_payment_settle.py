@@ -1,9 +1,11 @@
+import hashlib
 import importlib.util
 import json
 import os
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 import unittest
@@ -46,6 +48,11 @@ class PaymentRequiredError(Exception):
 class FakePaymentCore:
     PAYMENT_SIGNATURE_HEADER_NAMES = ("payment-signature", "x-payment")
     USDC_DECIMALS = Decimal("1000000")
+
+    @staticmethod
+    def _bucket_name(wallet_address: str) -> str:
+        h = hashlib.sha256(wallet_address.encode("utf-8")).hexdigest()[:16]
+        return f"mnemospark-{h}"
 
     def __init__(self):
         self.verify_calls = []
@@ -127,6 +134,12 @@ class FakeDynamoTable:
             if existing is None or existing.get("payment_status") != expected_status:
                 raise ClientError(
                     {"Error": {"Code": "ConditionalCheckFailedException", "Message": "missing claim"}},
+                    "PutItem",
+                )
+        if ConditionExpression == "attribute_not_exists(billing_period_object_key)":
+            if key_tuple in self.items:
+                raise ClientError(
+                    {"Error": {"Code": "ConditionalCheckFailedException", "Message": "duplicate"}},
                     "PutItem",
                 )
         self.items[key_tuple] = dict(Item)
@@ -356,6 +369,155 @@ class PaymentSettleHandlerTests(unittest.TestCase):
         verify_kwargs = self.fake_payment_core.verify_calls[-1]
         self.assertIsInstance(verify_kwargs["payment_header"], str)
         self.assertTrue(verify_kwargs["payment_header"].startswith("{"))
+
+
+class PaymentSettleRenewalTests(unittest.TestCase):
+    def setUp(self):
+        self.wallet_address = "0x1111111111111111111111111111111111111111"
+        self.object_key = "blob.enc"
+        self.now = int(time.time())
+
+        self.payments_table = FakeDynamoTable(["wallet_address", "quote_id"])
+        self.active_table = FakeDynamoTable(["wallet_address", "object_key"])
+        self.renewal_table = FakeDynamoTable(["bucket_name", "billing_period_object_key"])
+
+        wallet_hash = hashlib.sha256(self.wallet_address.encode("utf-8")).hexdigest()[:16]
+        expected_bucket = f"mnemospark-{wallet_hash}"
+        self.active_table.put_item(
+            Item={
+                "wallet_address": self.wallet_address,
+                "object_key": self.object_key,
+                "bucket_name": expected_bucket,
+                "location": "us-east-1",
+                "storage_price": "1.25",
+                "status": "active",
+            }
+        )
+
+        self.dynamodb_resource = FakeDynamoResource(
+            {
+                "quotes-table": FakeDynamoTable(["quote_id"]),
+                "payments-table": self.payments_table,
+                "active-table": self.active_table,
+                "renewal-table": self.renewal_table,
+            }
+        )
+
+        self.fake_payment_core = FakePaymentCore()
+        self.original_payment_core = app._PAYMENT_CORE
+        app._PAYMENT_CORE = self.fake_payment_core
+
+        self.env_patch = mock.patch.dict(
+            os.environ,
+            {
+                "QUOTES_TABLE_NAME": "quotes-table",
+                "PAYMENT_LEDGER_TABLE_NAME": "payments-table",
+                "ACTIVE_STORAGE_OBJECT_TABLE_NAME": "active-table",
+                "RENEWAL_TRANSACTION_LOG_TABLE_NAME": "renewal-table",
+                "MNEMOSPARK_PAYMENT_SETTLEMENT_MODE": "mock",
+            },
+            clear=False,
+        )
+        self.env_patch.start()
+        self.resource_patch = mock.patch.object(app.boto3, "resource", return_value=self.dynamodb_resource)
+        self.resource_patch.start()
+
+        def fake_client(name, **_kwargs):
+            if name != "s3":
+                raise AssertionError(f"unexpected boto3.client({name!r})")
+            c = mock.MagicMock()
+            c.head_object.return_value = {}
+            return c
+
+        self.s3_patcher = mock.patch.object(app.boto3, "client", side_effect=fake_client)
+        self.s3_patcher.start()
+
+    def tearDown(self):
+        self.s3_patcher.stop()
+        self.resource_patch.stop()
+        self.env_patch.stop()
+        app._PAYMENT_CORE = self.original_payment_core
+
+    def _event(self, **body_updates):
+        body = {
+            "renewal": True,
+            "wallet_address": self.wallet_address,
+            "object_key": self.object_key,
+        }
+        body.update(body_updates)
+        event = {"body": json.dumps(body), "headers": {"PAYMENT-SIGNATURE": "signed-payload"}}
+        event["requestContext"] = {"authorizer": {"walletAddress": self.wallet_address}}
+        return event
+
+    def test_renewal_success_writes_renewal_row(self):
+        response = app.lambda_handler(self._event(), None)
+        self.assertEqual(response["statusCode"], 200)
+        body = json.loads(response["body"])
+        self.assertTrue(body.get("renewal"))
+        self.assertEqual(body.get("object_key"), self.object_key)
+        self.assertEqual(len(self.renewal_table.items), 1)
+
+    def test_renewal_uses_single_timestamp_for_quote_id_and_billing_period(self):
+        month_end_ts = int(datetime(2024, 3, 31, 23, 59, 59, tzinfo=timezone.utc).timestamp())
+        next_month_ts = int(datetime(2024, 4, 1, 0, 0, 0, tzinfo=timezone.utc).timestamp())
+
+        with mock.patch.object(app.time, "time", return_value=next_month_ts):
+            request = app.parse_input(self._event(), now_ts=month_end_ts)
+            self.assertTrue(request.quote_id.startswith("renewal#2024-03#"))
+
+        with mock.patch.object(app.time, "time", return_value=month_end_ts):
+            with mock.patch.object(app, "parse_input", wraps=app.parse_input) as parse_input_mock:
+                response = app.lambda_handler(self._event(), None)
+
+        self.assertEqual(response["statusCode"], 200)
+        parse_input_mock.assert_called_once()
+        self.assertEqual(parse_input_mock.call_args.kwargs.get("now_ts"), month_end_ts)
+        body = json.loads(response["body"])
+        self.assertEqual(body.get("billing_period"), "2024-03")
+        self.assertTrue(body["quote_id"].startswith("renewal#2024-03#"))
+
+    def test_renewal_idempotent_retry_includes_renewal_fields(self):
+        first = app.lambda_handler(self._event(), None)
+        second = app.lambda_handler(self._event(), None)
+
+        self.assertEqual(first["statusCode"], 200)
+        self.assertEqual(second["statusCode"], 200)
+
+        first_body = json.loads(first["body"])
+        second_body = json.loads(second["body"])
+        self.assertEqual(second_body["result"], "already_settled")
+        self.assertTrue(second_body.get("renewal"))
+        self.assertEqual(second_body.get("object_key"), self.object_key)
+        self.assertEqual(second_body.get("billing_period"), first_body.get("billing_period"))
+
+    def test_renewal_retry_backfills_missing_renewal_log_after_transient_failure(self):
+        original_put_item = self.renewal_table.put_item
+        first_call = {"pending": True}
+
+        def flaky_put_item(*, Item, ConditionExpression=None, ExpressionAttributeValues=None):
+            if first_call["pending"]:
+                first_call["pending"] = False
+                raise ClientError(
+                    {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "throttled"}},
+                    "PutItem",
+                )
+            return original_put_item(
+                Item=Item,
+                ConditionExpression=ConditionExpression,
+                ExpressionAttributeValues=ExpressionAttributeValues,
+            )
+
+        self.renewal_table.put_item = flaky_put_item
+
+        first = app.lambda_handler(self._event(), None)
+        second = app.lambda_handler(self._event(), None)
+
+        self.assertEqual(first["statusCode"], 500)
+        self.assertEqual(second["statusCode"], 200)
+        second_body = json.loads(second["body"])
+        self.assertEqual(second_body["result"], "already_settled")
+        self.assertTrue(second_body.get("renewal"))
+        self.assertEqual(len(self.renewal_table.items), 1)
 
 
 if __name__ == "__main__":
