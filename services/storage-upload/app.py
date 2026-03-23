@@ -50,13 +50,13 @@ except ModuleNotFoundError:
     )
 
 try:
-    from common.renewal_keys import active_inventory_sk
+    from common.renewal_keys import ACTIVE_STORAGE_GSI_PARTITION, active_inventory_sk
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from common.renewal_keys import active_inventory_sk
+    from common.renewal_keys import ACTIVE_STORAGE_GSI_PARTITION, active_inventory_sk
 
 
 log_api_call = load_log_api_call(emit_warning=True, logger=logging.getLogger(__name__))
@@ -86,7 +86,6 @@ UPLOAD_TRANSACTION_LOG_TABLE_ENV = "UPLOAD_TRANSACTION_LOG_TABLE_NAME"
 UPLOAD_IDEMPOTENCY_TABLE_ENV = "UPLOAD_IDEMPOTENCY_TABLE_NAME"
 PAYMENT_LEDGER_TABLE_ENV = "PAYMENT_LEDGER_TABLE_NAME"
 ACTIVE_STORAGE_OBJECT_TABLE_ENV = "ACTIVE_STORAGE_OBJECT_TABLE_NAME"
-ACTIVE_STORAGE_GSI_PARTITION = "ACTIVE"
 RELAYER_SECRET_ID_ENV = "MNEMOSPARK_RELAYER_SECRET_ID"
 
 _RELAYER_PRIVATE_KEY_CACHE: str | None = None
