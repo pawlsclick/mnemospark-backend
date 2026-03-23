@@ -2549,7 +2549,6 @@ def confirm_upload_handler(event: dict[str, Any], context: Any) -> dict[str, Any
             bucket_home_raw = actual_region_from_head_bucket_error_response(hb_exc.response)
             if bucket_home_raw:
                 enforce_requested_matches_bucket_home(quote_context.location, bucket_home_raw)
-                raise
             elif hb_code in {"400", "BadRequest", "301", "PermanentRedirect"}:
                 bucket_home = resolve_bucket_home_region_from_head_bucket_error(
                     s3_client=s3_client,
