@@ -338,6 +338,24 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _quote_context_from_storage_price_and_item(storage_price: Decimal, item: dict[str, Any]) -> QuoteContext:
+    payment_core = _payment_core()
+    storage_price_micro = int(
+        (storage_price * payment_core.USDC_DECIMALS).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    )
+
+    provider = str(item.get("provider") or "aws").strip() or "aws"
+    default_location = "us-" + "east-1"
+    location = str(item.get("location") or item.get("region") or default_location).strip() or default_location
+
+    return QuoteContext(
+        storage_price=storage_price,
+        storage_price_micro=storage_price_micro,
+        provider=provider,
+        location=location,
+    )
+
+
 def _build_quote_context(quote_item: dict[str, Any] | None, request: ParsedPaymentSettleRequest, now: int) -> QuoteContext:
     if not quote_item:
         raise NotFoundError("quote_not_found")
@@ -359,21 +377,7 @@ def _build_quote_context(quote_item: dict[str, Any] | None, request: ParsedPayme
     if storage_price <= 0:
         raise BadRequestError("quote.storage_price must be greater than 0")
 
-    payment_core = _payment_core()
-    storage_price_micro = int(
-        (storage_price * payment_core.USDC_DECIMALS).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-    )
-
-    provider = str(quote_item.get("provider") or "aws").strip() or "aws"
-    default_location = "us-" + "east-1"
-    location = str(quote_item.get("location") or quote_item.get("region") or default_location).strip() or default_location
-
-    return QuoteContext(
-        storage_price=storage_price,
-        storage_price_micro=storage_price_micro,
-        provider=provider,
-        location=location,
-    )
+    return _quote_context_from_storage_price_and_item(storage_price, quote_item)
 
 
 def _quote_context_from_active_inventory(
@@ -399,21 +403,7 @@ def _quote_context_from_active_inventory(
     if storage_price <= 0:
         raise BadRequestError("inventory.storage_price must be greater than 0")
 
-    payment_core = _payment_core()
-    storage_price_micro = int(
-        (storage_price * payment_core.USDC_DECIMALS).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-    )
-
-    provider = str(item.get("provider") or "aws").strip() or "aws"
-    default_location = "us-" + "east-1"
-    location = str(item.get("location") or item.get("region") or default_location).strip() or default_location
-
-    return QuoteContext(
-        storage_price=storage_price,
-        storage_price_micro=storage_price_micro,
-        provider=provider,
-        location=location,
-    )
+    return _quote_context_from_storage_price_and_item(storage_price, item)
 
 
 def _head_object_or_not_found(s3_client: Any, bucket_name: str, object_key: str) -> None:
