@@ -30,13 +30,13 @@ import boto3
 from botocore.exceptions import ClientError
 
 try:
-    from common.renewal_keys import billing_period_object_key, billing_period_utc
+    from common.renewal_keys import ACTIVE_STORAGE_GSI_PARTITION, billing_period_object_key, billing_period_utc
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from common.renewal_keys import billing_period_object_key, billing_period_utc
+    from common.renewal_keys import ACTIVE_STORAGE_GSI_PARTITION, billing_period_object_key, billing_period_utc
 
 US_EAST_1_REGION = "us-" + "east-1"
 DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
@@ -53,7 +53,6 @@ BILLING_INTERVAL_DAYS_ENV = "HOUSEKEEPING_BILLING_INTERVAL_DAYS"
 GRACE_PERIOD_DAYS_ENV = "HOUSEKEEPING_GRACE_PERIOD_DAYS"
 SCAN_LIMIT_ENV = "HOUSEKEEPING_SCAN_LIMIT"
 DRY_RUN_ENV = "HOUSEKEEPING_DRY_RUN"
-STATUS_ACTIVE_GSI_VALUE = "ACTIVE"
 
 ADDRESS_PATTERN = re.compile(r"^0x[a-fA-F0-9]{40}$")
 NOT_FOUND_S3_ERROR_CODES = {
@@ -506,7 +505,7 @@ def _run_renewal_calendar_housekeeping(event: dict[str, Any]) -> dict[str, Any]:
     query_kwargs: dict[str, Any] = {
         "IndexName": "GsiActiveInventory",
         "KeyConditionExpression": "status_active = :s",
-        "ExpressionAttributeValues": {":s": STATUS_ACTIVE_GSI_VALUE},
+        "ExpressionAttributeValues": {":s": ACTIVE_STORAGE_GSI_PARTITION},
     }
 
     while True:
