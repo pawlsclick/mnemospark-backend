@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
@@ -43,7 +43,7 @@ jobs:
 
       - name: OWASP ZAP Baseline
         if: ${{ always() && vars.ZAP_TARGET_URL_STAGING != '' && !contains(vars.ZAP_TARGET_URL_STAGING, 'example.com') }}
-        uses: zaproxy/action-baseline@v0.12.0
+        uses: zaproxy/action-baseline@v0.15.0
         with:
           target: ${{ vars.ZAP_TARGET_URL_STAGING }}
           fail_action: true
@@ -54,7 +54,7 @@ jobs:
         run: echo "Skipping ZAP baseline because ZAP_TARGET_URL_STAGING is placeholder or unset."
 
       - name: Upload ZAP report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: zap-baseline-report
