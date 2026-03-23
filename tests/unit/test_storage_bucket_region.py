@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import pickle
 import sys
 import unittest
 from pathlib import Path
@@ -88,6 +90,17 @@ class EnforceRequestedMatchesTests(unittest.TestCase):
             enforce_requested_matches_bucket_home("us-west-2", "eu-west-1")
         self.assertEqual(ctx.exception.requested_region, "us-west-2")
         self.assertEqual(ctx.exception.bucket_home_region, "eu-west-1")
+
+    def test_mismatch_error_supports_pickle_and_copy(self):
+        err = BucketRegionMismatchError(
+            requested_region="us-west-2", bucket_home_region="eu-west-1"
+        )
+        restored = pickle.loads(pickle.dumps(err))
+        cloned = copy.copy(err)
+        self.assertEqual(restored.requested_region, "us-west-2")
+        self.assertEqual(restored.bucket_home_region, "eu-west-1")
+        self.assertEqual(cloned.requested_region, "us-west-2")
+        self.assertEqual(cloned.bucket_home_region, "eu-west-1")
 
 
 if __name__ == "__main__":

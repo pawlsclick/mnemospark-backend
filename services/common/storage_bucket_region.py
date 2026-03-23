@@ -48,6 +48,10 @@ class BucketRegionMismatchError(Exception):
     requested_region: str
     bucket_home_region: str
 
+    def __post_init__(self) -> None:
+        # Keep BaseException.args aligned with constructor arguments for pickle/copy.
+        super().__init__(self.requested_region, self.bucket_home_region)
+
     def __str__(self) -> str:
         return (
             f"Storage for this wallet is in {self.bucket_home_region}; "
