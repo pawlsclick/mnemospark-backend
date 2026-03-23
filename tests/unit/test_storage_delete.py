@@ -404,3 +404,39 @@ class StorageDeleteLambdaTests(unittest.TestCase):
         self.assertEqual(body["details"]["bucket_region"], "eu-west-1")
         self.assertEqual(body["details"]["requested_region"], "us-west-2")
 
+    def test_head_bucket_403_raises_original_error_without_get_bucket_location_fallback(self):
+        wallet_address = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        object_key = "x.bin"
+        bucket = app._bucket_name(wallet_address)
+        s3_client = FakeS3Client(bucket_home_region="eu-west-1")
+        s3_client.seed_object(bucket, object_key)
+        s3_client.head_bucket_error = ClientError(
+            {"Error": {"Code": "403", "Message": "Forbidden"}},
+            "HeadBucket",
+        )
+        s3_client.get_bucket_location = mock.Mock(
+            side_effect=ClientError(
+                {"Error": {"Code": "500", "Message": "InternalError"}},
+                "GetBucketLocation",
+            )
+        )
+
+        event = {
+            "httpMethod": "DELETE",
+            "queryStringParameters": {
+                "wallet_address": wallet_address,
+                "object_key": object_key,
+                "location": "us-west-2",
+            },
+            "requestContext": {"authorizer": {"walletAddress": wallet_address}},
+        }
+
+        with mock.patch.object(app.boto3, "client", return_value=s3_client):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 500)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "Internal error")
+        self.assertIn("HeadBucket", body["message"])
+        s3_client.get_bucket_location.assert_not_called()
+

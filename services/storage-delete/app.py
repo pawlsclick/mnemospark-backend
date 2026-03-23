@@ -77,6 +77,7 @@ BUCKET_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.-]*[a-z0-9]$")
 BUCKET_FORBIDDEN_PREFIXES = ("xn--", "sthree-", "amzn-s3-demo-")
 BUCKET_FORBIDDEN_SUFFIXES = ("-s3alias", "--ol-s3", ".mrap", "--x-s3", "--table-s3")
 BUCKET_IP_PATTERN = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+HEAD_BUCKET_REGION_HINT_ERROR_CODES = {"301", "PermanentRedirect", "400", "BadRequest"}
 
 
 class BadRequestError(ValueError):
@@ -235,8 +236,11 @@ def _require_bucket_exists(s3_client: Any, bucket_name: str, requested_location:
     try:
         head_resp = s3_client.head_bucket(Bucket=bucket_name)
     except ClientError as exc:
-        if _parse_s3_error_code(exc) in {"404", "NotFound", "NoSuchBucket"}:
+        error_code = _parse_s3_error_code(exc)
+        if error_code in {"404", "NotFound", "NoSuchBucket"}:
             raise NotFoundError("bucket_not_found") from exc
+        if error_code not in HEAD_BUCKET_REGION_HINT_ERROR_CODES:
+            raise
         bucket_home = resolve_bucket_home_region_from_head_bucket_error(
             s3_client, bucket_name, exc.response
         )

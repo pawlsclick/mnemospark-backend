@@ -373,6 +373,37 @@ class StorageUploadHelperTests(unittest.TestCase):
         self.assertEqual(ctx.exception.requested_region, "us-west-2")
         self.assertEqual(len(s3_client.created_buckets), 0)
 
+    def test_ensure_bucket_exists_head_bucket_400_then_no_such_bucket_creates_bucket(self):
+        class HeadBucket400ThenNoSuchBucketClient(FakeS3Client):
+            def head_bucket(self, Bucket):
+                raise ClientError(
+                    {
+                        "Error": {"Code": "400", "Message": "Bad Request"},
+                    },
+                    "HeadBucket",
+                )
+
+            def get_bucket_location(self, Bucket):
+                raise ClientError(
+                    {
+                        "Error": {"Code": "NoSuchBucket", "Message": "bucket does not exist"},
+                    },
+                    "GetBucketLocation",
+                )
+
+        s3_client = HeadBucket400ThenNoSuchBucketClient()
+        app._ensure_bucket_exists(
+            s3_client=s3_client,
+            bucket_name="mnemospark-test-bucket",
+            location="us-west-2",
+        )
+
+        self.assertEqual(len(s3_client.created_buckets), 1)
+        self.assertEqual(
+            s3_client.created_buckets[0]["CreateBucketConfiguration"],
+            {"LocationConstraint": "us-west-2"},
+        )
+
     def test_extract_transfer_authorization_preserves_explicit_zero_value(self):
         payment_payload = {
             "payload": {
