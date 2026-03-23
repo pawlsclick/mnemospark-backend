@@ -338,7 +338,7 @@ class StorageDeleteLambdaTests(unittest.TestCase):
         self.assertEqual(body["details"]["requested_region"], "us-west-2")
 
     def test_bucket_region_mismatch_from_head_bucket_301_returns_400(self):
-        wallet_address = "0xdddddddddddddddddddddddddddddddddddddddd"
+        wallet_address = "0x" + ("d" * 40)
         object_key = "x.bin"
         bucket = app._bucket_name(wallet_address)
         s3_client = FakeS3Client(bucket_home_region="eu-west-1")
@@ -375,7 +375,7 @@ class StorageDeleteLambdaTests(unittest.TestCase):
         self.assertEqual(body["details"]["requested_region"], "us-west-2")
 
     def test_bucket_region_mismatch_from_head_bucket_400_fallback_returns_400(self):
-        wallet_address = "0xdddddddddddddddddddddddddddddddddddddddd"
+        wallet_address = "0x" + ("d" * 40)
         object_key = "x.bin"
         bucket = app._bucket_name(wallet_address)
         s3_client = FakeS3Client(bucket_home_region="eu-west-1")
