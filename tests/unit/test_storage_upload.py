@@ -1067,6 +1067,67 @@ class StorageUploadLambdaTests(unittest.TestCase):
         idem_item = self.idempotency_table.items[(("idempotency_key", "idem-confirm-success"),)]
         self.assertEqual(idem_item["status"], "completed")
 
+    def test_confirm_upload_retries_transient_active_inventory_write_failure(self):
+        event = self._make_event(
+            headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-confirm-active-retry"},
+            mode="presigned",
+            content_sha256="abcd1234",
+            content_length_bytes=12345,
+        )
+        body = json.loads(event["body"])
+        body.pop("ciphertext", None)
+        event["body"] = json.dumps(body)
+        fake_payment_result = app.PaymentVerificationResult(
+            trans_id="0xconfirm-active-retry",
+            network="eip155:8453",
+            asset="0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
+            amount=1_250_000,
+        )
+
+        with mock.patch.object(app, "verify_and_settle_payment", return_value=fake_payment_result):
+            first_response = app.lambda_handler(event, None)
+        first_body = json.loads(first_response["body"])
+        self.s3_client.objects.add((first_body["bucket_name"], first_body["object_key"]))
+
+        confirm_event = self._make_confirm_event(idempotency_key="idem-confirm-active-retry")
+        transient_throttle = ClientError(
+            {
+                "Error": {
+                    "Code": "ProvisionedThroughputExceededException",
+                    "Message": "simulated throttle",
+                }
+            },
+            "PutItem",
+        )
+        original_put_active = app._put_active_storage_object_record
+
+        def fail_once_then_put(*args, **kwargs):
+            if fail_once_then_put.calls == 0:
+                fail_once_then_put.calls += 1
+                raise transient_throttle
+            return original_put_active(*args, **kwargs)
+
+        fail_once_then_put.calls = 0
+        with (
+            mock.patch.object(
+                app,
+                "_put_active_storage_object_record",
+                side_effect=fail_once_then_put,
+            ) as put_active_mock,
+            mock.patch.object(app.time, "sleep") as sleep_mock,
+        ):
+            response = app.confirm_upload_handler(confirm_event, None)
+
+        self.assertEqual(response["statusCode"], 200)
+        self.assertEqual(put_active_mock.call_count, 2)
+        sleep_mock.assert_called_once()
+        idem_item = self.idempotency_table.items[(("idempotency_key", "idem-confirm-active-retry"),)]
+        self.assertEqual(idem_item["status"], "completed")
+        active_item = self.active_storage_table.items[
+            (("wallet_address", self.wallet_address), ("object_key", self.object_id))
+        ]
+        self.assertEqual(active_item["status"], "active")
+
     def test_confirm_upload_returns_404_when_s3_object_missing(self):
         event = self._make_event(
             headers={"PAYMENT-SIGNATURE": "mock", "Idempotency-Key": "idem-confirm-404"},
