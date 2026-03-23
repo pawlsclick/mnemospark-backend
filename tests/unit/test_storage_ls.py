@@ -31,7 +31,7 @@ class FakeS3Client:
         self.objects_by_bucket = objects_by_bucket
         self.list_calls: list[dict] = []
         self.bucket_home_region = bucket_home_region or app.DEFAULT_LOCATION
-        self.head_bucket_error: dict | None = None
+        self.head_bucket_error: ClientError | None = None
 
     def head_bucket(self, Bucket):
         if self.head_bucket_error is not None:
