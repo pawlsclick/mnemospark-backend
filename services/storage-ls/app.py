@@ -262,7 +262,7 @@ def _assert_bucket_access(s3_client: Any, bucket_name: str, requested_location: 
         bucket_home_raw = actual_region_from_head_bucket_error_response(exc.response)
         if bucket_home_raw:
             enforce_requested_matches_bucket_home(requested_location, bucket_home_raw)
-        elif error_code in NOT_FOUND_S3_ERROR_CODES:
+        if error_code in NOT_FOUND_S3_ERROR_CODES:
             raise NotFoundError("bucket_not_found", "Bucket not found for this wallet") from exc
         elif error_code in {"301", "PermanentRedirect", "400", "BadRequest"}:
             bucket_home = resolve_bucket_home_region_from_head_bucket_error(

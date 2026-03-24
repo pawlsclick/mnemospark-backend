@@ -445,6 +445,27 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertEqual(body["details"]["bucket_region"], "eu-west-1")
         self.assertEqual(body["details"]["requested_region"], "us-west-2")
 
+    def test_lambda_handler_head_bucket_403_with_matching_region_returns_404_bucket_not_found(self):
+        class ForbiddenS3Client(FakeS3Client):
+            def head_bucket(self, Bucket):
+                raise ClientError(
+                    {
+                        "Error": {"Code": "403", "Message": "Forbidden"},
+                        "ResponseMetadata": {
+                            "HTTPHeaders": {"x-amz-bucket-region": "us-west-2"},
+                        },
+                    },
+                    "HeadBucket",
+                )
+
+        client = ForbiddenS3Client({self.bucket: {self.object_key: 12345}})
+        with mock.patch.object(app.boto3, "client", return_value=client):
+            response = app.lambda_handler(self._get_event(), None)
+
+        self.assertEqual(response["statusCode"], 404)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "bucket_not_found")
+
     def test_lambda_handler_bad_request_returns_400(self):
         event = {
             "queryStringParameters": {
