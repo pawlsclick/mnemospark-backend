@@ -31,6 +31,7 @@ try:
     )
     from common.storage_bucket_region import (
         BucketRegionMismatchError,
+        actual_region_from_head_bucket_error_response,
         enforce_requested_matches_bucket_home,
         resolve_bucket_home_region_from_head_bucket_error,
         resolve_bucket_home_region,
@@ -50,6 +51,7 @@ except ModuleNotFoundError:
     )
     from common.storage_bucket_region import (
         BucketRegionMismatchError,
+        actual_region_from_head_bucket_error_response,
         enforce_requested_matches_bucket_home,
         resolve_bucket_home_region_from_head_bucket_error,
         resolve_bucket_home_region,
@@ -239,13 +241,15 @@ def _require_bucket_exists(s3_client: Any, bucket_name: str, requested_location:
         error_code = _parse_s3_error_code(exc)
         if error_code in {"404", "NotFound", "NoSuchBucket"}:
             raise NotFoundError("bucket_not_found") from exc
-        if error_code not in HEAD_BUCKET_REGION_HINT_ERROR_CODES:
-            raise
-        bucket_home = resolve_bucket_home_region_from_head_bucket_error(
-            s3_client, bucket_name, exc.response
-        )
-        if bucket_home is not None:
-            enforce_requested_matches_bucket_home(requested_location, bucket_home)
+        bucket_home_raw = actual_region_from_head_bucket_error_response(exc.response)
+        if bucket_home_raw:
+            enforce_requested_matches_bucket_home(requested_location, bucket_home_raw)
+        elif error_code in HEAD_BUCKET_REGION_HINT_ERROR_CODES:
+            bucket_home = resolve_bucket_home_region_from_head_bucket_error(
+                s3_client, bucket_name, exc.response
+            )
+            if bucket_home is not None:
+                enforce_requested_matches_bucket_home(requested_location, bucket_home)
         raise
     bucket_home = resolve_bucket_home_region(s3_client, bucket_name, head_resp)
     enforce_requested_matches_bucket_home(requested_location, bucket_home)
