@@ -15,32 +15,19 @@ from dashboard_graphql.domain.payment_ledger_read import revenue_summary_for_wal
 from dashboard_graphql.schema import schema  # noqa: E402
 
 
-class _FakePaginator:
-    def __init__(self, pages: list[dict]):
-        self._pages = pages
-
-    def paginate(self, **kwargs):
-        yield from self._pages
-
-
-class _FakeClient:
-    def __init__(self, pages: list[dict]):
-        self._pages = pages
-
-    def get_paginator(self, name: str):
-        assert name == "query"
-        return _FakePaginator(self._pages)
-
-
-class _FakeMeta:
-    def __init__(self, pages: list[dict]):
-        self.client = _FakeClient(pages)
-
-
 class _FakeTable:
     def __init__(self, pages: list[dict]):
-        self.name = "payments-test"
-        self.meta = _FakeMeta(pages)
+        self._pages = pages
+        self._idx = 0
+
+    def query(self, **kwargs):
+        if self._idx >= len(self._pages):
+            return {"Items": []}
+        page = self._pages[self._idx]
+        self._idx += 1
+        if self._idx < len(self._pages):
+            page = {**page, "LastEvaluatedKey": {"wallet_address": "0xabc", "id": str(self._idx)}}
+        return page
 
 
 class DashboardGraphqlDomainTests(unittest.TestCase):
