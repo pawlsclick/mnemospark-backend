@@ -1,7 +1,7 @@
 openapi: "3.2.0"
 info:
   title: mnemospark-backend API
-  version: "0.1.2"
+  version: "0.1.3"
   license:
     name: Proprietary
   description: >
@@ -9,10 +9,19 @@ info:
     public endpoints. Paths are unversioned today, but treated as v1 semantics.
 servers:
   - url: https://{api_id}.execute-api.{region}.amazonaws.com/{stage}
-    description: API Gateway invoke URL placeholder
+    description: Customer REST API (wallet-proof) invoke URL placeholder
     variables:
       api_id:
         default: your-api-id
+      region:
+        default: your-region
+      stage:
+        default: prod
+  - url: https://{http_api_id}.execute-api.{region}.amazonaws.com/{stage}
+    description: Internal dashboard GraphQL HTTP API (separate from customer REST API)
+    variables:
+      http_api_id:
+        default: your-dashboard-http-api-id
       region:
         default: your-region
       stage:
@@ -26,6 +35,8 @@ tags:
     description: Payment settlement operations
   - name: storage
     description: Wallet-scoped storage object operations
+  - name: dashboard
+    description: Internal Ops Console (dashboard v2) read-only GraphQL transport
 paths:
   /price-storage:
     post:
@@ -380,6 +391,67 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /graphql:
+    post:
+      tags: [dashboard]
+      summary: Execute GraphQL operation (dashboard v2)
+      description: >
+        Standard GraphQL-over-HTTP POST. Field-level types and operations are defined in
+        `services/dashboard_graphql/schema.graphql` (Strawberry). This operation documents
+        the HTTP envelope only. The API is deployed on a **separate** API Gateway HTTP API
+        from the customer REST API; use the **dashboardGraphqlHttpApi** server entry.
+      operationId: postDashboardGraphql
+      servers:
+        - url: https://{http_api_id}.execute-api.{region}.amazonaws.com/{stage}
+          variables:
+            http_api_id:
+              default: your-dashboard-http-api-id
+            region:
+              default: your-region
+            stage:
+              default: prod
+      security:
+        - dashboardAwsIam: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DashboardGraphqlRequest"
+      responses:
+        "200":
+          description: GraphQL response (data and/or errors)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardGraphqlResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    options:
+      tags: [dashboard]
+      summary: CORS preflight for GraphQL
+      description: >
+        API Gateway may handle OPTIONS; the Lambda also returns 204 with CORS headers for
+        `/graphql` preflight when integrated.
+      operationId: optionsDashboardGraphql
+      servers:
+        - url: https://{http_api_id}.execute-api.{region}.amazonaws.com/{stage}
+          variables:
+            http_api_id:
+              default: your-dashboard-http-api-id
+            region:
+              default: your-region
+            stage:
+              default: prod
+      security: []
+      responses:
+        "204":
+          description: No content (CORS preflight)
+
 components:
   securitySchemes:
     walletProof:
@@ -393,6 +465,16 @@ components:
         The header value is base64-encoded JSON with payloadB64, signature, and address.
         The backend verifies the EIP-712 signature and rejects requests with missing,
         malformed, or invalid proofs (403). Required for all wallet-scoped endpoints.
+
+    dashboardAwsIam:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: >
+        AWS Signature Version 4 (SigV4) for IAM-authorized HTTP API access. Clients send
+        `Authorization`, `X-Amz-Date`, and when using temporary credentials
+        `X-Amz-Security-Token`, per API Gateway HTTP API IAM auth. Do not expose long-lived
+        keys in browser bundles; prefer a server-side BFF or task role.
 
   parameters:
     WalletAddressQuery:
@@ -518,6 +600,61 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
 
   schemas:
+    DashboardGraphqlRequest:
+      type: object
+      description: Standard GraphQL-over-HTTP JSON body.
+      properties:
+        query:
+          type: string
+          description: GraphQL query or mutation document.
+        variables:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Optional variables map for the operation.
+        operationName:
+          type: string
+          nullable: true
+          description: Optional operation name when the document defines multiple operations.
+      required:
+        - query
+
+    DashboardGraphqlResponse:
+      type: object
+      description: >
+        GraphQL response envelope. The `data` shape depends on the operation; see the SDL
+        in `services/dashboard_graphql/schema.graphql`.
+      properties:
+        data:
+          type: object
+          additionalProperties: true
+          nullable: true
+        errors:
+          type: array
+          nullable: true
+          items:
+            $ref: "#/components/schemas/DashboardGraphqlError"
+      additionalProperties: true
+
+    DashboardGraphqlError:
+      type: object
+      properties:
+        message:
+          type: string
+        locations:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        path:
+          type: array
+          items: {}
+        extensions:
+          type: object
+          additionalProperties: true
+      required:
+        - message
+
     PriceStorageRequest:
       type: object
       required:

@@ -1,0 +1,14 @@
+type Health {
+  ok: Boolean!
+}
+
+type Query {
+  health: Health!
+  revenueSummary(walletAddress: String!): RevenueSummary!
+}
+
+type RevenueSummary {
+  walletAddress: String!
+  confirmedPaymentCount: Int!
+  totalAmount: String!
+}

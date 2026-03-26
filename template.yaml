@@ -820,6 +820,109 @@ Resources:
                 - type: string
               description: Alternate inline payment authorization envelope.
 
+  DashboardGraphQLLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: dashboard-graphql-dynamodb-readonly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:BatchGetItem
+                  - dynamodb:Scan
+                  - dynamodb:DescribeTable
+                Resource:
+                  - !GetAtt QuotesTable.Arn
+                  - !Sub "${QuotesTable.Arn}/index/*"
+                  - !GetAtt UploadTransactionLogTable.Arn
+                  - !Sub "${UploadTransactionLogTable.Arn}/index/*"
+                  - !GetAtt UploadIdempotencyTable.Arn
+                  - !Sub "${UploadIdempotencyTable.Arn}/index/*"
+                  - !GetAtt WalletAuthEventsTable.Arn
+                  - !Sub "${WalletAuthEventsTable.Arn}/index/*"
+                  - !GetAtt ApiCallsTable.Arn
+                  - !Sub "${ApiCallsTable.Arn}/index/*"
+                  - !GetAtt PaymentLedgerTable.Arn
+                  - !Sub "${PaymentLedgerTable.Arn}/index/*"
+                  - !GetAtt ActiveStorageObjectTable.Arn
+                  - !Sub "${ActiveStorageObjectTable.Arn}/index/*"
+                  - !GetAtt RenewalTransactionLogTable.Arn
+                  - !Sub "${RenewalTransactionLogTable.Arn}/index/*"
+                  - !GetAtt RelayerTransactionsTable.Arn
+                  - !Sub "${RelayerTransactionsTable.Arn}/index/*"
+                  - !GetAtt RelayerStatsTable.Arn
+                  - !Sub "${RelayerStatsTable.Arn}/index/*"
+                  - !GetAtt RelayerHealthTable.Arn
+                  - !Sub "${RelayerHealthTable.Arn}/index/*"
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  DashboardGraphQLHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref StageName
+      Description: Internal read-only GraphQL for Ops Console (dashboard v2); IAM (SigV4) auth.
+      Tags:
+        Project: mnemospark
+      Auth:
+        EnableIamAuthorizer: true
+        DefaultAuthorizer: AWS_IAM
+
+  DashboardGraphQLFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-dashboard-graphql"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  DashboardGraphQLFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - DashboardGraphQLFunctionLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-dashboard-graphql"
+      Handler: app.lambda_handler
+      CodeUri: services/dashboard_graphql
+      Role: !GetAtt DashboardGraphQLLambdaRole.Arn
+      MemorySize: 512
+      Timeout: 30
+      Environment:
+        Variables:
+          PAYMENT_LEDGER_TABLE_NAME: !Ref PaymentLedgerTable
+      Events:
+        DashboardGraphqlPost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DashboardGraphQLHttpApi
+            Path: /graphql
+            Method: POST
+            Auth:
+              Authorizer: AWS_IAM
+        DashboardGraphqlOptions:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DashboardGraphQLHttpApi
+            Path: /graphql
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
+
   PriceStorageFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1654,3 +1757,13 @@ Outputs:
   BaseRelayerMonitorScheduleRuleArn:
     Description: EventBridge rule ARN for Base relayer monitor schedule
     Value: !GetAtt BaseRelayerMonitorScheduleRule.Arn
+  DashboardGraphQLHttpApiUrl:
+    Description: Invoke URL for internal dashboard GraphQL HTTP API (POST /graphql); IAM (SigV4).
+    Value: !Sub "https://${DashboardGraphQLHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${StageName}"
+    Export:
+      Name: !Sub "${AWS::StackName}-DashboardGraphQLHttpApiUrl"
+  DashboardGraphQLHttpApiId:
+    Description: API Gateway HTTP API id for dashboard GraphQL
+    Value: !Ref DashboardGraphQLHttpApi
+    Export:
+      Name: !Sub "${AWS::StackName}-DashboardGraphQLHttpApiId"
