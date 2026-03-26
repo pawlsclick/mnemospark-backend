@@ -26,7 +26,10 @@ The current internet-facing API Gateway routes are:
 
 There are no additional public routes at this time; scheduled/internal functions
 (for example storage housekeeping and [Base relayer monitoring](base-relayer-monitoring.md))
-are not part of the public API contract. When housekeeping runs in **renewal calendar**
+are not part of the public API contract. **Internal** HTTP surfaces (for example a future
+dashboard GraphQL transport) are still documented in the same **`openapi.yaml`** (OpenAPI
+v3.2) when they are exposed via API Gateway, alongside any new **`components`** and
+**`security`** requirements. When housekeeping runs in **renewal calendar**
 mode, it enforces payment by querying active inventory and renewal rows (UTC billing month),
 rather than scanning upload logs on a fixed day interval.
 
