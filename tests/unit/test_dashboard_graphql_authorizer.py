@@ -53,6 +53,19 @@ class DashboardGraphqlAuthorizerTests(unittest.TestCase):
             )
         self.assertTrue(out["isAuthorized"])
 
+    def test_identity_source_only_allows(self):
+        fake = mock.Mock()
+        fake.get_secret_value.return_value = {"SecretString": "only-from-identity"}
+        with (
+            mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:1:secret:x"}, clear=False),
+            mock.patch.object(authorizer_app, "_client", return_value=fake),
+        ):
+            out = authorizer_app.lambda_handler(
+                {"headers": {}, "identitySource": ["only-from-identity"]},
+                None,
+            )
+        self.assertTrue(out["isAuthorized"])
+
     def test_json_secret_with_api_key_dashboard_field(self):
         fake = mock.Mock()
         fake.get_secret_value.return_value = {
