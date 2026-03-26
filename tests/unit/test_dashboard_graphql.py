@@ -19,6 +19,8 @@ from dashboard_graphql.domain.event_fact_builder import (  # noqa: E402
 )
 from dashboard_graphql.domain.normalize import normalize_status  # noqa: E402
 from dashboard_graphql.domain.payment_ledger_read import revenue_summary_for_wallet  # noqa: E402
+from dashboard_graphql.domain.quote_fact_builder import build_quote_facts  # noqa: E402
+from dashboard_graphql.request_context import DashboardRequestContext  # noqa: E402
 from dashboard_graphql.schema import schema  # noqa: E402
 
 
@@ -150,8 +152,6 @@ class DashboardGraphqlSchemaTests(unittest.TestCase):
 
     @mock.patch("dashboard_graphql.domain.dynamo_scan.scan_table", return_value=[])
     def test_quote_funnel_empty_with_context(self, _scan: object) -> None:
-        from dashboard_graphql.request_context import DashboardRequestContext
-
         result = schema.execute_sync(
             """
             query Q {
@@ -171,6 +171,37 @@ class DashboardGraphqlSchemaTests(unittest.TestCase):
         self.assertEqual(qf["quoteCreated"], 0)
         self.assertEqual(qf["paymentSettled"], 0)
 
+    def test_trace_by_quote_id_uses_requested_time_range(self) -> None:
+        class _TrackingDashboardContext(DashboardRequestContext):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls: list[tuple[str | None, str | None]] = []
+
+            def event_facts(
+                self, *, time_from: str | None, time_to: str | None
+            ) -> list[dict[str, object]]:
+                self.calls.append((time_from, time_to))
+                return []
+
+        ctx = _TrackingDashboardContext()
+        result = schema.execute_sync(
+            """
+            query Q($qid: String!, $tr: TimeRangeInput) {
+              traceByQuoteId(quoteId: $qid, timeRange: $tr) {
+                id
+              }
+            }
+            """,
+            variable_values={
+                "qid": "q-123",
+                "tr": {"from": "2024-01-01T00:00:00Z"},
+            },
+            context_value={"dashboard": ctx},
+        )
+        self.assertIsNone(result.errors)
+        self.assertEqual(result.data["traceByQuoteId"], [])
+        self.assertEqual(ctx.calls, [("2024-01-01T00:00:00Z", None)])
+
 
 class DashboardNormalizeAndMetadataTests(unittest.TestCase):
     def test_payment_settle_failures_not_classified_as_settled(self) -> None:
@@ -188,3 +219,49 @@ class DashboardNormalizeAndMetadataTests(unittest.TestCase):
         safe = _json_safe_metadata(row)
         json.dumps(safe)
         self.assertEqual(safe, {"n": 2.0, "nested": {"x": 1.25}})
+
+    def test_build_quote_facts_uses_event_facts_without_rescanning_api_calls(self) -> None:
+        event_facts = [
+            {
+                "eventId": "api:r-123",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "walletAddress": "0xabc",
+                "quoteId": "q-123",
+                "requestId": "r-123",
+                "route": "/price-storage",
+                "lambdaName": None,
+                "normalizedStatus": "quote_created",
+                "normalizedReason": None,
+                "source": "api_calls",
+                "eventType": "quote_created",
+                "rawStatus": "ok",
+                "rawReason": None,
+                "isFailure": False,
+                "transId": None,
+                "idempotencyKey": None,
+                "network": None,
+                "amountNormalized": 0.0,
+                "metadata": {
+                    "object_id": "obj-1",
+                    "object_id_hash": "hash-1",
+                    "object_key": "key-1",
+                },
+            }
+        ]
+        with (
+            mock.patch.dict("os.environ", {"API_CALLS_TABLE_NAME": "api-calls-test"}, clear=False),
+            mock.patch(
+                "dashboard_graphql.domain.dynamo_scan.boto3.resource",
+                side_effect=AssertionError("build_quote_facts must not rescan api_calls"),
+            ),
+        ):
+            rows = build_quote_facts(time_from=None, time_to=None, event_facts=event_facts)
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["quoteId"], "q-123")
+        self.assertEqual(row["walletAddress"], "0xabc")
+        self.assertEqual(row["finalStatus"], "quote_created")
+        self.assertEqual(row["objectId"], "obj-1")
+        self.assertEqual(row["objectIdHash"], "hash-1")
+        self.assertEqual(row["objectKey"], "key-1")
