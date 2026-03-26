@@ -22,18 +22,17 @@ def revenue_summary_for_wallet(*, table: Any, wallet_address: str) -> tuple[int,
     """
     Sum confirmed payment amounts for one wallet (partition key query).
 
+    Expects wallet_address to already be normalized via normalize_wallet_address.
     Returns (confirmed_count, total_amount) where total_amount is a decimal string
     in ledger storage format (USDC amount strings).
     """
-    normalized = normalize_wallet_address(wallet_address)
-
     total = Decimal("0")
     count = 0
 
     query_kwargs = {
         "KeyConditionExpression": "wallet_address = :w",
         "FilterExpression": "payment_status = :s",
-        "ExpressionAttributeValues": {":w": normalized, ":s": "confirmed"},
+        "ExpressionAttributeValues": {":w": wallet_address, ":s": "confirmed"},
         "ProjectionExpression": "amount",
     }
 

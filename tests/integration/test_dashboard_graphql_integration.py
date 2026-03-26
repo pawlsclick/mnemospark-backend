@@ -63,7 +63,7 @@ class DashboardGraphqlHandlerIntegrationTests(unittest.TestCase):
                           revenueSummary(walletAddress: $w) { totalAmount confirmedPaymentCount }
                         }
                     """,
-                    "variables": {"w": "0xaa"},
+                    "variables": {"w": "0xabc0000000000000000000000000000000000000"},
                 }
             ),
             "isBase64Encoded": False,
