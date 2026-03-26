@@ -53,6 +53,22 @@ class DashboardGraphqlDomainTests(unittest.TestCase):
         self.assertEqual(count, 0)
         self.assertEqual(total, "0.000000")
 
+    def test_revenue_summary_skips_invalid_amounts_in_count(self):
+        table = _FakeTable(
+            [
+                {
+                    "Items": [
+                        {"amount": "1.5"},
+                        {"amount": None},
+                        {"amount": "not-a-number"},
+                    ]
+                }
+            ]
+        )
+        count, total = revenue_summary_for_wallet(table=table, wallet_address="0xabc")
+        self.assertEqual(count, 1)
+        self.assertEqual(total, "1.500000")
+
 
 class DashboardGraphqlSchemaTests(unittest.TestCase):
     def test_health_query(self):
@@ -88,3 +104,27 @@ class DashboardGraphqlSchemaTests(unittest.TestCase):
         self.assertEqual(rs["confirmedPaymentCount"], 2)
         self.assertEqual(rs["totalAmount"], "10.500000")
         self.assertEqual(rs["walletAddress"], "0xabc")
+
+    def test_revenue_summary_query_returns_normalized_wallet_address(self):
+        fake_table = _FakeTable(
+            [{"Items": [{"amount": "1"}]}],
+        )
+        fake_resource = mock.Mock()
+        fake_resource.Table.return_value = fake_table
+
+        with (
+            mock.patch("dashboard_graphql.schema.boto3.resource", return_value=fake_resource),
+            mock.patch.dict("os.environ", {"PAYMENT_LEDGER_TABLE_NAME": "payments-test"}, clear=False),
+        ):
+            result = schema.execute_sync(
+                """
+                query Q($w: String!) {
+                  revenueSummary(walletAddress: $w) {
+                    walletAddress
+                  }
+                }
+                """,
+                variable_values={"w": "AbC"},
+            )
+        self.assertIsNone(result.errors)
+        self.assertEqual(result.data["revenueSummary"]["walletAddress"], "0xabc")
