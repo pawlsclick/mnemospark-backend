@@ -43,6 +43,21 @@ class DashboardGraphqlHandlerIntegrationTests(unittest.TestCase):
         body = json.loads(resp["body"])
         self.assertTrue(body["data"]["health"]["ok"])
 
+    def test_post_graphql_health_without_source_ip(self):
+        event = {
+            "version": "2.0",
+            "routeKey": "POST /graphql",
+            "rawPath": "/graphql",
+            "requestContext": {"http": {"method": "POST", "path": "/graphql"}},
+            "headers": {"content-type": "application/json"},
+            "body": json.dumps({"query": "{ health { ok } }"}),
+            "isBase64Encoded": False,
+        }
+        resp = lambda_handler(event, None)
+        self.assertEqual(resp["statusCode"], 200)
+        body = json.loads(resp["body"])
+        self.assertTrue(body["data"]["health"]["ok"])
+
     def test_post_revenue_summary_with_mocked_table(self):
         fake_table = mock.Mock()
         fake_table.name = "pay"
