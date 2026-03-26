@@ -69,9 +69,14 @@ def normalize_status(raw_status: str | None, raw_reason: str | None) -> str:
     ):
         return "upload_confirmed"
 
+    # "payment_settle" alone matches failure strings like payment_settle_failed; require
+    # no failure tokens before treating as a settled payment.
+    payment_settle_positive = "payment_settle" in status and not any(
+        x in status for x in ("fail", "error", "revert", "denied")
+    )
     settled_looks_positive = (
         ("settled" in status and "unsettled" not in status)
-        or "payment_settle" in status
+        or payment_settle_positive
         or "payment_success" in status
         or "already_settled" in status
         or (
@@ -116,12 +121,6 @@ def normalize_failure_category(
     if any(x in value for x in ("validation", "schema", "required")):
         return "validation"
     return "unknown"
-
-
-def str_or_empty(value: Any) -> str | None:
-    if isinstance(value, str) and value:
-        return value
-    return None
 
 
 def min_iso(a: str | None, b: str | None) -> str | None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 from .dynamo_scan import scan_table
@@ -29,9 +30,28 @@ def _str(value: Any) -> str | None:
 def _str_or_number(value: Any) -> str | float | None:
     if isinstance(value, str):
         return value if value else None
+    if isinstance(value, Decimal):
+        return float(value) if value == value else None
     if isinstance(value, (int, float)) and value == value:
         return float(value)
     return None
+
+
+def _json_safe_metadata(value: Any) -> Any:
+    """Recursively convert DynamoDB values (e.g. Decimal) for JSON serialization."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, dict):
+        return {k: _json_safe_metadata(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_metadata(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_json_safe_metadata(v) for v in value)
+    if isinstance(value, set):
+        return [_json_safe_metadata(v) for v in value]
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def _classify_event_type(source: str, normalized_status: str, route: str | None) -> str:
@@ -99,7 +119,7 @@ def build_event_facts_uncached(
                 "lambdaName": None,
                 "transId": None,
                 "idempotencyKey": None,
-                "metadata": row,
+                "metadata": _json_safe_metadata(row),
             }
         )
 
@@ -146,7 +166,7 @@ def build_event_facts_uncached(
                 "rawStatus": _str(row.get("status")),
                 "rawReason": _str(row.get("reason")),
                 "isFailure": status == "failed",
-                "metadata": row,
+                "metadata": _json_safe_metadata(row),
             }
         )
 
@@ -190,7 +210,7 @@ def build_event_facts_uncached(
                 "lambdaName": None,
                 "transId": None,
                 "idempotencyKey": None,
-                "metadata": row,
+                "metadata": _json_safe_metadata(row),
             }
         )
 
@@ -231,7 +251,7 @@ def build_event_facts_uncached(
                 "idempotencyKey": None,
                 "network": None,
                 "amountNormalized": 0.0,
-                "metadata": row,
+                "metadata": _json_safe_metadata(row),
             }
         )
 
@@ -289,7 +309,7 @@ def build_event_facts_uncached(
                 "idempotencyKey": None,
                 "network": None,
                 "amountNormalized": 0.0,
-                "metadata": row,
+                "metadata": _json_safe_metadata(row),
             }
         )
 
