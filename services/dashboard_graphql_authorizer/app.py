@@ -68,8 +68,6 @@ def _expected_key() -> str | None:
 
 
 def _keys_equal(a: str, b: str) -> bool:
-    if len(a) != len(b):
-        return False
     return secrets.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
