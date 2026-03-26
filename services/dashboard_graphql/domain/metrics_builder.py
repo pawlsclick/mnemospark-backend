@@ -81,12 +81,12 @@ def quote_latency_percentiles(quote_facts: list[dict[str, Any]]) -> dict[str, fl
             pass
 
     return {
-        "quoteToPaymentP50": percentile(q2p, 50),
-        "quoteToPaymentP95": percentile(q2p, 95),
-        "paymentToUploadP50": percentile(p2u, 50),
-        "paymentToUploadP95": percentile(p2u, 95),
-        "uploadToConfirmP50": percentile(u2c, 50),
-        "uploadToConfirmP95": percentile(u2c, 95),
+        "quote_to_payment_p50": percentile(q2p, 50),
+        "quote_to_payment_p95": percentile(q2p, 95),
+        "payment_to_upload_p50": percentile(p2u, 50),
+        "payment_to_upload_p95": percentile(p2u, 95),
+        "upload_to_confirm_p50": percentile(u2c, 50),
+        "upload_to_confirm_p95": percentile(u2c, 95),
     }
 
 
@@ -143,9 +143,9 @@ def health_score(event_facts: list[dict[str, Any]], latency: dict[str, float]) -
             pass
 
     lat_ref = (
-        latency.get("uploadToConfirmP95")
-        or latency.get("paymentToUploadP95")
-        or latency.get("quoteToPaymentP95")
+        latency.get("upload_to_confirm_p95")
+        or latency.get("payment_to_upload_p95")
+        or latency.get("quote_to_payment_p95")
         or 0.0
     )
     latency_score = 100.0 if lat_ref <= 0 else max(0.0, 100.0 - lat_ref / 1000.0)
@@ -190,7 +190,7 @@ def object_duplicate_summary(quote_facts: list[dict[str, Any]]) -> list[dict[str
         for h, ids in by_hash.items()
         if len(ids) > 1
     ]
-    out.sort(key=lambda x: -x["quoteCount"])
+    out.sort(key=lambda x: -x["quote_count"])
     return out
 
 
