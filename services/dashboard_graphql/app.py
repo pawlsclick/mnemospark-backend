@@ -9,7 +9,12 @@ from typing import Any
 from mangum import Mangum
 from strawberry.asgi import GraphQL
 
-from dashboard_graphql.schema import schema
+try:
+    from dashboard_graphql.schema import schema
+except ModuleNotFoundError as error:  # pragma: no cover - runtime path when CodeUri is services/dashboard_graphql
+    if error.name != "dashboard_graphql":
+        raise
+    from schema import schema
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

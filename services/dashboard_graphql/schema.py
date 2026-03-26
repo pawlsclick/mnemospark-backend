@@ -8,7 +8,12 @@ from typing import Annotated
 import boto3
 import strawberry
 
-from dashboard_graphql.domain.payment_ledger_read import normalize_wallet_address, revenue_summary_for_wallet
+try:
+    from dashboard_graphql.domain.payment_ledger_read import normalize_wallet_address, revenue_summary_for_wallet
+except ModuleNotFoundError as error:  # pragma: no cover - runtime path when CodeUri is services/dashboard_graphql
+    if error.name != "dashboard_graphql":
+        raise
+    from domain.payment_ledger_read import normalize_wallet_address, revenue_summary_for_wallet
 
 
 def _payment_ledger_table():
