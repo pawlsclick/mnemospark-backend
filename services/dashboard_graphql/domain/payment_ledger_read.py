@@ -17,17 +17,18 @@ def revenue_summary_for_wallet(*, table: Any, wallet_address: str) -> tuple[int,
     if not normalized.startswith("0x"):
         normalized = f"0x{normalized}"
 
-    paginator = table.meta.client.get_paginator("query")
     total = Decimal("0")
     count = 0
 
-    for page in paginator.paginate(
-        TableName=table.name,
-        KeyConditionExpression="wallet_address = :w",
-        FilterExpression="payment_status = :s",
-        ExpressionAttributeValues={":w": normalized, ":s": "confirmed"},
-        ProjectionExpression="amount",
-    ):
+    query_kwargs = {
+        "KeyConditionExpression": "wallet_address = :w",
+        "FilterExpression": "payment_status = :s",
+        "ExpressionAttributeValues": {":w": normalized, ":s": "confirmed"},
+        "ProjectionExpression": "amount",
+    }
+
+    while True:
+        page = table.query(**query_kwargs)
         for item in page.get("Items", []):
             count += 1
             raw = item.get("amount")
@@ -37,6 +38,10 @@ def revenue_summary_for_wallet(*, table: Any, wallet_address: str) -> tuple[int,
                 total += Decimal(str(raw))
             except Exception:
                 continue
+        lek = page.get("LastEvaluatedKey")
+        if not lek:
+            break
+        query_kwargs["ExclusiveStartKey"] = lek
 
     # Normalize to string without scientific notation for small values
     quant = total.quantize(Decimal("0.000001"))
