@@ -8,7 +8,7 @@ from typing import Annotated
 import boto3
 import strawberry
 
-from dashboard_graphql.domain.payment_ledger_read import revenue_summary_for_wallet
+from dashboard_graphql.domain.payment_ledger_read import normalize_wallet_address, revenue_summary_for_wallet
 
 
 def _payment_ledger_table():
@@ -41,7 +41,7 @@ class Query:
         self,
         wallet_address: Annotated[str, strawberry.argument(name="walletAddress")],
     ) -> RevenueSummary:
-        w = wallet_address.strip()
+        w = normalize_wallet_address(wallet_address)
         if not w:
             raise ValueError("wallet_address is required")
         table = _payment_ledger_table()
