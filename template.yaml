@@ -897,8 +897,8 @@ Resources:
       - DashboardGraphQLFunctionLogGroup
     Properties:
       FunctionName: !Sub "${AWS::StackName}-dashboard-graphql"
-      Handler: dashboard_graphql_entry.lambda_handler
-      CodeUri: services
+      Handler: app.lambda_handler
+      CodeUri: services/dashboard_graphql
       Role: !GetAtt DashboardGraphQLLambdaRole.Arn
       MemorySize: 512
       Timeout: 30
