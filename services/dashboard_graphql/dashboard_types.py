@@ -84,7 +84,7 @@ class QuoteFactGQL:
     failed_stage: str | None = strawberry.field(name="failedStage", default=None)
 
 
-@strawberry.type
+@strawberry.type(name="FunnelMetrics")
 class FunnelMetricsGQL:
     quote_created: int = strawberry.field(name="quoteCreated")
     payment_settled: int = strawberry.field(name="paymentSettled")
