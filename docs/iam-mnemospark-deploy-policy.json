@@ -76,13 +76,18 @@
                 "apigateway:POST",
                 "apigateway:PUT",
                 "apigateway:PATCH",
-                "apigateway:DELETE"
+                "apigateway:DELETE",
+                "apigateway:TagResource",
+                "apigateway:UntagResource",
+                "apigateway:ListTagsForResource"
             ],
             "Resource": [
                 "arn:aws:apigateway:*::/restapis",
                 "arn:aws:apigateway:*::/restapis/*",
                 "arn:aws:apigateway:*::/apis",
                 "arn:aws:apigateway:*::/apis/*",
+                "arn:aws:apigateway:*::/apis/*/stages",
+                "arn:aws:apigateway:*::/apis/*/stages/*",
                 "arn:aws:apigateway:*::/account",
                 "arn:aws:apigateway:*::/tags/*"
             ]
