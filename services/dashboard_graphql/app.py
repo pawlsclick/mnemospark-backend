@@ -26,7 +26,7 @@ def _cors_headers() -> dict[str, str]:
     return {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST,OPTIONS",
-        "Access-Control-Allow-Headers": "content-type,authorization,x-amz-date,x-amz-security-token",
+        "Access-Control-Allow-Headers": "content-type,x-api-key,authorization,x-amz-date,x-amz-security-token",
     }
 
 

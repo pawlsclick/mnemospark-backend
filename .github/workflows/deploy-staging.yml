@@ -40,7 +40,18 @@ jobs:
         run: sam build
 
       - name: SAM deploy (staging)
-        run: sam deploy --config-file samconfig.staging.toml --region "${{ vars.AWS_REGION }}" --no-fail-on-empty-changeset
+        env:
+          DASHBOARD_SECRET_ARN: ${{ vars.DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN }}
+        run: |
+          if [ -z "${DASHBOARD_SECRET_ARN}" ]; then
+            echo "::error::Set GitHub variable DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN (Secrets Manager ARN for dashboard GraphQL x-api-key)."
+            exit 1
+          fi
+          sam deploy --config-file samconfig.staging.toml \
+            --region "${{ vars.AWS_REGION }}" \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              "StageName=staging PaymentSettlementMode=onchain BaseRpcUrl=https://mainnet.base.org DashboardGraphqlApiKeySecretArn=${DASHBOARD_SECRET_ARN}"
 
       - name: Smoke tests
         if: ${{ vars.STAGING_BASE_URL != '' && !contains(vars.STAGING_BASE_URL, 'example.com') }}
