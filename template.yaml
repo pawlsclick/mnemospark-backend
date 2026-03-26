@@ -927,6 +927,8 @@ Resources:
             FunctionArn: !GetAtt DashboardGraphqlAuthorizerFunction.Arn
             FunctionPayloadType: REQUEST
             AuthorizerPayloadFormatVersion: "2.0"
+            EnableSimpleResponses: true
+            EnableFunctionDefaultPermissions: true
             Identity:
               Headers:
                 - x-api-key
