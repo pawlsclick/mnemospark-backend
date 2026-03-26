@@ -4,3 +4,5 @@ eth-account
 web3
 pytest
 ruff
+strawberry-graphql[asgi]>=0.252.0
+mangum>=0.17.0
