@@ -51,7 +51,7 @@ def _expected_key() -> str | None:
         logger.error("DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN is not set")
         return None
     now = time.monotonic()
-    if _cached_value is not None and now < _cache_expires_at:
+    if _cached_value and now < _cache_expires_at:
         return _cached_value
     try:
         resp = _client().get_secret_value(SecretId=arn)
@@ -62,7 +62,11 @@ def _expected_key() -> str | None:
     if raw is None:
         logger.error("Secret has no SecretString")
         return None
-    _cached_value = _parse_secret_string(raw)
+    parsed = _parse_secret_string(raw)
+    if not parsed:
+        logger.error("SecretString parsed to an empty API key")
+        return None
+    _cached_value = parsed
     _cache_expires_at = now + _CACHE_TTL_SEC
     return _cached_value
 
