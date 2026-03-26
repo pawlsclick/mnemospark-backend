@@ -81,7 +81,10 @@
             "Resource": [
                 "arn:aws:apigateway:*::/restapis",
                 "arn:aws:apigateway:*::/restapis/*",
-                "arn:aws:apigateway:*::/account"
+                "arn:aws:apigateway:*::/apis",
+                "arn:aws:apigateway:*::/apis/*",
+                "arn:aws:apigateway:*::/account",
+                "arn:aws:apigateway:*::/tags/*"
             ]
         },
         {
