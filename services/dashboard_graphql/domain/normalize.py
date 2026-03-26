@@ -66,7 +66,7 @@ def normalize_status(raw_status: str | None, raw_reason: str | None) -> str:
         "confirm_transaction_log_written" in status
         or "upload_confirmed" in status
         or ("upload" in status and "confirm" in status)
-    ):
+    ) and not status_looks_failed:
         return "upload_confirmed"
 
     # "payment_settle" alone matches failure strings like payment_settle_failed; require
