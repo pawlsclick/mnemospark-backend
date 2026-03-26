@@ -46,9 +46,7 @@ class DashboardGraphqlHandlerIntegrationTests(unittest.TestCase):
     def test_post_revenue_summary_with_mocked_table(self):
         fake_table = mock.Mock()
         fake_table.name = "pay"
-        fake_table.meta.client.get_paginator.return_value.paginate.return_value = [
-            {"Items": [{"amount": "1"}]},
-        ]
+        fake_table.query.return_value = {"Items": [{"amount": "1"}]}
         fake_resource = mock.Mock()
         fake_resource.Table.return_value = fake_table
 
