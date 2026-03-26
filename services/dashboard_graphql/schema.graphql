@@ -31,7 +31,7 @@ input DashboardEventFilterInput {
   lambdaName: String = null
 }
 
-type FunnelMetricsGQL {
+type FunnelMetrics {
   quoteCreated: Int!
   paymentSettled: Int!
   uploadStarted: Int!
@@ -79,7 +79,7 @@ type Query {
   walletFacts(timeRange: TimeRangeInput = null, limit: Int! = 500): [WalletFacts!]!
   walletDetail(walletAddress: String!, timeRange: TimeRangeInput = null): WalletDetail!
   quoteFacts(timeRange: TimeRangeInput = null, limit: Int! = 2000): [QuoteFact!]!
-  quoteFunnel(timeRange: TimeRangeInput = null): FunnelMetricsGQL!
+  quoteFunnel(timeRange: TimeRangeInput = null): FunnelMetrics!
   quoteLatencyPercentiles(timeRange: TimeRangeInput = null): LatencyMetrics!
   failureReasonBreakdown(timeRange: TimeRangeInput = null): [SeriesPoint!]!
   lambdaErrorSummary(timeRange: TimeRangeInput = null, limit: Int! = 50): [SeriesPoint!]!

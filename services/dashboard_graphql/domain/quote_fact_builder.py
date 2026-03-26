@@ -203,13 +203,18 @@ def build_wallet_facts(
     time_from: str | None,
     time_to: str | None,
     event_facts: list[dict[str, Any]] | None = None,
+    quote_facts: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     from .event_fact_builder import event_facts_to_dashboard_events
 
     ef = event_facts if event_facts is not None else build_event_facts_uncached(
         time_from=time_from, time_to=time_to
     )
-    quotes = build_quote_facts(time_from=time_from, time_to=time_to, event_facts=ef)
+    quotes = (
+        quote_facts
+        if quote_facts is not None
+        else build_quote_facts(time_from=time_from, time_to=time_to, event_facts=ef)
+    )
     events = ef
     dashboard_events = event_facts_to_dashboard_events(events)
 
