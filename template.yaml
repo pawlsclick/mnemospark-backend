@@ -106,6 +106,11 @@ Parameters:
     Type: String
     Default: rate(30 minutes)
     Description: EventBridge schedule for Base relayer monitor (stats, health, alerts)
+  DashboardGraphqlApiKeySecretArn:
+    Type: String
+    Description: >
+      Secrets Manager secret ARN for the dashboard GraphQL API key (x-api-key).
+      Create the secret before deploy; pass via sam deploy --parameter-overrides or samconfig.
 
 Globals:
   Function:
@@ -871,16 +876,60 @@ Resources:
         - Key: Project
           Value: mnemospark
 
+  DashboardGraphqlAuthorizerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-dashboard-graphql-authorizer"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  DashboardGraphqlAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - DashboardGraphqlAuthorizerFunctionLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-dashboard-graphql-authorizer"
+      Handler: app.lambda_handler
+      CodeUri: services/dashboard_graphql_authorizer
+      MemorySize: 128
+      Timeout: 10
+      Environment:
+        Variables:
+          DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN: !Ref DashboardGraphqlApiKeySecretArn
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DashboardGraphqlApiKeySecretArn
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
+
   DashboardGraphQLHttpApi:
     Type: AWS::Serverless::HttpApi
     Properties:
       StageName: !Ref StageName
-      Description: Internal read-only GraphQL for Ops Console (dashboard v2); IAM (SigV4) auth.
+      Description: Internal read-only GraphQL for Ops Console (dashboard v2); x-api-key validated by Lambda authorizer.
       Tags:
         Project: mnemospark
       Auth:
-        EnableIamAuthorizer: true
-        DefaultAuthorizer: AWS_IAM
+        DefaultAuthorizer: DashboardGraphqlApiKeyAuthorizer
+        Authorizers:
+          DashboardGraphqlApiKeyAuthorizer:
+            FunctionArn: !GetAtt DashboardGraphqlAuthorizerFunction.Arn
+            FunctionPayloadType: REQUEST
+            AuthorizerPayloadFormatVersion: "2.0"
+            Identity:
+              Headers:
+                - x-api-key
 
   DashboardGraphQLFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -913,7 +962,7 @@ Resources:
             Path: /graphql
             Method: POST
             Auth:
-              Authorizer: AWS_IAM
+              Authorizer: DashboardGraphqlApiKeyAuthorizer
         DashboardGraphqlOptions:
           Type: HttpApi
           Properties:
@@ -1758,7 +1807,7 @@ Outputs:
     Description: EventBridge rule ARN for Base relayer monitor schedule
     Value: !GetAtt BaseRelayerMonitorScheduleRule.Arn
   DashboardGraphQLHttpApiUrl:
-    Description: Invoke URL for internal dashboard GraphQL HTTP API (POST /graphql); IAM (SigV4).
+    Description: Invoke URL for internal dashboard GraphQL HTTP API (POST /graphql); x-api-key (Lambda authorizer + Secrets Manager).
     Value: !Sub "https://${DashboardGraphQLHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${StageName}"
     Export:
       Name: !Sub "${AWS::StackName}-DashboardGraphQLHttpApiUrl"

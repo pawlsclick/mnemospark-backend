@@ -7,5 +7,5 @@ s3_prefix = "mnemospark-prod"
 confirm_changeset = false
 capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
 disable_rollback = false
-parameter_overrides = "StageName=prod"
+parameter_overrides = "StageName=prod DashboardGraphqlApiKeySecretArn=REPLACE_WITH_SECRET_ARN"
 image_repositories = []
