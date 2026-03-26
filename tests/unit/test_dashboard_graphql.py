@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
@@ -11,6 +13,11 @@ _SERVICES = Path(__file__).resolve().parents[2] / "services"
 if str(_SERVICES) not in sys.path:
     sys.path.insert(0, str(_SERVICES))
 
+from dashboard_graphql.domain.event_fact_builder import (  # noqa: E402
+    _json_safe_metadata,
+    _str_or_number,
+)
+from dashboard_graphql.domain.normalize import normalize_status  # noqa: E402
 from dashboard_graphql.domain.payment_ledger_read import revenue_summary_for_wallet  # noqa: E402
 from dashboard_graphql.schema import schema  # noqa: E402
 
@@ -163,3 +170,21 @@ class DashboardGraphqlSchemaTests(unittest.TestCase):
         qf = result.data["quoteFunnel"]
         self.assertEqual(qf["quoteCreated"], 0)
         self.assertEqual(qf["paymentSettled"], 0)
+
+
+class DashboardNormalizeAndMetadataTests(unittest.TestCase):
+    def test_payment_settle_failures_not_classified_as_settled(self) -> None:
+        self.assertEqual(normalize_status("payment_settle_failed", None), "failed")
+        self.assertEqual(normalize_status("payment_settle_error", None), "failed")
+
+    def test_payment_settle_success_still_settled(self) -> None:
+        self.assertEqual(normalize_status("payment_settled", None), "payment_settled")
+
+    def test_str_or_number_accepts_decimal(self) -> None:
+        self.assertEqual(_str_or_number(Decimal("3.5")), 3.5)
+
+    def test_json_safe_metadata_serializes(self) -> None:
+        row = {"n": Decimal("2"), "nested": {"x": Decimal("1.25")}}
+        safe = _json_safe_metadata(row)
+        json.dumps(safe)
+        self.assertEqual(safe, {"n": 2.0, "nested": {"x": 1.25}})
