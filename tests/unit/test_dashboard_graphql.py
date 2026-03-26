@@ -140,3 +140,26 @@ class DashboardGraphqlSchemaTests(unittest.TestCase):
             result.data["revenueSummary"]["walletAddress"],
             "0xabc0000000000000000000000000000000000000",
         )
+
+    @mock.patch("dashboard_graphql.domain.dynamo_scan.scan_table", return_value=[])
+    def test_quote_funnel_empty_with_context(self, _scan: object) -> None:
+        from dashboard_graphql.request_context import DashboardRequestContext
+
+        result = schema.execute_sync(
+            """
+            query Q {
+              quoteFunnel {
+                quoteCreated
+                paymentSettled
+                uploadStarted
+                uploadConfirmed
+                quoteToPaymentRate
+              }
+            }
+            """,
+            context_value={"dashboard": DashboardRequestContext()},
+        )
+        self.assertIsNone(result.errors)
+        qf = result.data["quoteFunnel"]
+        self.assertEqual(qf["quoteCreated"], 0)
+        self.assertEqual(qf["paymentSettled"], 0)
