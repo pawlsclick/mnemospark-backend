@@ -35,7 +35,7 @@ def _parse_secret_string(raw: str) -> str:
         try:
             obj = json.loads(raw)
             if isinstance(obj, dict):
-                for key in ("api_key", "apiKey", "value", "key"):
+                for key in ("api_key", "apiKey", "api_key_dashboard", "value", "key"):
                     v = obj.get(key)
                     if isinstance(v, str) and v:
                         return v.strip()

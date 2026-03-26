@@ -14,7 +14,7 @@ Staging stack name is **`mnemospark-staging`** (see `samconfig.staging.toml`). R
 
 The dashboard GraphQL HTTP API (`POST /graphql`) is protected by a **Lambda request authorizer** that validates the **`x-api-key`** header against **AWS Secrets Manager** (`template.yaml` parameter `DashboardGraphqlApiKeySecretArn`).
 
-1. Create a secret in Secrets Manager (plaintext string or JSON with `api_key` / `apiKey`) in the same account and region as the stack.
+1. Create a secret in Secrets Manager (plaintext string or JSON with `api_key`, `apiKey`, or `api_key_dashboard`) in the same account and region as the stack.
 2. Set the GitHub repository or environment variable **`DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN`** to that secret’s ARN.
 3. The deploy workflow passes `DashboardGraphqlApiKeySecretArn` into `sam deploy` via `--parameter-overrides` together with existing staging parameters.
 

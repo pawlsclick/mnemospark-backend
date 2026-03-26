@@ -53,6 +53,21 @@ class DashboardGraphqlAuthorizerTests(unittest.TestCase):
             )
         self.assertTrue(out["isAuthorized"])
 
+    def test_json_secret_with_api_key_dashboard_field(self):
+        fake = mock.Mock()
+        fake.get_secret_value.return_value = {
+            "SecretString": json.dumps({"api_key_dashboard": "k-dashboard-field"}),
+        }
+        with (
+            mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:1:secret:x"}, clear=False),
+            mock.patch.object(authorizer_app, "_client", return_value=fake),
+        ):
+            out = authorizer_app.lambda_handler(
+                {"headers": {"x-api-key": "k-dashboard-field"}},
+                None,
+            )
+        self.assertTrue(out["isAuthorized"])
+
     def test_json_secret_with_api_key_field(self):
         fake = mock.Mock()
         fake.get_secret_value.return_value = {"SecretString": json.dumps({"api_key": "k-from-json"})}
