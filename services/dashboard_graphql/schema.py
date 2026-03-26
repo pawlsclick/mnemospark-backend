@@ -121,8 +121,10 @@ def _trace_raw(
     *,
     quote_id: str | None = None,
     request_id: str | None = None,
+    time_from: str | None = None,
+    time_to: str | None = None,
 ) -> list[dict[str, Any]]:
-    ef = _dash(info).event_facts(time_from=None, time_to=None)
+    ef = _dash(info).event_facts(time_from=time_from, time_to=time_to)
     mapped = event_facts_to_dashboard_events(ef)
     if quote_id:
         rows = [d for d in mapped if d.get("quoteId") == quote_id]
@@ -360,8 +362,10 @@ class Query:
         self,
         info: Info,
         quote_id: Annotated[str, strawberry.argument(name="quoteId")],
+        time_range: TimeRangeInput | None = None,
     ) -> list[DashboardEventGQL]:
-        rows = _trace_raw(info, quote_id=quote_id)
+        tf, tt = _time_range(time_range)
+        rows = _trace_raw(info, quote_id=quote_id, time_from=tf, time_to=tt)
         return [dashboard_event_from_dict(d) for d in rows]
 
     @strawberry.field(name="traceByRequestId")
@@ -369,8 +373,10 @@ class Query:
         self,
         info: Info,
         request_id: Annotated[str, strawberry.argument(name="requestId")],
+        time_range: TimeRangeInput | None = None,
     ) -> list[DashboardEventGQL]:
-        rows = _trace_raw(info, request_id=request_id)
+        tf, tt = _time_range(time_range)
+        rows = _trace_raw(info, request_id=request_id, time_from=tf, time_to=tt)
         return [dashboard_event_from_dict(d) for d in rows]
 
     @strawberry.field(name="rootCauseTrace")
@@ -379,11 +385,13 @@ class Query:
         info: Info,
         quote_id: str | None = None,
         request_id: str | None = None,
+        time_range: TimeRangeInput | None = None,
     ) -> RootCausePanelGQL:
+        tf, tt = _time_range(time_range)
         if quote_id:
-            rel_dicts = _trace_raw(info, quote_id=quote_id)
+            rel_dicts = _trace_raw(info, quote_id=quote_id, time_from=tf, time_to=tt)
         elif request_id:
-            rel_dicts = _trace_raw(info, request_id=request_id)
+            rel_dicts = _trace_raw(info, request_id=request_id, time_from=tf, time_to=tt)
         else:
             rel_dicts = []
         latest = max(rel_dicts, key=lambda x: x.get("timestamp") or "", default=None)
