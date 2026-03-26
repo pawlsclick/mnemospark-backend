@@ -475,7 +475,7 @@ components:
       description: >
         Shared secret for the dashboard GraphQL HTTP API. The Lambda authorizer validates
         this header against the current value in AWS Secrets Manager (plaintext or JSON with
-        api_key / apiKey). Prefer a server-side proxy (Next.js route) or Tailscale; do not
+        api_key, apiKey, or api_key_dashboard). Prefer a server-side proxy (Next.js route) or Tailscale; do not
         expose the key in public client bundles.
 
   parameters:
