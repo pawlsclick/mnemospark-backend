@@ -43,13 +43,19 @@ class DashboardGraphqlDomainTests(unittest.TestCase):
                 {"Items": [{"amount": "0.25"}]},
             ]
         )
-        count, total = revenue_summary_for_wallet(table=table, wallet_address="0xAbC")
+        count, total = revenue_summary_for_wallet(
+            table=table,
+            wallet_address="0xAbCd000000000000000000000000000000000000",
+        )
         self.assertEqual(count, 3)
         self.assertEqual(total, "3.750000")
 
     def test_revenue_summary_empty_partition(self):
         table = _FakeTable([{"Items": []}])
-        count, total = revenue_summary_for_wallet(table=table, wallet_address="0xabc")
+        count, total = revenue_summary_for_wallet(
+            table=table,
+            wallet_address="0xabc0000000000000000000000000000000000000",
+        )
         self.assertEqual(count, 0)
         self.assertEqual(total, "0.000000")
 
@@ -65,7 +71,10 @@ class DashboardGraphqlDomainTests(unittest.TestCase):
                 }
             ]
         )
-        count, total = revenue_summary_for_wallet(table=table, wallet_address="0xabc")
+        count, total = revenue_summary_for_wallet(
+            table=table,
+            wallet_address="0xabc0000000000000000000000000000000000000",
+        )
         self.assertEqual(count, 1)
         self.assertEqual(total, "1.500000")
 
@@ -97,13 +106,13 @@ class DashboardGraphqlSchemaTests(unittest.TestCase):
                   }
                 }
                 """,
-                variable_values={"w": "0xabc"},
+                variable_values={"w": "0xabc0000000000000000000000000000000000000"},
             )
         self.assertIsNone(result.errors)
         rs = result.data["revenueSummary"]
         self.assertEqual(rs["confirmedPaymentCount"], 2)
         self.assertEqual(rs["totalAmount"], "10.500000")
-        self.assertEqual(rs["walletAddress"], "0xabc")
+        self.assertEqual(rs["walletAddress"], "0xabc0000000000000000000000000000000000000")
 
     def test_revenue_summary_query_returns_normalized_wallet_address(self):
         fake_table = _FakeTable(
@@ -124,7 +133,10 @@ class DashboardGraphqlSchemaTests(unittest.TestCase):
                   }
                 }
                 """,
-                variable_values={"w": "AbC"},
+                variable_values={"w": "0xABC0000000000000000000000000000000000000"},
             )
         self.assertIsNone(result.errors)
-        self.assertEqual(result.data["revenueSummary"]["walletAddress"], "0xabc")
+        self.assertEqual(
+            result.data["revenueSummary"]["walletAddress"],
+            "0xabc0000000000000000000000000000000000000",
+        )

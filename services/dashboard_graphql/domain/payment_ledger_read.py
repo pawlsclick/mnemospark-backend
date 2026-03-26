@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import re
 from typing import Any
+
+_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 
 def normalize_wallet_address(wallet_address: str) -> str:
-    normalized = wallet_address.strip().lower()
-    if not normalized:
+    raw = (wallet_address or "").strip()
+    if not raw:
         return ""
-    if not normalized.startswith("0x"):
-        normalized = f"0x{normalized}"
-    return normalized
+    if not _ADDRESS_RE.fullmatch(raw):
+        raise ValueError("invalid wallet address")
+    return "0x" + raw[2:].lower()
 
 
 def revenue_summary_for_wallet(*, table: Any, wallet_address: str) -> tuple[int, str]:
