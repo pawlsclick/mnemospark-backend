@@ -263,14 +263,14 @@ def build_event_facts_uncached(
             code = None
         route = _str(row.get("route") or row.get("path"))
         is_api_failure = code is not None and code >= 400
-        if route == "/price-storage":
+        if is_api_failure:
+            status = "failed"
+        elif route == "/price-storage":
             status = "quote_created"
         elif route == "/storage/upload":
             status = "upload_started"
         elif route == "/storage/upload/confirm":
             status = "upload_confirmed"
-        elif is_api_failure:
-            status = "failed"
         else:
             status = normalize_status(_str(row.get("status")), _str(row.get("reason") or row.get("error")))
 

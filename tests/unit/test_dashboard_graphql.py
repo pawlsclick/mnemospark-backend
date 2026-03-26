@@ -14,6 +14,7 @@ if str(_SERVICES) not in sys.path:
     sys.path.insert(0, str(_SERVICES))
 
 from dashboard_graphql.domain.event_fact_builder import (  # noqa: E402
+    build_event_facts_uncached,
     _json_safe_metadata,
     _str_or_number,
 )
@@ -265,3 +266,38 @@ class DashboardNormalizeAndMetadataTests(unittest.TestCase):
         self.assertEqual(row["objectId"], "obj-1")
         self.assertEqual(row["objectIdHash"], "hash-1")
         self.assertEqual(row["objectKey"], "key-1")
+
+    def test_build_event_facts_marks_price_storage_http_errors_as_failures(self) -> None:
+        api_error_row = {
+            "request_id": "r-500",
+            "route": "/price-storage",
+            "status_code": 500,
+            "status": "ok",
+            "error": "internal error",
+            "event_ts": "2024-01-01T00:00:00Z",
+        }
+        with (
+            mock.patch("dashboard_graphql.domain.event_fact_builder.quotes_table", return_value=object()),
+            mock.patch(
+                "dashboard_graphql.domain.event_fact_builder.upload_transaction_log_table",
+                return_value=object(),
+            ),
+            mock.patch(
+                "dashboard_graphql.domain.event_fact_builder.payment_ledger_table",
+                return_value=object(),
+            ),
+            mock.patch(
+                "dashboard_graphql.domain.event_fact_builder.wallet_auth_events_table",
+                return_value=object(),
+            ),
+            mock.patch("dashboard_graphql.domain.event_fact_builder.api_calls_table", return_value=object()),
+            mock.patch(
+                "dashboard_graphql.domain.event_fact_builder.scan_table",
+                side_effect=[[], [], [], [], [api_error_row]],
+            ),
+        ):
+            facts = build_event_facts_uncached(time_from=None, time_to=None)
+
+        self.assertEqual(len(facts), 1)
+        self.assertEqual(facts[0]["normalizedStatus"], "failed")
+        self.assertTrue(facts[0]["isFailure"])
