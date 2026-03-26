@@ -951,11 +951,15 @@ Resources:
       Handler: app.lambda_handler
       CodeUri: services/dashboard_graphql
       Role: !GetAtt DashboardGraphQLLambdaRole.Arn
-      MemorySize: 512
-      Timeout: 30
+      MemorySize: 1024
+      Timeout: 120
       Environment:
         Variables:
           PAYMENT_LEDGER_TABLE_NAME: !Ref PaymentLedgerTable
+          QUOTES_TABLE_NAME: !Ref QuotesTable
+          UPLOAD_TRANSACTION_LOG_TABLE_NAME: !Ref UploadTransactionLogTable
+          WALLET_AUTH_EVENTS_TABLE_NAME: !Ref WalletAuthEventsTable
+          API_CALLS_TABLE_NAME: !Ref ApiCallsTable
       Events:
         DashboardGraphqlPost:
           Type: HttpApi
