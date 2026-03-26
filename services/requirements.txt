@@ -3,3 +3,5 @@
 boto3
 eth-account
 web3
+strawberry-graphql>=0.252.0
+mangum>=0.17.0
