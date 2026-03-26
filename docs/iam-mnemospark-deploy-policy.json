@@ -79,7 +79,7 @@
                 "apigateway:DELETE",
                 "apigateway:TagResource",
                 "apigateway:UntagResource",
-                "apigateway:ListTagsForResource"
+                "apigateway:GetTags"
             ],
             "Resource": [
                 "arn:aws:apigateway:*::/restapis",
