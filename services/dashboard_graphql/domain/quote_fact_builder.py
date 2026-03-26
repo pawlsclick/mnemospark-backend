@@ -4,10 +4,73 @@ from __future__ import annotations
 
 from typing import Any
 
-from .dynamo_scan import scan_table
-from .env_tables import api_calls_table
 from .event_fact_builder import build_event_facts_uncached
 from .normalize import coerce_iso_date, max_iso, min_iso, normalize_failure_category
+
+
+def _seed_quotes_from_price_storage_events(
+    grouped: dict[str, dict[str, Any]], events: list[dict[str, Any]]
+) -> None:
+    for event in events:
+        if event.get("source") != "api_calls" or event.get("route") != "/price-storage":
+            continue
+
+        meta = event.get("metadata")
+        meta_dict = meta if isinstance(meta, dict) else {}
+
+        quote_id = event.get("quoteId")
+        if not quote_id:
+            meta_quote_id = meta_dict.get("quote_id")
+            if meta_quote_id is not None:
+                quote_id = str(meta_quote_id)
+        if not quote_id:
+            continue
+
+        qid_s = str(quote_id)
+        call_ts = coerce_iso_date(event.get("timestamp")) or ""
+        if not call_ts:
+            from datetime import datetime, timezone
+
+            call_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        request_id = event.get("requestId")
+        if not request_id and isinstance(meta_dict.get("request_id"), str):
+            request_id = meta_dict["request_id"]
+
+        wallet_address = event.get("walletAddress")
+        if not wallet_address and isinstance(meta_dict.get("wallet_address"), str):
+            wallet_address = meta_dict["wallet_address"]
+
+        grouped[qid_s] = {
+            "quoteId": qid_s,
+            "walletAddress": wallet_address,
+            "hasQuoteCreated": True,
+            "quoteCreatedAt": call_ts,
+            "firstSeenAt": call_ts,
+            "lastSeenAt": call_ts,
+            "hasPaymentSettled": False,
+            "hasUploadStarted": False,
+            "hasUploadConfirmed": False,
+            "hasFailure": False,
+            "finalStatus": "quote_created",
+            "requestIds": [request_id] if request_id else [],
+            "transIds": [],
+            "idempotencyKeys": [],
+            "objectId": meta_dict.get("object_id") if isinstance(meta_dict.get("object_id"), str) else None,
+            "objectIdHash": (
+                meta_dict.get("object_id_hash")
+                if isinstance(meta_dict.get("object_id_hash"), str)
+                else None
+            ),
+            "objectKey": meta_dict.get("object_key") if isinstance(meta_dict.get("object_key"), str) else None,
+            "network": None,
+            "amountNormalized": None,
+            "normalizedReason": None,
+            "failedStage": None,
+            "paymentSettledAt": None,
+            "uploadStartedAt": None,
+            "uploadConfirmedAt": None,
+        }
 
 
 def _enrich_quote_facts_from_events(
@@ -138,58 +201,9 @@ def build_quote_facts(
     events = event_facts if event_facts is not None else build_event_facts_uncached(
         time_from=time_from, time_to=time_to
     )
-    price_storage_calls = scan_table(
-        api_calls_table(),
-        time_from=time_from,
-        time_to=time_to,
-        route="/price-storage",
-    )
 
     grouped: dict[str, dict[str, Any]] = {}
-
-    for call in price_storage_calls:
-        qid = call.get("quote_id")
-        if not qid:
-            continue
-        qid_s = str(qid)
-        call_ts = (
-            coerce_iso_date(
-                call.get("event_ts")
-                or call.get("created_at")
-                or call.get("timestamp")
-            )
-            or ""
-        )
-        if not call_ts:
-            from datetime import datetime, timezone
-
-            call_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        grouped[qid_s] = {
-            "quoteId": qid_s,
-            "walletAddress": call.get("wallet_address"),
-            "hasQuoteCreated": True,
-            "quoteCreatedAt": call_ts,
-            "firstSeenAt": call_ts,
-            "lastSeenAt": call_ts,
-            "hasPaymentSettled": False,
-            "hasUploadStarted": False,
-            "hasUploadConfirmed": False,
-            "hasFailure": False,
-            "finalStatus": "quote_created",
-            "requestIds": [call["request_id"]] if call.get("request_id") else [],
-            "transIds": [],
-            "idempotencyKeys": [],
-            "objectId": call.get("object_id") if isinstance(call.get("object_id"), str) else None,
-            "objectIdHash": call.get("object_id_hash") if isinstance(call.get("object_id_hash"), str) else None,
-            "objectKey": call.get("object_key") if isinstance(call.get("object_key"), str) else None,
-            "network": None,
-            "amountNormalized": None,
-            "normalizedReason": None,
-            "failedStage": None,
-            "paymentSettledAt": None,
-            "uploadStartedAt": None,
-            "uploadConfirmedAt": None,
-        }
+    _seed_quotes_from_price_storage_events(grouped, events)
 
     _enrich_quote_facts_from_events(grouped, events)
 
