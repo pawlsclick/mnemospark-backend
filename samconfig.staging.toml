@@ -7,5 +7,5 @@ s3_prefix = "mnemospark-staging"
 confirm_changeset = false
 capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
 disable_rollback = false
-parameter_overrides = "StageName=staging PaymentSettlementMode=onchain BaseRpcUrl=https://mainnet.base.org"
+parameter_overrides = "StageName=staging PaymentSettlementMode=onchain BaseRpcUrl=https://mainnet.base.org DashboardGraphqlApiKeySecretArn=REPLACE_WITH_SECRET_ARN"
 image_repositories = []

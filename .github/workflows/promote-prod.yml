@@ -42,7 +42,18 @@ jobs:
         run: sam build
 
       - name: SAM deploy (prod)
-        run: sam deploy --config-file samconfig.prod.toml --region "${{ vars.AWS_REGION }}" --no-fail-on-empty-changeset
+        env:
+          DASHBOARD_SECRET_ARN: ${{ vars.DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN }}
+        run: |
+          if [ -z "${DASHBOARD_SECRET_ARN}" ]; then
+            echo "::error::Set DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN in the production GitHub environment (Secrets Manager ARN for dashboard GraphQL x-api-key)."
+            exit 1
+          fi
+          sam deploy --config-file samconfig.prod.toml \
+            --region "${{ vars.AWS_REGION }}" \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              "StageName=prod DashboardGraphqlApiKeySecretArn=${DASHBOARD_SECRET_ARN}"
 
       - name: Smoke tests (prod)
         if: ${{ vars.PROD_BASE_URL != '' && !contains(vars.PROD_BASE_URL, 'example.com') }}
