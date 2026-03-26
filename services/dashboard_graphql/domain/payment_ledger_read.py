@@ -6,6 +6,15 @@ from decimal import Decimal
 from typing import Any
 
 
+def normalize_wallet_address(wallet_address: str) -> str:
+    normalized = wallet_address.strip().lower()
+    if not normalized:
+        return ""
+    if not normalized.startswith("0x"):
+        normalized = f"0x{normalized}"
+    return normalized
+
+
 def revenue_summary_for_wallet(*, table: Any, wallet_address: str) -> tuple[int, str]:
     """
     Sum confirmed payment amounts for one wallet (partition key query).
@@ -13,9 +22,7 @@ def revenue_summary_for_wallet(*, table: Any, wallet_address: str) -> tuple[int,
     Returns (confirmed_count, total_amount) where total_amount is a decimal string
     in ledger storage format (USDC amount strings).
     """
-    normalized = wallet_address.strip().lower()
-    if not normalized.startswith("0x"):
-        normalized = f"0x{normalized}"
+    normalized = normalize_wallet_address(wallet_address)
 
     total = Decimal("0")
     count = 0
@@ -30,14 +37,15 @@ def revenue_summary_for_wallet(*, table: Any, wallet_address: str) -> tuple[int,
     while True:
         page = table.query(**query_kwargs)
         for item in page.get("Items", []):
-            count += 1
             raw = item.get("amount")
             if raw is None:
                 continue
             try:
-                total += Decimal(str(raw))
+                amount = Decimal(str(raw))
             except Exception:
                 continue
+            total += amount
+            count += 1
         lek = page.get("LastEvaluatedKey")
         if not lek:
             break
