@@ -75,21 +75,52 @@ def _keys_equal(a: str, b: str) -> bool:
     return secrets.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
-def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+def _extract_x_api_key(event: dict[str, Any]) -> str | None:
+    """Resolve x-api-key from headers and/or identitySource (HTTP API REQUEST authorizer)."""
     headers = event.get("headers") or {}
-    provided = None
-    for hk, hv in headers.items():
-        if hk.lower() == "x-api-key":
-            provided = hv
-            break
+    if isinstance(headers, dict):
+        for hk, hv in headers.items():
+            if hk.lower() != "x-api-key":
+                continue
+            if isinstance(hv, str):
+                s = hv.strip()
+                if s:
+                    return s
+            if isinstance(hv, list) and hv and isinstance(hv[0], str):
+                s = hv[0].strip()
+                if s:
+                    return s
+
+    # API Gateway fills identitySource with resolved $request.header.x-api-key values.
+    sources = event.get("identitySource")
+    if isinstance(sources, list):
+        for item in sources:
+            if not isinstance(item, str):
+                continue
+            s = item.strip()
+            if not s or s.startswith("$"):
+                continue
+            return s
+    return None
+
+
+def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    provided = _extract_x_api_key(event)
     if not provided:
+        logger.info("Authorizer deny: missing x-api-key (check headers and identitySource)")
         return {"isAuthorized": False}
 
     expected = _expected_key()
     if not expected:
+        logger.info("Authorizer deny: expected key unavailable (ARN or Secrets Manager)")
         return {"isAuthorized": False}
 
     if not _keys_equal(provided, expected):
+        logger.info(
+            "Authorizer deny: key mismatch (length provided=%s expected=%s)",
+            len(provided),
+            len(expected),
+        )
         return {"isAuthorized": False}
 
     return {"isAuthorized": True, "context": {"principalId": "dashboard-graphql"}}
