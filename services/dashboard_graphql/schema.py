@@ -202,8 +202,10 @@ class Query:
         limit: int = 500,
     ) -> list[WalletFactsGQL]:
         tf, tt = _time_range(time_range)
-        ef = _dash(info).event_facts(time_from=tf, time_to=tt)
-        rows = build_wallet_facts(time_from=tf, time_to=tt, event_facts=ef)
+        dash = _dash(info)
+        ef = dash.event_facts(time_from=tf, time_to=tt)
+        qf = dash.quote_facts(time_from=tf, time_to=tt)
+        rows = build_wallet_facts(time_from=tf, time_to=tt, event_facts=ef, quote_facts=qf)
         if limit > 0:
             rows = rows[:limit]
         return [wallet_facts_from_dict(r) for r in rows]
@@ -217,13 +219,14 @@ class Query:
     ) -> WalletDetailGQL:
         w = normalize_wallet_address(wallet_address)
         tf, tt = _time_range(time_range)
-        ef = _dash(info).event_facts(time_from=tf, time_to=tt)
-        wallets = build_wallet_facts(time_from=tf, time_to=tt, event_facts=ef)
+        dash = _dash(info)
+        ef = dash.event_facts(time_from=tf, time_to=tt)
+        qf = dash.quote_facts(time_from=tf, time_to=tt)
+        wallets = build_wallet_facts(time_from=tf, time_to=tt, event_facts=ef, quote_facts=qf)
         wallet_row = next(
             (x for x in wallets if (x.get("walletAddress") or "").strip().lower() == w),
             None,
         )
-        qf = _dash(info).quote_facts(time_from=tf, time_to=tt)
         quotes = [q for q in qf if (q.get("walletAddress") or "").strip().lower() == w]
         dev = event_facts_to_dashboard_events(ef)
         ev_for_w = [
