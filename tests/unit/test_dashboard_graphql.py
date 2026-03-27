@@ -213,6 +213,10 @@ class DashboardNormalizeAndMetadataTests(unittest.TestCase):
         self.assertEqual(normalize_status("upload_confirm_failed", None), "failed")
         self.assertEqual(normalize_status("upload_confirmation_error", None), "failed")
 
+    def test_quote_failures_not_classified_as_created(self) -> None:
+        self.assertEqual(normalize_status("quote_failed", None), "failed")
+        self.assertEqual(normalize_status("quote_error", None), "failed")
+
     def test_payment_settle_success_still_settled(self) -> None:
         self.assertEqual(normalize_status("payment_settled", None), "payment_settled")
 
