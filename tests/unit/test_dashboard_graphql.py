@@ -151,6 +151,48 @@ class DashboardGraphqlSchemaTests(unittest.TestCase):
             "0xabc0000000000000000000000000000000000000",
         )
 
+    @mock.patch("dashboard_graphql.schema.build_wallet_facts")
+    @mock.patch("dashboard_graphql.domain.dynamo_scan.scan_table", return_value=[])
+    def test_wallet_facts_quote_count_matches_total_quotes(
+        self, _scan: object, mock_build: object
+    ) -> None:
+        mock_build.return_value = [
+            {
+                "walletAddress": "0xabc0000000000000000000000000000000000000",
+                "firstSeenAt": None,
+                "lastSeenAt": None,
+                "totalQuotes": 7,
+                "totalUploadsStarted": 0,
+                "totalUploadsConfirmed": 0,
+                "totalPaymentsSettled": 0,
+                "totalFailures": 0,
+                "totalAuthFailures": 0,
+                "totalRevenue": 0.0,
+                "averageRevenuePerQuote": 0.0,
+                "medianTransactionSize": 0.0,
+                "lastNetwork": None,
+                "lastEventType": None,
+            }
+        ]
+        result = schema.execute_sync(
+            """
+            query Q {
+              walletFacts(limit: 3) {
+                walletAddress
+                totalQuotes
+                quoteCount
+                totalRevenue
+              }
+            }
+            """,
+            context_value={"dashboard": DashboardRequestContext()},
+        )
+        self.assertIsNone(result.errors)
+        rows = result.data["walletFacts"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["totalQuotes"], 7)
+        self.assertEqual(rows[0]["quoteCount"], 7)
+
     @mock.patch("dashboard_graphql.domain.dynamo_scan.scan_table", return_value=[])
     def test_quote_funnel_empty_with_context(self, _scan: object) -> None:
         result = schema.execute_sync(
