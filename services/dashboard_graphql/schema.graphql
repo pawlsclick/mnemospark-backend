@@ -1,14 +1,160 @@
+type DashboardEvent {
+  id: String!
+  timestamp: String!
+  walletAddress: String
+  eventType: String!
+  source: String!
+  route: String
+  lambdaName: String
+  status: String!
+  severity: String!
+  normalizedStatus: String
+  normalizedReason: String
+  quoteId: String
+  objectId: String
+  objectIdHash: String
+  objectKey: String
+  transId: String
+  requestId: String
+  idempotencyKey: String
+  network: String
+  amount: Float
+  message: String!
+  metadata: JSON
+}
+
+input DashboardEventFilterInput {
+  walletAddress: String = null
+  quoteId: String = null
+  requestId: String = null
+  route: String = null
+  lambdaName: String = null
+}
+
+type FunnelMetrics {
+  quoteCreated: Int!
+  paymentSettled: Int!
+  uploadStarted: Int!
+  uploadConfirmed: Int!
+  quoteToPaymentRate: Float!
+  paymentToUploadRate: Float!
+  uploadToConfirmRate: Float!
+}
+
 type Health {
   ok: Boolean!
+}
+
+type HealthScore {
+  status: String!
+  successRate: Float!
+  errorRate: Float!
+  throughput: Float!
+  latencyScore: Float!
+}
+
+"""
+The `JSON` scalar type represents JSON values as specified by [ECMA-404](https://ecma-international.org/wp-content/uploads/ECMA-404_2nd_edition_december_2017.pdf).
+"""
+scalar JSON @specifiedBy(url: "https://ecma-international.org/wp-content/uploads/ECMA-404_2nd_edition_december_2017.pdf")
+
+type LatencyMetrics {
+  quoteToPaymentP50: Float!
+  quoteToPaymentP95: Float!
+  paymentToUploadP50: Float!
+  paymentToUploadP95: Float!
+  uploadToConfirmP50: Float!
+  uploadToConfirmP95: Float!
+}
+
+type ObjectDuplicate {
+  objectIdHash: String!
+  quoteCount: Int!
 }
 
 type Query {
   health: Health!
   revenueSummary(walletAddress: String!): RevenueSummary!
+  dashboardEvents(timeRange: TimeRangeInput = null, limit: Int! = 2000, filters: DashboardEventFilterInput = null): [DashboardEvent!]!
+  walletFacts(timeRange: TimeRangeInput = null, limit: Int! = 500): [WalletFacts!]!
+  walletDetail(walletAddress: String!, timeRange: TimeRangeInput = null): WalletDetail!
+  quoteFacts(timeRange: TimeRangeInput = null, limit: Int! = 2000): [QuoteFact!]!
+  quoteFunnel(timeRange: TimeRangeInput = null): FunnelMetrics!
+  quoteLatencyPercentiles(timeRange: TimeRangeInput = null): LatencyMetrics!
+  failureReasonBreakdown(timeRange: TimeRangeInput = null): [SeriesPoint!]!
+  lambdaErrorSummary(timeRange: TimeRangeInput = null, limit: Int! = 50): [SeriesPoint!]!
+  eventRatePerMinute(timeRange: TimeRangeInput = null): [SeriesPoint!]!
+  healthScore(timeRange: TimeRangeInput = null): HealthScore!
+  statusDistribution(timeRange: TimeRangeInput = null): [SeriesPoint!]!
+  objectDuplicateSummary(timeRange: TimeRangeInput = null): [ObjectDuplicate!]!
+  idempotencyConflicts(timeRange: TimeRangeInput = null): [SeriesPoint!]!
+  traceByQuoteId(quoteId: String!): [DashboardEvent!]!
+  traceByRequestId(requestId: String!): [DashboardEvent!]!
+  rootCauseTrace(quoteId: String = null, requestId: String = null): RootCausePanel!
+}
+
+type QuoteFact {
+  quoteId: String!
+  walletAddress: String
+  network: String
+  amountNormalized: Float
+  hasQuoteCreated: Boolean!
+  hasPaymentSettled: Boolean!
+  hasUploadStarted: Boolean!
+  hasUploadConfirmed: Boolean!
+  hasFailure: Boolean!
+  finalStatus: String!
+  firstSeenAt: String
+  lastSeenAt: String
+  objectId: String
+  objectIdHash: String
+  objectKey: String
+  failedStage: String
 }
 
 type RevenueSummary {
   walletAddress: String!
   confirmedPaymentCount: Int!
   totalAmount: String!
+}
+
+type RootCausePanel {
+  latestEvent: DashboardEvent
+  firstFailureEvent: DashboardEvent
+  relatedEvents: [DashboardEvent!]!
+  likelyFailureCategory: String
+  likelyFailedStage: String
+}
+
+type SeriesPoint {
+  label: String!
+  value: Float!
+}
+
+input TimeRangeInput {
+  from: String = null
+  to: String = null
+}
+
+type WalletDetail {
+  wallet: WalletFacts
+  quotes: [QuoteFact!]!
+  events: [DashboardEvent!]!
+}
+
+type WalletFacts {
+  walletAddress: String!
+  firstSeenAt: String
+  lastSeenAt: String
+  totalQuotes: Int!
+  totalUploadsStarted: Int!
+  totalUploadsConfirmed: Int!
+  totalPaymentsSettled: Int!
+  totalFailures: Int!
+  totalAuthFailures: Int!
+  totalRevenue: Float!
+  averageRevenuePerQuote: Float!
+  medianTransactionSize: Float!
+  lastNetwork: String
+  lastEventType: String
 }
