@@ -38,7 +38,6 @@ logger.setLevel(logging.INFO)
 DEFAULT_QUOTE_TTL_SECONDS = 3600
 DEFAULT_TRANSFER_DIRECTION = "out"
 DEFAULT_RATE_TYPE = "BEFORE_DISCOUNTS"
-MIN_PRE_MARKUP_SUBTOTAL = 2.0
 QUOTE_MARKUP_MULTIPLIER = 0.20
 VALID_PROVIDERS = {"aws"}
 VALID_RATE_TYPES = (
@@ -245,6 +244,20 @@ def _get_markup_multiplier() -> float:
         raise RuntimeError("PRICE_STORAGE_MARKUP_PERCENT must be greater than or equal to 0")
 
     return markup_percent / 100.0
+
+
+def _get_min_pre_markup_subtotal() -> float:
+    """Optional floor (USD) on storage+transfer before markup; default 0 = use raw estimate only."""
+    raw = (os.getenv("PRICE_STORAGE_MIN_PRE_MARKUP_SUBTOTAL") or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError("PRICE_STORAGE_MIN_PRE_MARKUP_SUBTOTAL must be a number") from exc
+    if value < 0:
+        raise RuntimeError("PRICE_STORAGE_MIN_PRE_MARKUP_SUBTOTAL must be greater than or equal to 0")
+    return value
 
 
 def get_pricing_client() -> Any:
@@ -621,7 +634,7 @@ def write_quote(
     resolved_table_name = table_name or _get_quotes_table_name()
     resolved_ttl_seconds = ttl_seconds if ttl_seconds is not None else _get_quote_ttl_seconds()
     expires_at = int(resolved_now.timestamp()) + resolved_ttl_seconds
-    pre_markup_subtotal = max(storage_cost + transfer_cost, MIN_PRE_MARKUP_SUBTOTAL)
+    pre_markup_subtotal = max(storage_cost + transfer_cost, _get_min_pre_markup_subtotal())
 
     item = {
         "quote_id": {"S": quote["quote_id"]},
@@ -691,7 +704,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             direction=direction,
             rate_type=rate_type,
         )
-        pre_markup_subtotal = max(storage_cost + transfer_cost, MIN_PRE_MARKUP_SUBTOTAL)
+        pre_markup_subtotal = max(storage_cost + transfer_cost, _get_min_pre_markup_subtotal())
         storage_price = round(pre_markup_subtotal * (1 + markup_multiplier), 2)
         _log_event(
             logging.INFO,
