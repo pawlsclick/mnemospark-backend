@@ -448,6 +448,7 @@ class QuoteWriteTests(unittest.TestCase):
             storage_cost=2.0,
             transfer_cost=1.0,
             markup_multiplier=0.15,
+            price_floor=0.0,
             dynamodb_client=fake_dynamodb,
             table_name="quotes-table",
             ttl_seconds=3600,
@@ -477,16 +478,16 @@ class QuoteWriteTests(unittest.TestCase):
             "location": "[REDACTED]",
         }
 
-        with mock.patch.dict(os.environ, {"PRICE_STORAGE_FLOOR": "2"}, clear=False):
-            app.write_quote(
-                quote=quote,
-                storage_cost=0.6,
-                transfer_cost=0.3,
-                markup_multiplier=0.2,
-                dynamodb_client=fake_dynamodb,
-                table_name="quotes-table",
-                ttl_seconds=3600,
-            )
+        app.write_quote(
+            quote=quote,
+            storage_cost=0.6,
+            transfer_cost=0.3,
+            markup_multiplier=0.2,
+            price_floor=2.0,
+            dynamodb_client=fake_dynamodb,
+            table_name="quotes-table",
+            ttl_seconds=3600,
+        )
 
         self.assertEqual(len(fake_dynamodb.put_item_calls), 1)
         put_item_call = fake_dynamodb.put_item_calls[0]
