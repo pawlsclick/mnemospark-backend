@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from .domain.event_fact_builder import build_event_facts_uncached
-from .domain.quote_fact_builder import build_quote_facts
+try:
+    from dashboard_graphql.domain.event_fact_builder import build_event_facts_uncached
+    from dashboard_graphql.domain.quote_fact_builder import build_quote_facts
+except ModuleNotFoundError as error:  # pragma: no cover - runtime path when CodeUri is services/dashboard_graphql
+    if error.name != "dashboard_graphql":
+        raise
+    from domain.event_fact_builder import build_event_facts_uncached  # type: ignore[no-redef]
+    from domain.quote_fact_builder import build_quote_facts  # type: ignore[no-redef]
 
 
 class DashboardRequestContext:
