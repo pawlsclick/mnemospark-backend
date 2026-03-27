@@ -59,7 +59,7 @@ def normalize_status(raw_status: str | None, raw_reason: str | None) -> str:
         x in status for x in ("error", "fail", "revert", "denied")
     )
 
-    if any(x in status for x in ("quote", "priced", "price_storage")):
+    if any(x in status for x in ("quote", "priced", "price_storage")) and not status_looks_failed:
         return "quote_created"
 
     if (
