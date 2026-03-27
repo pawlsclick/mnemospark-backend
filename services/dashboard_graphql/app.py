@@ -10,16 +10,30 @@ from mangum import Mangum
 from strawberry.asgi import GraphQL
 
 try:
+    from dashboard_graphql.request_context import DashboardRequestContext
     from dashboard_graphql.schema import schema
 except ModuleNotFoundError as error:  # pragma: no cover - runtime path when CodeUri is services/dashboard_graphql
     if error.name != "dashboard_graphql":
         raise
-    from schema import schema
+    from request_context import DashboardRequestContext  # type: ignore[no-redef]
+    from schema import schema  # type: ignore[no-redef]
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-_graphql_app = Mangum(GraphQL(schema), lifespan="off")
+
+class DashboardGraphQL(GraphQL):
+    """Adds per-request cache for expensive DynamoDB scans (see request_context)."""
+
+    async def get_context(self, request, response):  # type: ignore[no-untyped-def]
+        ctx = await super().get_context(request, response)
+        if isinstance(ctx, dict):
+            ctx = dict(ctx)
+            ctx["dashboard"] = DashboardRequestContext()
+        return ctx
+
+
+_graphql_app = Mangum(DashboardGraphQL(schema, graphql_ide=None), lifespan="off")
 
 
 def _ensure_http_context_for_mangum(event: dict[str, Any]) -> None:

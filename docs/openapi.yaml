@@ -1,7 +1,7 @@
 openapi: "3.2.0"
 info:
   title: mnemospark-backend API
-  version: "0.1.4"
+  version: "0.1.5"
   license:
     name: Proprietary
   description: >
@@ -397,8 +397,9 @@ paths:
       summary: Execute GraphQL operation (dashboard v2)
       description: >
         Standard GraphQL-over-HTTP POST. Field-level types and operations are defined in
-        `services/dashboard_graphql/schema.graphql` (Strawberry). This operation documents
-        the HTTP envelope only. The API is deployed on a **separate** API Gateway HTTP API
+        `services/dashboard_graphql/schema.graphql` (Strawberry), including dashboard
+        analytics queries (events, wallets, quote funnel, health, trace) for Ops Console v2.
+        This operation documents the HTTP envelope only. The API is deployed on a **separate** API Gateway HTTP API
         from the customer REST API; use the **dashboardGraphqlHttpApi** server entry.
       operationId: postDashboardGraphql
       servers:
