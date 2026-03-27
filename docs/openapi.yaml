@@ -44,6 +44,9 @@ paths:
       summary: Create a storage price quote
       description: >
         Calculates storage pricing and returns a quote for a wallet-scoped object.
+        Deploy-time configuration uses Lambda environment variables `PRICE_STORAGE_FLOOR`
+        (minimum USD subtotal before markup) and `PRICE_STORAGE_MARKUP` (markup percent);
+        see `docs/price-storage.md`.
       operationId: postPriceStorage
       security:
         - walletProof: []
