@@ -25,9 +25,9 @@ Parameters:
     Description: Quote TTL in seconds for DynamoDB expiration
   PriceStorageFloor:
     Type: String
-    Default: "0"
+    Default: "0.01"
     Description: >
-      Minimum USD for storage+transfer before markup. Default 0 so quotes scale with AWS estimates.
+      Minimum USD for storage+transfer before markup. Default 0.01 keeps quotes settleable.
   WalletAuthEventsTtlSeconds:
     Type: String
     Default: "2592000"

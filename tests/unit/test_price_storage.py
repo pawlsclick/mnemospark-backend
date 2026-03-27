@@ -416,10 +416,10 @@ class MarkupConfigTests(unittest.TestCase):
 
 
 class PriceFloorConfigTests(unittest.TestCase):
-    def test_price_floor_defaults_to_zero_when_unset(self):
+    def test_price_floor_defaults_to_one_cent_when_unset(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             floor = app._get_price_floor()
-        self.assertEqual(floor, 0.0)
+        self.assertEqual(floor, 0.01)
 
     def test_price_floor_reads_environment(self):
         with mock.patch.dict(os.environ, {"PRICE_STORAGE_FLOOR": "2"}, clear=False):
