@@ -147,6 +147,7 @@ type WalletFacts {
   firstSeenAt: String
   lastSeenAt: String
   totalQuotes: Int!
+  quoteCount: Int!
   totalUploadsStarted: Int!
   totalUploadsConfirmed: Int!
   totalPaymentsSettled: Int!
