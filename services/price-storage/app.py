@@ -624,6 +624,7 @@ def write_quote(
     storage_cost: float,
     transfer_cost: float,
     markup_multiplier: float,
+    price_floor: float,
     dynamodb_client: Any | None = None,
     table_name: str | None = None,
     ttl_seconds: int | None = None,
@@ -633,7 +634,7 @@ def write_quote(
     resolved_table_name = table_name or _get_quotes_table_name()
     resolved_ttl_seconds = ttl_seconds if ttl_seconds is not None else _get_quote_ttl_seconds()
     expires_at = int(resolved_now.timestamp()) + resolved_ttl_seconds
-    pre_markup_subtotal = max(storage_cost + transfer_cost, _get_price_floor())
+    pre_markup_subtotal = max(storage_cost + transfer_cost, price_floor)
 
     item = {
         "quote_id": {"S": quote["quote_id"]},
@@ -727,6 +728,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             storage_cost=storage_cost,
             transfer_cost=transfer_cost,
             markup_multiplier=markup_multiplier,
+            price_floor=price_floor,
         )
         _log_event(
             logging.INFO,
