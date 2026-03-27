@@ -58,6 +58,9 @@ def normalize_status(raw_status: str | None, raw_reason: str | None) -> str:
     status_looks_failed = any(
         x in status for x in ("error", "fail", "revert", "denied")
     )
+    reason_looks_failed = any(
+        x in reason for x in ("error", "fail", "revert", "denied")
+    )
 
     if any(x in status for x in ("quote", "priced", "price_storage")) and not status_looks_failed:
         return "quote_created"
@@ -93,12 +96,10 @@ def normalize_status(raw_status: str | None, raw_reason: str | None) -> str:
         "transaction_log_written" in status
         or "upload_started" in status
         or "upload_initiated" in status
-    ):
+    ) and not status_looks_failed and not reason_looks_failed:
         return "upload_started"
 
-    if status_looks_failed or any(
-        x in reason for x in ("error", "fail", "revert", "denied")
-    ):
+    if status_looks_failed or reason_looks_failed:
         return "failed"
 
     return "unknown"
