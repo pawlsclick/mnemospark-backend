@@ -405,14 +405,26 @@ class ParseInputTests(unittest.TestCase):
 
 class MarkupConfigTests(unittest.TestCase):
     def test_markup_uses_percent_from_environment(self):
-        with mock.patch.dict(os.environ, {"PRICE_STORAGE_MARKUP_PERCENT": "10"}, clear=False):
+        with mock.patch.dict(os.environ, {"PRICE_STORAGE_MARKUP": "10"}, clear=False):
             markup = app._get_markup_multiplier()
         self.assertEqual(markup, 0.1)
 
-    def test_markup_defaults_to_twenty_percent_when_unset(self):
+    def test_markup_defaults_to_zero_when_unset(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             markup = app._get_markup_multiplier()
-        self.assertEqual(markup, 0.2)
+        self.assertEqual(markup, 0.0)
+
+
+class PriceFloorConfigTests(unittest.TestCase):
+    def test_price_floor_defaults_to_zero_when_unset(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            floor = app._get_price_floor()
+        self.assertEqual(floor, 0.0)
+
+    def test_price_floor_reads_environment(self):
+        with mock.patch.dict(os.environ, {"PRICE_STORAGE_FLOOR": "2"}, clear=False):
+            floor = app._get_price_floor()
+        self.assertEqual(floor, 2.0)
 
 
 class QuoteWriteTests(unittest.TestCase):
@@ -465,15 +477,16 @@ class QuoteWriteTests(unittest.TestCase):
             "location": "[REDACTED]",
         }
 
-        app.write_quote(
-            quote=quote,
-            storage_cost=0.6,
-            transfer_cost=0.3,
-            markup_multiplier=0.2,
-            dynamodb_client=fake_dynamodb,
-            table_name="quotes-table",
-            ttl_seconds=3600,
-        )
+        with mock.patch.dict(os.environ, {"PRICE_STORAGE_FLOOR": "2"}, clear=False):
+            app.write_quote(
+                quote=quote,
+                storage_cost=0.6,
+                transfer_cost=0.3,
+                markup_multiplier=0.2,
+                dynamodb_client=fake_dynamodb,
+                table_name="quotes-table",
+                ttl_seconds=3600,
+            )
 
         self.assertEqual(len(fake_dynamodb.put_item_calls), 1)
         put_item_call = fake_dynamodb.put_item_calls[0]
@@ -505,6 +518,7 @@ class LambdaHandlerTests(unittest.TestCase):
             mock.patch.dict(
                 os.environ,
                 {
+                    "PRICE_STORAGE_MARKUP": "20",
                     "PRICE_STORAGE_TRANSFER_DIRECTION": "out",
                     "PRICE_STORAGE_RATE_TYPE": "BEFORE_DISCOUNTS",
                 },
@@ -534,6 +548,8 @@ class LambdaHandlerTests(unittest.TestCase):
             mock.patch.dict(
                 os.environ,
                 {
+                    "PRICE_STORAGE_FLOOR": "2",
+                    "PRICE_STORAGE_MARKUP": "20",
                     "PRICE_STORAGE_TRANSFER_DIRECTION": "out",
                     "PRICE_STORAGE_RATE_TYPE": "BEFORE_DISCOUNTS",
                 },
@@ -545,6 +561,30 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertEqual(response["statusCode"], 200)
         body = json.loads(response["body"])
         self.assertEqual(body["storage_price"], 2.4)
+
+    def test_lambda_handler_scales_small_costs_without_floor(self):
+        event = self._valid_event()
+
+        with (
+            mock.patch.object(app, "estimate_storage_cost", return_value=0.6),
+            mock.patch.object(app, "estimate_transfer_cost", return_value=0.3),
+            mock.patch.object(app, "write_quote"),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "PRICE_STORAGE_MARKUP": "20",
+                    "PRICE_STORAGE_FLOOR": "0",
+                    "PRICE_STORAGE_TRANSFER_DIRECTION": "out",
+                    "PRICE_STORAGE_RATE_TYPE": "BEFORE_DISCOUNTS",
+                },
+                clear=False,
+            ),
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 200)
+        body = json.loads(response["body"])
+        self.assertEqual(body["storage_price"], 1.08)
 
     def test_lambda_handler_reads_authorizer_wallet_context(self):
         event = self._valid_event()
@@ -562,7 +602,7 @@ class LambdaHandlerTests(unittest.TestCase):
             mock.patch.dict(
                 os.environ,
                 {
-                    "PRICE_STORAGE_MARKUP_PERCENT": "10",
+                    "PRICE_STORAGE_MARKUP": "10",
                     "PRICE_STORAGE_TRANSFER_DIRECTION": "out",
                     "PRICE_STORAGE_RATE_TYPE": "BEFORE_DISCOUNTS",
                 },
@@ -629,7 +669,7 @@ class LambdaHandlerTests(unittest.TestCase):
             mock.patch.dict(
                 os.environ,
                 {
-                    "PRICE_STORAGE_MARKUP_PERCENT": "10",
+                    "PRICE_STORAGE_MARKUP": "10",
                     "PRICE_STORAGE_TRANSFER_DIRECTION": "out",
                     "PRICE_STORAGE_RATE_TYPE": "BEFORE_DISCOUNTS",
                 },
@@ -652,7 +692,7 @@ class LambdaHandlerTests(unittest.TestCase):
             mock.patch.dict(
                 os.environ,
                 {
-                    "PRICE_STORAGE_MARKUP_PERCENT": "10",
+                    "PRICE_STORAGE_MARKUP": "10",
                     "PRICE_STORAGE_TRANSFER_DIRECTION": "out",
                     "PRICE_STORAGE_RATE_TYPE": "BEFORE_DISCOUNTS",
                 },

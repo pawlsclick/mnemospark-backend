@@ -331,7 +331,7 @@ class BackendFlowIntegrationTests(unittest.TestCase):
                 "MNEMOSPARK_PAYMENT_NETWORK": "eip155:8453",
                 "MNEMOSPARK_PAYMENT_ASSET": "0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
                 "QUOTE_TTL_SECONDS": "3600",
-                "PRICE_STORAGE_MARKUP_PERCENT": "10",
+                "PRICE_STORAGE_MARKUP": "10",
                 "PRICE_STORAGE_TRANSFER_DIRECTION": "out",
                 "PRICE_STORAGE_RATE_TYPE": "BEFORE_DISCOUNTS",
             },

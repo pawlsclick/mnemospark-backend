@@ -38,8 +38,6 @@ logger.setLevel(logging.INFO)
 DEFAULT_QUOTE_TTL_SECONDS = 3600
 DEFAULT_TRANSFER_DIRECTION = "out"
 DEFAULT_RATE_TYPE = "BEFORE_DISCOUNTS"
-MIN_PRE_MARKUP_SUBTOTAL = 2.0
-QUOTE_MARKUP_MULTIPLIER = 0.20
 VALID_PROVIDERS = {"aws"}
 VALID_RATE_TYPES = (
     "BEFORE_DISCOUNTS",
@@ -232,19 +230,33 @@ def _get_transfer_direction() -> str:
 
 
 def _get_markup_multiplier() -> float:
-    raw_markup_percent = (os.getenv("PRICE_STORAGE_MARKUP_PERCENT") or "").strip()
+    raw_markup_percent = (os.getenv("PRICE_STORAGE_MARKUP") or "").strip()
     if not raw_markup_percent:
-        return QUOTE_MARKUP_MULTIPLIER
+        return 0.0
 
     try:
         markup_percent = float(raw_markup_percent)
     except ValueError as exc:
-        raise RuntimeError("PRICE_STORAGE_MARKUP_PERCENT must be a number") from exc
+        raise RuntimeError("PRICE_STORAGE_MARKUP must be a number") from exc
 
     if markup_percent < 0:
-        raise RuntimeError("PRICE_STORAGE_MARKUP_PERCENT must be greater than or equal to 0")
+        raise RuntimeError("PRICE_STORAGE_MARKUP must be greater than or equal to 0")
 
     return markup_percent / 100.0
+
+
+def _get_price_floor() -> float:
+    """Minimum USD for storage+transfer before markup; default 0 = no floor."""
+    raw = (os.getenv("PRICE_STORAGE_FLOOR") or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError("PRICE_STORAGE_FLOOR must be a number") from exc
+    if value < 0:
+        raise RuntimeError("PRICE_STORAGE_FLOOR must be greater than or equal to 0")
+    return value
 
 
 def get_pricing_client() -> Any:
@@ -621,7 +633,7 @@ def write_quote(
     resolved_table_name = table_name or _get_quotes_table_name()
     resolved_ttl_seconds = ttl_seconds if ttl_seconds is not None else _get_quote_ttl_seconds()
     expires_at = int(resolved_now.timestamp()) + resolved_ttl_seconds
-    pre_markup_subtotal = max(storage_cost + transfer_cost, MIN_PRE_MARKUP_SUBTOTAL)
+    pre_markup_subtotal = max(storage_cost + transfer_cost, _get_price_floor())
 
     item = {
         "quote_id": {"S": quote["quote_id"]},
@@ -679,6 +691,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         rate_type = _get_rate_type()
         direction = _get_transfer_direction()
         markup_multiplier = _get_markup_multiplier()
+        price_floor = _get_price_floor()
 
         storage_cost = estimate_storage_cost(
             gb=request["gb"],
@@ -691,7 +704,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             direction=direction,
             rate_type=rate_type,
         )
-        pre_markup_subtotal = max(storage_cost + transfer_cost, MIN_PRE_MARKUP_SUBTOTAL)
+        pre_markup_subtotal = max(storage_cost + transfer_cost, price_floor)
         storage_price = round(pre_markup_subtotal * (1 + markup_multiplier), 2)
         _log_event(
             logging.INFO,
@@ -703,6 +716,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             storage_cost=storage_cost,
             transfer_cost=transfer_cost,
             pre_markup_subtotal=pre_markup_subtotal,
+            price_floor=price_floor,
             markup_multiplier=markup_multiplier,
             storage_price=storage_price,
         )
