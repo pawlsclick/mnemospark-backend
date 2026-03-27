@@ -52,6 +52,13 @@ class WalletFactsGQL:
     first_seen_at: str | None = strawberry.field(name="firstSeenAt", default=None)
     last_seen_at: str | None = strawberry.field(name="lastSeenAt", default=None)
     total_quotes: int = strawberry.field(name="totalQuotes")
+
+    @strawberry.field(name="quoteCount")
+    def quote_count(self) -> int:
+        """Alias for totalQuotes (v1 / docs compatibility)."""
+
+        return self.total_quotes
+
     total_uploads_started: int = strawberry.field(name="totalUploadsStarted")
     total_uploads_confirmed: int = strawberry.field(name="totalUploadsConfirmed")
     total_payments_settled: int = strawberry.field(name="totalPaymentsSettled")
