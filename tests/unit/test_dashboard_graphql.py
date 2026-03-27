@@ -305,3 +305,37 @@ class DashboardNormalizeAndMetadataTests(unittest.TestCase):
         self.assertEqual(len(facts), 1)
         self.assertEqual(facts[0]["normalizedStatus"], "failed")
         self.assertTrue(facts[0]["isFailure"])
+        self.assertEqual(facts[0]["eventType"], "quote_create_failed")
+
+    def test_build_quote_facts_does_not_mark_failed_price_storage_as_quote_created(self) -> None:
+        event_facts = [
+            {
+                "eventId": "api:r-failed",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "walletAddress": "0xabc",
+                "quoteId": "q-failed",
+                "requestId": "r-failed",
+                "route": "/price-storage",
+                "lambdaName": None,
+                "normalizedStatus": "failed",
+                "normalizedReason": "internal",
+                "source": "api_calls",
+                "eventType": "quote_create_failed",
+                "rawStatus": "error",
+                "rawReason": "internal error",
+                "isFailure": True,
+                "transId": None,
+                "idempotencyKey": None,
+                "network": None,
+                "amountNormalized": 0.0,
+                "metadata": {},
+            }
+        ]
+
+        rows = build_quote_facts(time_from=None, time_to=None, event_facts=event_facts)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["quoteId"], "q-failed")
+        self.assertFalse(row["hasQuoteCreated"])
+        self.assertTrue(row["hasFailure"])
+        self.assertEqual(row["finalStatus"], "failed")

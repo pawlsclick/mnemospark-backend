@@ -14,6 +14,8 @@ def _seed_quotes_from_price_storage_events(
     for event in events:
         if event.get("source") != "api_calls" or event.get("route") != "/price-storage":
             continue
+        if event.get("isFailure") or event.get("normalizedStatus") == "failed":
+            continue
 
         meta = event.get("metadata")
         meta_dict = meta if isinstance(meta, dict) else {}

@@ -55,6 +55,14 @@ def _json_safe_metadata(value: Any) -> Any:
 
 
 def _classify_event_type(source: str, normalized_status: str, route: str | None) -> str:
+    if source == "api_calls" and normalized_status == "failed":
+        if route == "/price-storage":
+            return "quote_create_failed"
+        if route == "/storage/upload/confirm":
+            return "upload_confirm_failed"
+        if route == "/storage/upload":
+            return "upload_failed"
+        return "api_call_failed"
     if route == "/price-storage":
         return "quote_created"
     if source == "wallet_auth":
