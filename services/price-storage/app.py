@@ -246,10 +246,10 @@ def _get_markup_multiplier() -> float:
 
 
 def _get_price_floor() -> float:
-    """Minimum USD for storage+transfer before markup; default 0 = no floor."""
+    """Minimum USD for storage+transfer before markup; defaults to 1 cent."""
     raw = (os.getenv("PRICE_STORAGE_FLOOR") or "").strip()
     if not raw:
-        return 0.0
+        return 0.01
     try:
         value = float(raw)
     except ValueError as exc:
