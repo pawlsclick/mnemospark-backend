@@ -2,6 +2,21 @@
 
 Create a storage price quote for a wallet-scoped object. The backend calculates S3 storage and outbound data transfer costs from the AWS Price List, applies a configurable markup, persists the quote in DynamoDB with TTL, and returns the quote for use in upload and payment flows.
 
+## Configuration (Lambda environment)
+
+The price-storage Lambda reads:
+
+| Variable | Meaning | Default when unset |
+|----------|---------|---------------------|
+| `PRICE_STORAGE_FLOOR` | Minimum USD for the AWS **subtotal** (storage + transfer) **before** markup. | `0` (no floor; quotes scale with estimated usage). |
+| `PRICE_STORAGE_MARKUP` | Markup as a percentage of that subtotal (e.g. `10` means 10%). | `0` |
+
+Formula:
+
+`storage_price = round(max(aws_subtotal, PRICE_STORAGE_FLOOR) * (1 + PRICE_STORAGE_MARKUP / 100), 2)` where `aws_subtotal = storage_cost + transfer_cost` from the AWS Price List API.
+
+In SAM, these are supplied as stack parameters **`PriceStorageFloor`** and **`PriceStorageMarkup`** (defaults `0`) and passed through to the Lambda environment. Set them via `sam deploy --parameter-overrides` or your CI/CD environment (for example GitHub Actions environment variables mapped into deploy parameters).
+
 ## Authentication
 
 **Wallet proof** (recommended). Send the `X-Wallet-Signature` header with a valid EIP-712 signature over the request (method, path, wallet address, nonce, timestamp). If present, the backend verifies it and can use it for per-wallet rate limiting. Some deployments may allow unauthenticated price requests.

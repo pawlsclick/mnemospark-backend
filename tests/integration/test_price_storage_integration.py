@@ -59,7 +59,7 @@ class PriceStorageIntegrationTests(unittest.TestCase):
                 {
                     "QUOTES_TABLE_NAME": "quotes-test",
                     "QUOTE_TTL_SECONDS": "3600",
-                    "PRICE_STORAGE_MARKUP_PERCENT": "10",
+                    "PRICE_STORAGE_MARKUP": "10",
                     "PRICE_STORAGE_TRANSFER_DIRECTION": "out",
                     "PRICE_STORAGE_RATE_TYPE": "BEFORE_DISCOUNTS",
                 },
