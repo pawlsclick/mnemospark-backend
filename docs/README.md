@@ -13,7 +13,7 @@ of the supported API surface documented here.
 
 The current internet-facing API Gateway routes are:
 
-- `POST /price-storage`
+- `POST /price-storage` (quote pricing env: see [price-storage.md](price-storage.md))
 - `POST /payment/settle` (quote settlement after price-storage, or monthly **renewal** without a new quote; see [payment-settle.md](payment-settle.md))
 - `POST /storage/upload`
 - `POST /storage/upload/confirm`
