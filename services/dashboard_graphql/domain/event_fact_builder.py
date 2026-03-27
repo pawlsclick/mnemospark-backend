@@ -113,7 +113,11 @@ def build_event_facts_uncached(
                 "quoteId": _str(row.get("quote_id")),
                 "requestId": _str(row.get("request_id")),
                 "network": _str(row.get("network")),
-                "amountNormalized": normalize_amount(row.get("amount") or _str_or_number(row.get("storage_price"))),
+                "amountNormalized": normalize_amount(
+                    row.get("amount")
+                    if row.get("amount") is not None
+                    else _str_or_number(row.get("storage_price"))
+                ),
                 "normalizedStatus": status,
                 "normalizedReason": normalize_failure_category(_str(row.get("reason")), _str(row.get("status")))
                 if status == "failed"
@@ -162,7 +166,11 @@ def build_event_facts_uncached(
                 "transId": _str(row.get("trans_id")),
                 "idempotencyKey": _str(row.get("idempotency_key")),
                 "network": _str(row.get("network") or row.get("payment_network")),
-                "amountNormalized": normalize_amount(row.get("amount") or _str_or_number(row.get("payment_amount"))),
+                "amountNormalized": normalize_amount(
+                    row.get("amount")
+                    if row.get("amount") is not None
+                    else _str_or_number(row.get("payment_amount"))
+                ),
                 "normalizedStatus": status,
                 "normalizedReason": normalize_failure_category(_str(row.get("reason")), _str(row.get("status")))
                 if status == "failed"
@@ -204,7 +212,11 @@ def build_event_facts_uncached(
                 "quoteId": _str(row.get("quote_id")),
                 "requestId": _str(row.get("request_id")),
                 "network": _str(row.get("network")),
-                "amountNormalized": normalize_amount(row.get("amount") or _str_or_number(row.get("storage_price"))),
+                "amountNormalized": normalize_amount(
+                    row.get("amount")
+                    if row.get("amount") is not None
+                    else _str_or_number(row.get("storage_price"))
+                ),
                 "normalizedStatus": status,
                 "normalizedReason": normalize_failure_category(_str(row.get("reason")), _str(row.get("status")))
                 if status == "failed"

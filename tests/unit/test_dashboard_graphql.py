@@ -347,3 +347,60 @@ class DashboardNormalizeAndMetadataTests(unittest.TestCase):
         self.assertFalse(row["hasQuoteCreated"])
         self.assertTrue(row["hasFailure"])
         self.assertEqual(row["finalStatus"], "failed")
+
+    def test_build_event_facts_keeps_zero_amount_without_fallback(self) -> None:
+        quote_row = {
+            "quote_id": "q-zero",
+            "request_id": "r-zero-quote",
+            "wallet_address": "0xabc",
+            "status": "quote_created",
+            "event_ts": "2024-01-01T00:00:00Z",
+            "amount": Decimal("0"),
+            "storage_price": Decimal("5000000"),
+        }
+        upload_row = {
+            "quote_id": "q-zero",
+            "request_id": "r-zero-upload",
+            "trans_id": "t-zero",
+            "wallet_address": "0xabc",
+            "status": "upload_started",
+            "event_ts": "2024-01-02T00:00:00Z",
+            "amount": Decimal("0"),
+            "payment_amount": Decimal("7000000"),
+        }
+        payment_row = {
+            "quote_id": "q-zero",
+            "request_id": "r-zero-payment",
+            "wallet_address": "0xabc",
+            "status": "payment_settled",
+            "event_ts": "2024-01-03T00:00:00Z",
+            "amount": Decimal("0"),
+            "storage_price": Decimal("9000000"),
+        }
+
+        with (
+            mock.patch("dashboard_graphql.domain.event_fact_builder.quotes_table", return_value=object()),
+            mock.patch(
+                "dashboard_graphql.domain.event_fact_builder.upload_transaction_log_table",
+                return_value=object(),
+            ),
+            mock.patch(
+                "dashboard_graphql.domain.event_fact_builder.payment_ledger_table",
+                return_value=object(),
+            ),
+            mock.patch(
+                "dashboard_graphql.domain.event_fact_builder.wallet_auth_events_table",
+                return_value=object(),
+            ),
+            mock.patch("dashboard_graphql.domain.event_fact_builder.api_calls_table", return_value=object()),
+            mock.patch(
+                "dashboard_graphql.domain.event_fact_builder.scan_table",
+                side_effect=[[quote_row], [upload_row], [payment_row], [], []],
+            ),
+        ):
+            facts = build_event_facts_uncached(time_from=None, time_to=None)
+
+        by_source = {fact["source"]: fact for fact in facts}
+        self.assertEqual(by_source["quotes"]["amountNormalized"], 0.0)
+        self.assertEqual(by_source["upload_logs"]["amountNormalized"], 0.0)
+        self.assertEqual(by_source["payments"]["amountNormalized"], 0.0)
