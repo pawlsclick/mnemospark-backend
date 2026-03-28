@@ -39,6 +39,9 @@ DEFAULT_QUOTE_TTL_SECONDS = 3600
 DEFAULT_TRANSFER_DIRECTION = "out"
 DEFAULT_RATE_TYPE = "BEFORE_DISCOUNTS"
 VALID_PROVIDERS = {"aws"}
+# Internet egress rates for DataTransfer-Out-Bytes live under AWSDataTransfer in the Price List.
+# Querying AmazonS3 can return a $0/GB SKU that wins min() and understates egress vs the calculator.
+DATA_TRANSFER_PRICING_SERVICE_CODE = "AWSDataTransfer"
 VALID_RATE_TYPES = (
     "BEFORE_DISCOUNTS",
     "AFTER_DISCOUNTS",
@@ -441,6 +444,9 @@ def _pick_lowest_tiered_cost(
     if not candidate_costs:
         raise RuntimeError(error_message)
 
+    positive_costs = [cost for cost in candidate_costs if cost > 0]
+    if positive_costs:
+        return min(positive_costs)
     return min(candidate_costs)
 
 
@@ -510,7 +516,7 @@ def _is_data_transfer_product(product: dict[str, Any], *, direction: str) -> boo
 
 
 def _build_data_transfer_primary_filters(region: str) -> list[dict[str, str]]:
-    """Build GetProducts filters for S3 outbound data transfer; matches working script."""
+    """Build GetProducts filters for regional internet egress (DataTransfer-Out-Bytes)."""
     location = REGION_TO_S3_LOCATION.get(region)
     if location:
         return [
@@ -556,7 +562,11 @@ def get_data_transfer_out_price_per_gb(
         return 0.0
 
     primary_filters = _build_data_transfer_primary_filters(region)
-    products = _get_products(service_code="AmazonS3", filters=primary_filters, client=client)
+    products = _get_products(
+        service_code=DATA_TRANSFER_PRICING_SERVICE_CODE,
+        filters=primary_filters,
+        client=client,
+    )
     return _pick_lowest_positive_rate(
         products=products,
         product_matcher=lambda product: _is_data_transfer_product(product, direction=direction),
@@ -591,7 +601,7 @@ def estimate_transfer_cost(gb: float, region: str, direction: str, rate_type: st
         return 0.0
 
     primary_filters = _build_data_transfer_primary_filters(region)
-    products = _get_products(service_code="AmazonS3", filters=primary_filters)
+    products = _get_products(service_code=DATA_TRANSFER_PRICING_SERVICE_CODE, filters=primary_filters)
     return _pick_lowest_tiered_cost(
         products=products,
         product_matcher=lambda product: _is_data_transfer_product(product, direction=direction),
