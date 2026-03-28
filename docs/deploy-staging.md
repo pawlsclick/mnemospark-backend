@@ -20,6 +20,10 @@ The dashboard GraphQL HTTP API (`POST /graphql`) is protected by a **Lambda requ
 
 Until this variable is set to a valid ARN, CloudFormation deploys that include the dashboard GraphQL authorizer will fail or the authorizer will deny traffic if the secret cannot be read.
 
+## Price-storage quote settings (optional)
+
+The **`staging`** environment can define **`PRICE_STORAGE_FLOOR`** and **`PRICE_STORAGE_MARKUP`** (same names as the Lambda environment variables). The deploy workflow passes them to SAM as **`PriceStorageFloor`** and **`PriceStorageMarkup`**. If you omit them, both default to `0` on deploy. See [price-storage.md](price-storage.md) for semantics. Redeploy after changing these values so the stack updates the Lambda configuration.
+
 ## Local `sam deploy` (emergency)
 
 `samconfig.staging.toml` includes `DashboardGraphqlApiKeySecretArn=REPLACE_WITH_SECRET_ARN`; replace that placeholder (or pass `--parameter-overrides` on the command line).
@@ -28,7 +32,7 @@ Until this variable is set to a valid ARN, CloudFormation deploys that include t
 sam build --template-file template.yaml
 sam deploy --config-file samconfig.staging.toml --region "$AWS_REGION" \
   --parameter-overrides \
-    "StageName=staging PaymentSettlementMode=onchain BaseRpcUrl=https://mainnet.base.org DashboardGraphqlApiKeySecretArn=YOUR_SECRET_ARN"
+    "StageName=staging PaymentSettlementMode=onchain BaseRpcUrl=https://mainnet.base.org DashboardGraphqlApiKeySecretArn=YOUR_SECRET_ARN PriceStorageFloor=0 PriceStorageMarkup=0"
 ```
 
 Replace `YOUR_SECRET_ARN` with the real ARN. Ensure your credentials can assume the deploy role or equivalent and can update the stack.
