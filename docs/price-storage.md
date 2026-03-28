@@ -15,7 +15,11 @@ Formula:
 
 `storage_price = round(max(aws_subtotal, PRICE_STORAGE_FLOOR) * (1 + PRICE_STORAGE_MARKUP / 100), 2)` where `aws_subtotal = storage_cost + transfer_cost` from the AWS Price List API.
 
-In SAM, these are supplied as stack parameters **`PriceStorageFloor`** and **`PriceStorageMarkup`** (defaults `0`) and passed through to the Lambda environment. Set them via `sam deploy --parameter-overrides` or your CI/CD environment (for example GitHub Actions environment variables mapped into deploy parameters).
+In SAM, these are supplied as stack parameters **`PriceStorageFloor`** and **`PriceStorageMarkup`** (defaults `0`) and passed through to the Lambda environment.
+
+**GitHub Actions:** Adding `PRICE_STORAGE_FLOOR` or `PRICE_STORAGE_MARKUP` only under the repository or environment **Variables** UI does **not** update the Lambda until the next deploy passes them into CloudFormation. The staging and production workflows map **`vars.PRICE_STORAGE_FLOOR`** and **`vars.PRICE_STORAGE_MARKUP`** to those parameters (defaulting to `0` when unset). After changing values, run a deploy (push to `main` for staging, or **Promote to Production** for prod).
+
+For manual or emergency deploys, pass them explicitly, for example: `PriceStorageFloor=2 PriceStorageMarkup=30`.
 
 ## Authentication
 

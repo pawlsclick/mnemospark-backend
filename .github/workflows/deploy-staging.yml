@@ -51,7 +51,7 @@ jobs:
             --region "${{ vars.AWS_REGION }}" \
             --no-fail-on-empty-changeset \
             --parameter-overrides \
-              "StageName=staging PaymentSettlementMode=onchain BaseRpcUrl=https://mainnet.base.org DashboardGraphqlApiKeySecretArn=${DASHBOARD_SECRET_ARN}"
+              "StageName=staging PaymentSettlementMode=onchain BaseRpcUrl=https://mainnet.base.org DashboardGraphqlApiKeySecretArn=${DASHBOARD_SECRET_ARN} PriceStorageFloor=${{ vars.PRICE_STORAGE_FLOOR || '0' }} PriceStorageMarkup=${{ vars.PRICE_STORAGE_MARKUP || '0' }}"
 
       - name: Smoke tests
         if: ${{ vars.STAGING_BASE_URL != '' && !contains(vars.STAGING_BASE_URL, 'example.com') }}
