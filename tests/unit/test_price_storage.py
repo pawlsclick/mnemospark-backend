@@ -142,7 +142,7 @@ class PricingHelpersTests(unittest.TestCase):
         price = app.get_data_transfer_out_price_per_gb(region="[REDACTED]", client=client)
 
         self.assertEqual(price, 0.09)
-        self.assertEqual(client.calls[0]["ServiceCode"], "AmazonS3")
+        self.assertEqual(client.calls[0]["ServiceCode"], "AWSDataTransfer")
 
     def test_get_data_transfer_in_price_per_gb_returns_zero_without_lookup(self):
         client = FakePricingClient(responses=[])
@@ -341,6 +341,53 @@ class PricingHelpersTests(unittest.TestCase):
             )
 
         self.assertEqual(cost, 2.175)
+
+    def test_estimate_transfer_cost_ignores_zero_cost_sku_when_positive_exists(self):
+        """AmazonS3 can return a $0/GB egress SKU alongside tiered rates; min() must not pick $0."""
+        client = FakePricingClient(
+            responses=[
+                {
+                    "PriceList": [
+                        self._price_list_entry(
+                            product_family="Data Transfer",
+                            usagetype="USE1-DataTransfer-Out-Bytes",
+                            transfer_type="AWS Outbound",
+                            price_dimensions=[
+                                {
+                                    "unit": "GB",
+                                    "pricePerUnit": {"USD": "0.000"},
+                                    "beginRange": "0",
+                                    "endRange": "Inf",
+                                },
+                            ],
+                        ),
+                        self._price_list_entry(
+                            product_family="Data Transfer",
+                            usagetype="USE1-DataTransfer-Out-Bytes",
+                            transfer_type="AWS Outbound",
+                            price_dimensions=[
+                                {
+                                    "unit": "GB",
+                                    "pricePerUnit": {"USD": "0.090"},
+                                    "beginRange": "0",
+                                    "endRange": "Inf",
+                                },
+                            ],
+                        ),
+                    ]
+                }
+            ]
+        )
+
+        with mock.patch.object(app, "get_pricing_client", return_value=client):
+            cost = app.estimate_transfer_cost(
+                gb=100,
+                region="[REDACTED]",
+                direction="out",
+                rate_type="BEFORE_DISCOUNTS",
+            )
+
+        self.assertEqual(cost, 9.0)
 
     def test_estimate_transfer_cost_direction_in_returns_zero(self):
         with mock.patch.object(app, "get_pricing_client") as get_pricing_client_mock:
