@@ -53,7 +53,7 @@ jobs:
             --region "${{ vars.AWS_REGION }}" \
             --no-fail-on-empty-changeset \
             --parameter-overrides \
-              "StageName=prod DashboardGraphqlApiKeySecretArn=${DASHBOARD_SECRET_ARN} PriceStorageFloor=${{ vars.PRICE_STORAGE_FLOOR || '0.01' }} PriceStorageMarkup=${{ vars.PRICE_STORAGE_MARKUP || '0' }}"
+              "StageName=prod DashboardGraphqlApiKeySecretArn=${DASHBOARD_SECRET_ARN} PriceStorageFloor=${{ vars.PRICE_STORAGE_FLOOR || '0' }} PriceStorageMarkup=${{ vars.PRICE_STORAGE_MARKUP || '0' }}"
 
       - name: Smoke tests (prod)
         if: ${{ vars.PROD_BASE_URL != '' && !contains(vars.PROD_BASE_URL, 'example.com') }}
