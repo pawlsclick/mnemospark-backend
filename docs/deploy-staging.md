@@ -4,7 +4,7 @@ Routine deploys use **GitHub Actions** on push to `main` (see `.github/workflows
 
 ## IAM role (OIDC)
 
-The workflow assumes an IAM role via `aws-actions/configure-aws-credentials` using `secrets.AWS_ROLE_ARN_STAGING`. For emergency or debug deploys from a workstation, you can use a dedicated deploy role (example used in ops docs): `arn:aws:iam::123456789012:role/STAGING_DEPLOY_ROLE`. Prefer short-lived credentials and least privilege; do not commit long-lived access keys.
+The workflow assumes an IAM role via `aws-actions/configure-aws-credentials` using `secrets.AWS_ROLE_ARN_STAGING`. For emergency or debug deploys from a workstation, use a dedicated deploy role documented in your ops runbook (`arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>`); do not commit account-specific ARNs in this repository. Prefer short-lived credentials and least privilege; do not commit long-lived access keys.
 
 ## Stack and region
 
