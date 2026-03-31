@@ -20,12 +20,14 @@ import boto3
 import botocore.exceptions
 
 try:
+    from common.http_response_headers import rest_api_json_headers
     from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.http_response_headers import rest_api_json_headers
     from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
 
 
@@ -101,10 +103,7 @@ def _log_event(level: int, event_name: str, **fields: Any) -> None:
 def _response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:
     return {
         "statusCode": status_code,
-        "headers": {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
-        },
+        "headers": rest_api_json_headers(),
         "body": json.dumps(body),
     }
 
