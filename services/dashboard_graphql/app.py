@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from mangum import Mangum
@@ -48,12 +49,25 @@ def _ensure_http_context_for_mangum(event: dict[str, Any]) -> None:
         return
 
 
+def _cors_allow_origin() -> str | None:
+    """Echo deploy-time origin; omit header if explicitly empty (CodeUri has no common/ package)."""
+    raw = os.environ.get("DASHBOARD_GRAPHQL_CORS_ALLOW_ORIGIN")
+    if raw is None:
+        return "*"
+    stripped = raw.strip()
+    return stripped if stripped else None
+
+
 def _cors_headers() -> dict[str, str]:
-    return {
-        "Access-Control-Allow-Origin": "*",
+    origin = _cors_allow_origin()
+    h: dict[str, str] = {
         "Access-Control-Allow-Methods": "POST,OPTIONS",
         "Access-Control-Allow-Headers": "content-type,x-api-key,authorization,x-amz-date,x-amz-security-token",
+        "X-Content-Type-Options": "nosniff",
     }
+    if origin:
+        h["Access-Control-Allow-Origin"] = origin
+    return h
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -79,12 +93,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         logger.exception("dashboard_graphql unhandled error")
         return {
             "statusCode": 500,
-            "headers": {**_cors_headers(), "Content-Type": "application/json"},
+            "headers": {
+                "Content-Type": "application/json",
+                "X-Content-Type-Options": "nosniff",
+            },
             "body": json.dumps({"errors": [{"message": "Internal server error"}]}),
         }
 
     headers = dict(response.get("headers") or {})
-    for k, v in _cors_headers().items():
-        headers.setdefault(k, v)
+    headers.setdefault("X-Content-Type-Options", "nosniff")
     response["headers"] = headers
     return response

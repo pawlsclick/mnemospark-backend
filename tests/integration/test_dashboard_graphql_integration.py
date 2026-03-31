@@ -27,6 +27,7 @@ class DashboardGraphqlHandlerIntegrationTests(unittest.TestCase):
         resp = lambda_handler(event, None)
         self.assertEqual(resp["statusCode"], 204)
         self.assertIn("Access-Control-Allow-Origin", resp["headers"])
+        self.assertEqual(resp["headers"].get("X-Content-Type-Options"), "nosniff")
 
     def test_post_graphql_health(self):
         event = {
@@ -40,6 +41,7 @@ class DashboardGraphqlHandlerIntegrationTests(unittest.TestCase):
         }
         resp = lambda_handler(event, None)
         self.assertEqual(resp["statusCode"], 200)
+        self.assertEqual(resp["headers"].get("X-Content-Type-Options"), "nosniff")
         body = json.loads(resp["body"])
         self.assertTrue(body["data"]["health"]["ok"])
 

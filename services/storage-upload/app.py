@@ -27,6 +27,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 try:
+    from common.http_response_headers import rest_api_json_headers
     from common.log_api_call_loader import load_log_api_call
     from common.request_log_utils import (
         build_log_event,
@@ -40,6 +41,7 @@ except ModuleNotFoundError:
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.http_response_headers import rest_api_json_headers
     from common.log_api_call_loader import load_log_api_call
     from common.request_log_utils import (
         build_log_event,
@@ -249,10 +251,7 @@ class PaymentLedgerRecord:
 
 
 def _response(status_code: int, body: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
-    merged_headers = {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-    }
+    merged_headers = rest_api_json_headers()
     if headers:
         merged_headers.update(headers)
     return {

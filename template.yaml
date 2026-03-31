@@ -117,6 +117,20 @@ Parameters:
     Description: >
       Secrets Manager secret ARN for the dashboard GraphQL API key (x-api-key).
       Create the secret before deploy; pass via sam deploy --parameter-overrides or samconfig.
+  RestApiCorsAllowOrigin:
+    Type: String
+    Default: "*"
+    Description: >
+      Access-Control-Allow-Origin for wallet REST API (comma-separated list allowed in SAM Cors;
+      Lambdas echo this via MNEMOSPARK_CORS_ALLOW_ORIGIN). Prefer explicit HTTPS origins in production.
+  RestApiCorsAllowHeaders:
+    Type: String
+    Default: "Content-Type,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,X-PAYMENT,x-payment,x-payment-required,x-payment-response"
+    Description: Allowed CORS request headers for the REST API (SAM Cors AllowHeaders string).
+  DashboardGraphqlCorsAllowOrigin:
+    Type: String
+    Default: "*"
+    Description: Access-Control-Allow-Origin for dashboard GraphQL Lambda (DASHBOARD_GRAPHQL_CORS_ALLOW_ORIGIN).
 
 Globals:
   Function:
@@ -701,8 +715,27 @@ Resources:
           {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.resourcePath","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationError":"$context.integrationErrorMessage"}
       Cors:
         AllowMethods: "'GET,POST,DELETE,OPTIONS'"
-        AllowHeaders: "'Content-Type,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,X-PAYMENT,x-payment,x-payment-required,x-payment-response'"
-        AllowOrigin: "'*'"
+        AllowHeaders: !Sub "'${RestApiCorsAllowHeaders}'"
+        AllowOrigin: !Sub "'${RestApiCorsAllowOrigin}'"
+      GatewayResponses:
+        MISSING_AUTHENTICATION_TOKEN:
+          StatusCode: "403"
+          ResponseParameters:
+            Headers:
+              X-Content-Type-Options: "'nosniff'"
+              Cache-Control: "'no-store'"
+              Access-Control-Allow-Origin: !Sub "'${RestApiCorsAllowOrigin}'"
+          ResponseTemplates:
+            application/json: '{"message":"Forbidden"}'
+        ACCESS_DENIED:
+          StatusCode: "403"
+          ResponseParameters:
+            Headers:
+              X-Content-Type-Options: "'nosniff'"
+              Cache-Control: "'no-store'"
+              Access-Control-Allow-Origin: !Sub "'${RestApiCorsAllowOrigin}'"
+          ResponseTemplates:
+            application/json: '{"message":"Forbidden"}'
       Models:
         PriceStorageRequest:
           type: object
@@ -926,6 +959,19 @@ Resources:
       Description: Internal read-only GraphQL for Ops Console (dashboard v2); x-api-key validated by Lambda authorizer.
       Tags:
         Project: mnemospark
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref DashboardGraphqlCorsAllowOrigin
+        AllowMethods:
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - content-type
+          - x-api-key
+          - authorization
+          - x-amz-date
+          - x-amz-security-token
+        MaxAge: 600
       Auth:
         DefaultAuthorizer: DashboardGraphqlApiKeyAuthorizer
         Authorizers:
@@ -966,6 +1012,7 @@ Resources:
           UPLOAD_TRANSACTION_LOG_TABLE_NAME: !Ref UploadTransactionLogTable
           WALLET_AUTH_EVENTS_TABLE_NAME: !Ref WalletAuthEventsTable
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
+          DASHBOARD_GRAPHQL_CORS_ALLOW_ORIGIN: !Ref DashboardGraphqlCorsAllowOrigin
       Events:
         DashboardGraphqlPost:
           Type: HttpApi
@@ -975,14 +1022,6 @@ Resources:
             Method: POST
             Auth:
               Authorizer: DashboardGraphqlApiKeyAuthorizer
-        DashboardGraphqlOptions:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref DashboardGraphQLHttpApi
-            Path: /graphql
-            Method: OPTIONS
-            Auth:
-              Authorizer: NONE
 
   PriceStorageFunction:
     Type: AWS::Serverless::Function
@@ -1000,6 +1039,7 @@ Resources:
           PRICE_STORAGE_RATE_TYPE: BEFORE_DISCOUNTS
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
+          MNEMOSPARK_CORS_ALLOW_ORIGIN: !Ref RestApiCorsAllowOrigin
       Events:
         PriceStoragePost:
           Type: Api
@@ -1033,6 +1073,7 @@ Resources:
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
           ACTIVE_STORAGE_OBJECT_TABLE_NAME: !Ref ActiveStorageObjectTable
+          MNEMOSPARK_CORS_ALLOW_ORIGIN: !Ref RestApiCorsAllowOrigin
       Events:
         StorageUploadPost:
           Type: Api
@@ -1079,6 +1120,7 @@ Resources:
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
           ACTIVE_STORAGE_OBJECT_TABLE_NAME: !Ref ActiveStorageObjectTable
+          MNEMOSPARK_CORS_ALLOW_ORIGIN: !Ref RestApiCorsAllowOrigin
       Events:
         StorageUploadConfirmPost:
           Type: Api
@@ -1125,6 +1167,7 @@ Resources:
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
           ACTIVE_STORAGE_OBJECT_TABLE_NAME: !Ref ActiveStorageObjectTable
           RENEWAL_TRANSACTION_LOG_TABLE_NAME: !Ref RenewalTransactionLogTable
+          MNEMOSPARK_CORS_ALLOW_ORIGIN: !Ref RestApiCorsAllowOrigin
       Events:
         PaymentSettlePost:
           Type: Api
@@ -1159,6 +1202,7 @@ Resources:
         Variables:
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
+          MNEMOSPARK_CORS_ALLOW_ORIGIN: !Ref RestApiCorsAllowOrigin
       Events:
         StorageLsGet:
           Type: Api
@@ -1225,6 +1269,7 @@ Resources:
         Variables:
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
+          MNEMOSPARK_CORS_ALLOW_ORIGIN: !Ref RestApiCorsAllowOrigin
       Policies:
         - Version: "2012-10-17"
           Statement:
@@ -1283,6 +1328,7 @@ Resources:
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
           ACTIVE_STORAGE_OBJECT_TABLE_NAME: !Ref ActiveStorageObjectTable
+          MNEMOSPARK_CORS_ALLOW_ORIGIN: !Ref RestApiCorsAllowOrigin
       Events:
         StorageDeleteDelete:
           Type: Api
