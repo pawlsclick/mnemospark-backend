@@ -118,6 +118,9 @@
                 "logs:PutRetentionPolicy",
                 "logs:TagLogGroup",
                 "logs:UntagLogGroup",
+                "logs:ListTagsForResource",
+                "logs:TagResource",
+                "logs:UntagResource",
                 "logs:PutResourcePolicy",
                 "logs:DeleteResourcePolicy",
                 "logs:DescribeResourcePolicies"
