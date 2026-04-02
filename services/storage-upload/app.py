@@ -7,6 +7,7 @@ Flow:
 3. Require an existing confirmed payment ledger record for (wallet_address, quote_id).
 4. Upload ciphertext to wallet-scoped S3 bucket with wrapped DEK metadata.
 5. Write upload transaction log row in DynamoDB.
+6. Upsert active storage inventory (DynamoDB) so renewals can resolve the object (inline and presigned+confirm).
 """
 
 from __future__ import annotations
@@ -1942,6 +1943,26 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     "idempotency_marked_completed_existing_upload",
                     idempotency_key=idempotency_key,
                 )
+            active_table = dynamodb.Table(_require_env(ACTIVE_STORAGE_OBJECT_TABLE_ENV))
+            inv_key = {"wallet_address": request.wallet_address, "object_key": request.object_key}
+            if not active_table.get_item(Key=inv_key, ConsistentRead=True).get("Item"):
+                created_at_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+                _put_active_storage_object_record_with_retry(
+                    table=active_table,
+                    wallet_address=request.wallet_address,
+                    object_key=request.object_key,
+                    bucket_name=bucket_name,
+                    location=quote_context.location,
+                    storage_price=quote_context.storage_price,
+                    created_at_iso=created_at_iso,
+                )
+                _log_event(
+                    logging.INFO,
+                    "active_storage_inventory_repaired",
+                    quote_id=request.quote_id,
+                    object_key=request.object_key,
+                    message="upload log existed without inventory row; wrote active storage",
+                )
             _log_api_call_result(
                 event,
                 context,
@@ -2150,6 +2171,26 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "transaction_log_written",
             trans_id=payment_result.trans_id,
             quote_id=request.quote_id,
+        )
+
+        active_table = dynamodb.Table(_require_env(ACTIVE_STORAGE_OBJECT_TABLE_ENV))
+        created_at_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+        _put_active_storage_object_record_with_retry(
+            table=active_table,
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+            bucket_name=bucket_name,
+            location=quote_context.location,
+            storage_price=quote_context.storage_price,
+            created_at_iso=created_at_iso,
+        )
+        _log_event(
+            logging.INFO,
+            "active_storage_inventory_written",
+            wallet_address=request.wallet_address,
+            object_key=request.object_key,
+            bucket_name=bucket_name,
+            mode="inline",
         )
 
         # Quote is intentionally preserved in QuotesTable to support dashboard funnel
