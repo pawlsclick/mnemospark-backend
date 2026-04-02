@@ -24,9 +24,16 @@ app = load_app_module()
 
 
 class FakeS3Client:
-    def __init__(self, *, bucket_missing=False, object_missing=False):
+    def __init__(
+        self,
+        *,
+        bucket_missing=False,
+        object_missing=False,
+        bucket_home_region=None,
+    ):
         self.bucket_missing = bucket_missing
         self.object_missing = object_missing
+        self.bucket_home_region = bucket_home_region or app.DEFAULT_LOCATION
         self.generate_calls = []
 
     def head_bucket(self, Bucket):
@@ -35,7 +42,11 @@ class FakeS3Client:
                 {"Error": {"Code": "404", "Message": "missing bucket"}},
                 "HeadBucket",
             )
-        return {"Bucket": Bucket}
+        return {"BucketRegion": self.bucket_home_region}
+
+    def get_bucket_location(self, Bucket):
+        r = self.bucket_home_region
+        return {"LocationConstraint": None if r == "us-east-1" else r}
 
     def head_object(self, Bucket, Key):
         if self.object_missing:
@@ -241,3 +252,16 @@ class LambdaHandlerTests(unittest.TestCase):
         body = json.loads(response["body"])
         self.assertEqual(body["error"], "forbidden")
         self.assertIn("wallet_address does not match authorized wallet", body["message"])
+
+    def test_lambda_handler_bucket_region_mismatch_returns_400(self):
+        fake_s3_client = FakeS3Client(bucket_home_region="eu-west-1")
+        event = self._event(location="us-west-2")
+
+        with mock.patch.object(app.boto3, "client", return_value=fake_s3_client):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 400)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "bucket_region_mismatch")
+        self.assertEqual(body["details"]["bucket_region"], "eu-west-1")
+        self.assertEqual(body["details"]["requested_region"], "us-west-2")

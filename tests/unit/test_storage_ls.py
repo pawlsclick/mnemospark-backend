@@ -27,9 +27,10 @@ app = load_app_module()
 class FakeS3Client:
     """In-memory S3 stub: head_bucket, head_object, list_objects_v2."""
 
-    def __init__(self, objects_by_bucket):
+    def __init__(self, objects_by_bucket, *, bucket_home_region=None):
         self.objects_by_bucket = objects_by_bucket
         self.list_calls: list[dict] = []
+        self.bucket_home_region = bucket_home_region or app.DEFAULT_LOCATION
 
     def head_bucket(self, Bucket):
         if Bucket not in self.objects_by_bucket:
@@ -37,7 +38,11 @@ class FakeS3Client:
                 {"Error": {"Code": "404", "Message": "bucket not found"}},
                 "HeadBucket",
             )
-        return {}
+        return {"BucketRegion": self.bucket_home_region}
+
+    def get_bucket_location(self, Bucket):
+        r = self.bucket_home_region
+        return {"LocationConstraint": None if r == "us-east-1" else r}
 
     def head_object(self, Bucket, Key):
         objects = self.objects_by_bucket.get(Bucket, {})
@@ -213,7 +218,10 @@ class LambdaHandlerTests(unittest.TestCase):
         self.wallet = "0x" + ("1" * 40)
         self.object_key = "snapshot.tar.gz"
         self.bucket = app._bucket_name(self.wallet)
-        self.s3_client = FakeS3Client({self.bucket: {self.object_key: 12345}})
+        self.s3_client = FakeS3Client(
+            {self.bucket: {self.object_key: 12345}},
+            bucket_home_region="us-west-2",
+        )
 
     def _get_event(self):
         return {
@@ -283,7 +291,7 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertEqual(body["bucket"], self.bucket)
 
     def test_lambda_handler_list_mode_empty_bucket(self):
-        empty_client = FakeS3Client({self.bucket: {}})
+        empty_client = FakeS3Client({self.bucket: {}}, bucket_home_region="us-west-2")
         event = {
             "httpMethod": "GET",
             "queryStringParameters": {"wallet_address": self.wallet, "location": "us-west-2"},
@@ -342,12 +350,30 @@ class LambdaHandlerTests(unittest.TestCase):
         self.assertEqual(body["error"], "bucket_not_found")
 
     def test_lambda_handler_object_not_found_returns_404(self):
-        with mock.patch.object(app.boto3, "client", return_value=FakeS3Client({self.bucket: {}})):
+        with mock.patch.object(
+            app.boto3,
+            "client",
+            return_value=FakeS3Client({self.bucket: {}}, bucket_home_region="us-west-2"),
+        ):
             response = app.lambda_handler(self._get_event(), None)
 
         self.assertEqual(response["statusCode"], 404)
         body = json.loads(response["body"])
         self.assertEqual(body["error"], "object_not_found")
+
+    def test_lambda_handler_bucket_region_mismatch_returns_400(self):
+        wrong_region_client = FakeS3Client(
+            {self.bucket: {self.object_key: 12345}},
+            bucket_home_region="eu-west-1",
+        )
+        with mock.patch.object(app.boto3, "client", return_value=wrong_region_client):
+            response = app.lambda_handler(self._get_event(), None)
+
+        self.assertEqual(response["statusCode"], 400)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "bucket_region_mismatch")
+        self.assertEqual(body["details"]["bucket_region"], "eu-west-1")
+        self.assertEqual(body["details"]["requested_region"], "us-west-2")
 
     def test_lambda_handler_bad_request_returns_400(self):
         event = {

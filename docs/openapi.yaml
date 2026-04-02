@@ -150,7 +150,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/StorageUploadResponse"
         "400":
-          $ref: "#/components/responses/BadRequestError"
+          $ref: "#/components/responses/StorageBadRequestError"
         "402":
           $ref: "#/components/responses/PaymentRequiredError"
         "403":
@@ -184,7 +184,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/StorageUploadResponse"
         "400":
-          $ref: "#/components/responses/BadRequestError"
+          $ref: "#/components/responses/StorageBadRequestError"
         "403":
           $ref: "#/components/responses/ForbiddenError"
         "404":
@@ -222,7 +222,7 @@ paths:
                   - $ref: "#/components/schemas/StorageLsStatResponse"
                   - $ref: "#/components/schemas/StorageLsListResponse"
         "400":
-          $ref: "#/components/responses/BadRequestError"
+          $ref: "#/components/responses/StorageBadRequestError"
         "403":
           $ref: "#/components/responses/ForbiddenError"
         "404":
@@ -254,7 +254,7 @@ paths:
                   - $ref: "#/components/schemas/StorageLsStatResponse"
                   - $ref: "#/components/schemas/StorageLsListResponse"
         "400":
-          $ref: "#/components/responses/BadRequestError"
+          $ref: "#/components/responses/StorageBadRequestError"
         "403":
           $ref: "#/components/responses/ForbiddenError"
         "404":
@@ -283,7 +283,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/StorageDownloadResponse"
         "400":
-          $ref: "#/components/responses/BadRequestError"
+          $ref: "#/components/responses/StorageBadRequestError"
         "403":
           $ref: "#/components/responses/ForbiddenError"
         "404":
@@ -324,7 +324,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/StorageDownloadResponse"
         "400":
-          $ref: "#/components/responses/BadRequestError"
+          $ref: "#/components/responses/StorageBadRequestError"
         "403":
           $ref: "#/components/responses/ForbiddenError"
         "404":
@@ -358,7 +358,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/StorageDeleteResponse"
         "400":
-          $ref: "#/components/responses/BadRequestError"
+          $ref: "#/components/responses/StorageBadRequestError"
         "403":
           $ref: "#/components/responses/ForbiddenError"
         "404":
@@ -386,7 +386,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/StorageDeleteResponse"
         "400":
-          $ref: "#/components/responses/BadRequestError"
+          $ref: "#/components/responses/StorageBadRequestError"
         "403":
           $ref: "#/components/responses/ForbiddenError"
         "404":
@@ -574,6 +574,17 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+    StorageBadRequestError:
+      description: >
+        Request validation failed (`error` commonly `Bad request`), or the requested `location`/`region`
+        does not match the wallet-scoped S3 bucket's AWS home region (`error`: `bucket_region_mismatch`,
+        with `details.requested_region` and `details.bucket_region`).
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - $ref: "#/components/schemas/BucketRegionMismatchErrorResponse"
     ForbiddenError:
       description: Wallet proof validation or authorization failed.
       content:
@@ -1041,3 +1052,26 @@ components:
           type: string
         details:
           description: Optional structured or string detail.
+
+    BucketRegionMismatchErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+        - details
+      properties:
+        error:
+          type: string
+          enum: [bucket_region_mismatch]
+        message:
+          type: string
+        details:
+          type: object
+          required:
+            - requested_region
+            - bucket_region
+          properties:
+            requested_region:
+              type: string
+            bucket_region:
+              type: string
