@@ -137,6 +137,7 @@ class StorageUploadIntegrationTests(unittest.TestCase):
         transaction_log_table = FakeDynamoTable(["quote_id", "trans_id"])
         idempotency_table = FakeDynamoTable(["idempotency_key"])
         payments_table = FakeDynamoTable(["wallet_address", "quote_id"])
+        active_storage_table = FakeDynamoTable(["wallet_address", "object_key"])
         payments_table.put_item(
             Item={
                 "wallet_address": wallet_address,
@@ -155,6 +156,7 @@ class StorageUploadIntegrationTests(unittest.TestCase):
                 "txn-log": transaction_log_table,
                 "idem": idempotency_table,
                 "payments": payments_table,
+                "active-storage": active_storage_table,
             }
         )
         s3_client = FakeS3Client()
@@ -192,6 +194,7 @@ class StorageUploadIntegrationTests(unittest.TestCase):
             "UPLOAD_TRANSACTION_LOG_TABLE_NAME": "txn-log",
             "UPLOAD_IDEMPOTENCY_TABLE_NAME": "idem",
             "PAYMENT_LEDGER_TABLE_NAME": "payments",
+            "ACTIVE_STORAGE_OBJECT_TABLE_NAME": "active-storage",
             "MNEMOSPARK_RECIPIENT_WALLET": "0x47D241ae97fE37186AC59894290CA1c54c060A6c",
             "MNEMOSPARK_PAYMENT_NETWORK": "eip155:8453",
             "MNEMOSPARK_PAYMENT_ASSET": "0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913",
@@ -211,6 +214,7 @@ class StorageUploadIntegrationTests(unittest.TestCase):
         self.assertEqual(json.loads(first["body"]), json.loads(second["body"]))
         self.assertEqual(s3_client.put_count, 1)
         self.assertEqual(len(transaction_log_table.items), 1)
+        self.assertEqual(len(active_storage_table.items), 1)
         log_item = next(iter(transaction_log_table.items.values()))
         self.assertEqual(
             log_item["recipient_wallet"],
