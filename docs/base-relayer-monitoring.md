@@ -26,7 +26,7 @@ Apply the **`SNS`** statement in [`docs/iam-mnemospark-deploy-policy.json`](iam-
 ## Parameters (CloudFormation / SAM)
 
 - **`RelayerWalletAddress`** — Relayer **public** address (must match the address derived from the relayer private key in Secrets Manager). Set per environment via deploy overrides / GitHub variables; template default is empty and the monitor **exits successfully without work** when unset.
-- **`RelayerPrivateKeySecretId`** — Secrets Manager secret **name** for the relayer private key (wired to **`MNEMOSPARK_RELAYER_SECRET_ID`** on payment settle). Distinct values per environment are supported in one account.
+- **Relayer private key secret** — Name is **`${MnemosparkSecretsPathPrefix}/${StageName}/relayer-private-key`** (default prefix `mnemospark`). Wired to **`MNEMOSPARK_RELAYER_SECRET_ID`** on payment settle; create per stack in Secrets Manager.
 - **`BaseRpcUrl`** — Same Base RPC URL used for settlement; required for balance and (indirectly) for a healthy chain connection in the monitor when you run on-chain mode.
 - **`RelayerMonitorScheduleExpression`** — EventBridge schedule for the monitor (default `rate(30 minutes)`).
 

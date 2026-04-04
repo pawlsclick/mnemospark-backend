@@ -43,13 +43,11 @@ jobs:
 
       - name: SAM deploy (prod)
         env:
-          DASHBOARD_SECRET_ARN: ${{ vars.DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN }}
           PAYMENT_SETTLEMENT_MODE: ${{ vars.PAYMENT_SETTLEMENT_MODE }}
           BASE_RPC_URL: ${{ vars.BASE_RPC_URL }}
           MNEMOSPARK_RECIPIENT_WALLET: ${{ vars.MNEMOSPARK_RECIPIENT_WALLET }}
           RELAYER_WALLET_ADDRESS: ${{ vars.RELAYER_WALLET_ADDRESS }}
           PAYMENT_ASSET_ADDRESS: ${{ vars.PAYMENT_ASSET_ADDRESS }}
-          RELAYER_PRIVATE_KEY_SECRET_ID: ${{ vars.RELAYER_PRIVATE_KEY_SECRET_ID }}
           PRICE_STORAGE_FLOOR: ${{ vars.PRICE_STORAGE_FLOOR || '0' }}
           PRICE_STORAGE_MARKUP: ${{ vars.PRICE_STORAGE_MARKUP || '0' }}
         run: |
@@ -62,12 +60,10 @@ jobs:
               exit 1
             fi
           }
-          require_var DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN "${DASHBOARD_SECRET_ARN}"
           require_var PAYMENT_SETTLEMENT_MODE "${PAYMENT_SETTLEMENT_MODE}"
           require_var MNEMOSPARK_RECIPIENT_WALLET "${MNEMOSPARK_RECIPIENT_WALLET}"
           require_var RELAYER_WALLET_ADDRESS "${RELAYER_WALLET_ADDRESS}"
           require_var PAYMENT_ASSET_ADDRESS "${PAYMENT_ASSET_ADDRESS}"
-          require_var RELAYER_PRIVATE_KEY_SECRET_ID "${RELAYER_PRIVATE_KEY_SECRET_ID}"
           if [ "${PAYMENT_SETTLEMENT_MODE}" = "onchain" ]; then
             require_var BASE_RPC_URL "${BASE_RPC_URL}"
           fi
@@ -78,11 +74,9 @@ jobs:
               "StageName=prod" \
               "PaymentSettlementMode=${PAYMENT_SETTLEMENT_MODE}" \
               "BaseRpcUrl=${BASE_RPC_URL}" \
-              "DashboardGraphqlApiKeySecretArn=${DASHBOARD_SECRET_ARN}" \
               "MnemosparkRecipientWallet=${MNEMOSPARK_RECIPIENT_WALLET}" \
               "RelayerWalletAddress=${RELAYER_WALLET_ADDRESS}" \
               "PaymentAssetAddress=${PAYMENT_ASSET_ADDRESS}" \
-              "RelayerPrivateKeySecretId=${RELAYER_PRIVATE_KEY_SECRET_ID}" \
               "PriceStorageFloor=${PRICE_STORAGE_FLOOR}" \
               "PriceStorageMarkup=${PRICE_STORAGE_MARKUP}"
 
