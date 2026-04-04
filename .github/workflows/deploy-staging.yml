@@ -30,6 +30,15 @@ jobs:
       - name: Unit tests
         run: pytest -q
 
+      - name: Verify AWS_REGION
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          if [ -z "${AWS_REGION}" ]; then
+            echo "::error::AWS_REGION is not set. Add it under Settings → Environments → **staging** → Environment variables, or as a repository Actions variable (Settings → Secrets and variables → Actions → Variables)."
+            exit 1
+          fi
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v6
         with:

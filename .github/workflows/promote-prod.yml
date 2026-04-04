@@ -32,6 +32,15 @@ jobs:
           pip install -r requirements.txt
           pip install aws-sam-cli
 
+      - name: Verify AWS_REGION
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          if [ -z "${AWS_REGION}" ]; then
+            echo "::error::AWS_REGION is not set for this job. The Promote workflow uses the **production** GitHub environment; environment-scoped variables from **staging** are not visible here. Add **AWS_REGION** under Settings → Environments → **production** → Environment variables (same region as the prod stack, e.g. us-east-1), or define **AWS_REGION** as a repository Actions variable (Settings → Secrets and variables → Actions → Variables)."
+            exit 1
+          fi
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v6
         with:
