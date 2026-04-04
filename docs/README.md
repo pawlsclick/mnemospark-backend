@@ -37,7 +37,7 @@ Next.js proxy (`/api/graphql`) in **mnemospark-ops** `dashboard_v2` with server-
 `DASHBOARD_GRAPHQL_URL` and `DASHBOARD_GRAPHQL_API_KEY` (see that repo’s README).
 
 **Staging deploy:** GitHub Actions + OIDC; see [deploy-staging.md](deploy-staging.md) for the
-deploy role, `DashboardGraphqlApiKeySecretArn`, and parameter overrides.
+deploy role, Secrets Manager keys under `mnemospark/<stage>/…`, and parameter overrides.
 When housekeeping runs in **renewal calendar**
 mode, it enforces payment by querying active inventory and renewal rows (UTC billing month),
 rather than scanning upload logs on a fixed day interval.

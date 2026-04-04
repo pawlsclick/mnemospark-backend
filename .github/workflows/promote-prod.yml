@@ -43,17 +43,42 @@ jobs:
 
       - name: SAM deploy (prod)
         env:
-          DASHBOARD_SECRET_ARN: ${{ vars.DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN }}
+          PAYMENT_SETTLEMENT_MODE: ${{ vars.PAYMENT_SETTLEMENT_MODE }}
+          BASE_RPC_URL: ${{ vars.BASE_RPC_URL }}
+          MNEMOSPARK_RECIPIENT_WALLET: ${{ vars.MNEMOSPARK_RECIPIENT_WALLET }}
+          RELAYER_WALLET_ADDRESS: ${{ vars.RELAYER_WALLET_ADDRESS }}
+          PAYMENT_ASSET_ADDRESS: ${{ vars.PAYMENT_ASSET_ADDRESS }}
+          PRICE_STORAGE_FLOOR: ${{ vars.PRICE_STORAGE_FLOOR || '0' }}
+          PRICE_STORAGE_MARKUP: ${{ vars.PRICE_STORAGE_MARKUP || '0' }}
         run: |
-          if [ -z "${DASHBOARD_SECRET_ARN}" ]; then
-            echo "::error::Set DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN in the production GitHub environment (Secrets Manager ARN for dashboard GraphQL x-api-key)."
-            exit 1
+          set -euo pipefail
+          require_var() {
+            local gh_name="$1"
+            local val="${2:-}"
+            if [ -z "${val}" ]; then
+              echo "::error::Set GitHub variable ${gh_name} on the production environment."
+              exit 1
+            fi
+          }
+          require_var PAYMENT_SETTLEMENT_MODE "${PAYMENT_SETTLEMENT_MODE}"
+          require_var MNEMOSPARK_RECIPIENT_WALLET "${MNEMOSPARK_RECIPIENT_WALLET}"
+          require_var RELAYER_WALLET_ADDRESS "${RELAYER_WALLET_ADDRESS}"
+          require_var PAYMENT_ASSET_ADDRESS "${PAYMENT_ASSET_ADDRESS}"
+          if [ "${PAYMENT_SETTLEMENT_MODE}" = "onchain" ]; then
+            require_var BASE_RPC_URL "${BASE_RPC_URL}"
           fi
           sam deploy --config-file samconfig.prod.toml \
             --region "${{ vars.AWS_REGION }}" \
             --no-fail-on-empty-changeset \
             --parameter-overrides \
-              "StageName=prod DashboardGraphqlApiKeySecretArn=${DASHBOARD_SECRET_ARN} PriceStorageFloor=${{ vars.PRICE_STORAGE_FLOOR || '0' }} PriceStorageMarkup=${{ vars.PRICE_STORAGE_MARKUP || '0' }}"
+              "StageName=prod" \
+              "PaymentSettlementMode=${PAYMENT_SETTLEMENT_MODE}" \
+              "BaseRpcUrl=${BASE_RPC_URL}" \
+              "MnemosparkRecipientWallet=${MNEMOSPARK_RECIPIENT_WALLET}" \
+              "RelayerWalletAddress=${RELAYER_WALLET_ADDRESS}" \
+              "PaymentAssetAddress=${PAYMENT_ASSET_ADDRESS}" \
+              "PriceStorageFloor=${PRICE_STORAGE_FLOOR}" \
+              "PriceStorageMarkup=${PRICE_STORAGE_MARKUP}"
 
       - name: Smoke tests (prod)
         if: ${{ vars.PROD_BASE_URL != '' && !contains(vars.PROD_BASE_URL, 'example.com') }}

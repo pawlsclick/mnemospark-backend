@@ -23,7 +23,7 @@ class DashboardGraphqlAuthorizerTests(unittest.TestCase):
         authorizer_app._secret_client = None  # noqa: SLF001
 
     def test_missing_header_denies(self):
-        with mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:1:secret:x"}, clear=False):
+        with mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ID": "mnemospark/staging/dashboard-graphql-api-key"}, clear=False):
             out = authorizer_app.lambda_handler({"headers": {}}, None)
         self.assertFalse(out["isAuthorized"])
 
@@ -31,7 +31,7 @@ class DashboardGraphqlAuthorizerTests(unittest.TestCase):
         fake = mock.Mock()
         fake.get_secret_value.return_value = {"SecretString": "expected-secret"}
         with (
-            mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:1:secret:x"}, clear=False),
+            mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ID": "mnemospark/staging/dashboard-graphql-api-key"}, clear=False),
             mock.patch.object(authorizer_app, "_client", return_value=fake),
         ):
             out = authorizer_app.lambda_handler(
@@ -44,7 +44,7 @@ class DashboardGraphqlAuthorizerTests(unittest.TestCase):
         fake = mock.Mock()
         fake.get_secret_value.return_value = {"SecretString": "expected-secret"}
         with (
-            mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:1:secret:x"}, clear=False),
+            mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ID": "mnemospark/staging/dashboard-graphql-api-key"}, clear=False),
             mock.patch.object(authorizer_app, "_client", return_value=fake),
         ):
             out = authorizer_app.lambda_handler(
@@ -57,7 +57,7 @@ class DashboardGraphqlAuthorizerTests(unittest.TestCase):
         fake = mock.Mock()
         fake.get_secret_value.return_value = {"SecretString": "only-from-identity"}
         with (
-            mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:1:secret:x"}, clear=False),
+            mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ID": "mnemospark/staging/dashboard-graphql-api-key"}, clear=False),
             mock.patch.object(authorizer_app, "_client", return_value=fake),
         ):
             out = authorizer_app.lambda_handler(
@@ -72,7 +72,7 @@ class DashboardGraphqlAuthorizerTests(unittest.TestCase):
             "SecretString": json.dumps({"api_key_dashboard": "k-dashboard-field"}),
         }
         with (
-            mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:1:secret:x"}, clear=False),
+            mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ID": "mnemospark/staging/dashboard-graphql-api-key"}, clear=False),
             mock.patch.object(authorizer_app, "_client", return_value=fake),
         ):
             out = authorizer_app.lambda_handler(
@@ -85,7 +85,7 @@ class DashboardGraphqlAuthorizerTests(unittest.TestCase):
         fake = mock.Mock()
         fake.get_secret_value.return_value = {"SecretString": json.dumps({"api_key": "k-from-json"})}
         with (
-            mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:1:secret:x"}, clear=False),
+            mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ID": "mnemospark/staging/dashboard-graphql-api-key"}, clear=False),
             mock.patch.object(authorizer_app, "_client", return_value=fake),
         ):
             out = authorizer_app.lambda_handler(
@@ -94,8 +94,8 @@ class DashboardGraphqlAuthorizerTests(unittest.TestCase):
             )
         self.assertTrue(out["isAuthorized"])
 
-    def test_no_secret_arn_denies(self):
-        with mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN": ""}, clear=False):
+    def test_no_secret_id_denies(self):
+        with mock.patch.dict(os.environ, {"DASHBOARD_GRAPHQL_API_KEY_SECRET_ID": ""}, clear=False):
             out = authorizer_app.lambda_handler(
                 {"headers": {"x-api-key": "x"}},
                 None,

@@ -7,5 +7,5 @@ s3_prefix = "mnemospark-prod"
 confirm_changeset = false
 capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
 disable_rollback = false
-parameter_overrides = "StageName=prod DashboardGraphqlApiKeySecretArn=REPLACE_WITH_SECRET_ARN"
+parameter_overrides = "StageName=prod PaymentSettlementMode=REPLACE_MOCK_OR_ONCHAIN BaseRpcUrl=REPLACE_BASE_RPC_URL MnemosparkRecipientWallet=REPLACE_RECIPIENT_WALLET RelayerWalletAddress=REPLACE_RELAYER_WALLET PaymentAssetAddress=REPLACE_PAYMENT_ASSET PriceStorageFloor=0 PriceStorageMarkup=0"
 image_repositories = []

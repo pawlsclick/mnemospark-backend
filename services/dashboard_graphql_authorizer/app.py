@@ -46,15 +46,15 @@ def _parse_secret_string(raw: str) -> str:
 
 def _expected_key() -> str | None:
     global _cached_value, _cache_expires_at
-    arn = os.environ.get("DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN", "").strip()
-    if not arn:
-        logger.error("DASHBOARD_GRAPHQL_API_KEY_SECRET_ARN is not set")
+    secret_id = os.environ.get("DASHBOARD_GRAPHQL_API_KEY_SECRET_ID", "").strip()
+    if not secret_id:
+        logger.error("DASHBOARD_GRAPHQL_API_KEY_SECRET_ID is not set")
         return None
     now = time.monotonic()
     if _cached_value and now < _cache_expires_at:
         return _cached_value
     try:
-        resp = _client().get_secret_value(SecretId=arn)
+        resp = _client().get_secret_value(SecretId=secret_id)
     except Exception:
         logger.exception("GetSecretValue failed")
         return None
@@ -112,7 +112,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     expected = _expected_key()
     if not expected:
-        logger.info("Authorizer deny: expected key unavailable (ARN or Secrets Manager)")
+        logger.info("Authorizer deny: expected key unavailable (secret id or Secrets Manager)")
         return {"isAuthorized": False}
 
     if not _keys_equal(provided, expected):
