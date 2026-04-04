@@ -72,18 +72,21 @@
             "Sid": "APIGateway",
             "Effect": "Allow",
             "Action": [
+                "apigateway:DELETE",
                 "apigateway:GET",
+                "apigateway:GetTags",
+                "apigateway:GetWebACL",
+                "apigateway:PATCH",
                 "apigateway:POST",
                 "apigateway:PUT",
-                "apigateway:PATCH",
-                "apigateway:DELETE",
+                "apigateway:SetWebACL",
                 "apigateway:TagResource",
-                "apigateway:UntagResource",
-                "apigateway:GetTags"
+                "apigateway:UntagResource"
             ],
             "Resource": [
                 "arn:aws:apigateway:*::/restapis",
                 "arn:aws:apigateway:*::/restapis/*",
+                "arn:aws:apigateway:*::/restapis/*/stages/*",
                 "arn:aws:apigateway:*::/apis",
                 "arn:aws:apigateway:*::/apis/*",
                 "arn:aws:apigateway:*::/apis/*/stages",
