@@ -15,7 +15,7 @@ permissions:
 jobs:
   promote:
     runs-on: ubuntu-latest
-    environment: production
+    environment: prod
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -37,7 +37,7 @@ jobs:
           AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
           if [ -z "${AWS_REGION}" ]; then
-            echo "::error::AWS_REGION is not set for this job. The Promote workflow uses the **production** GitHub environment; environment-scoped variables from **staging** are not visible here. Add **AWS_REGION** under Settings → Environments → **production** → Environment variables (same region as the prod stack, e.g. us-east-1), or define **AWS_REGION** as a repository Actions variable (Settings → Secrets and variables → Actions → Variables)."
+            echo "::error::AWS_REGION is not set for this job. The Promote workflow uses the **prod** GitHub environment; environment-scoped variables from **staging** are not visible here. Add **AWS_REGION** under Settings → Environments → **prod** → Environment variables (same region as the prod stack, e.g. us-east-1), or define **AWS_REGION** as a repository Actions variable (Settings → Secrets and variables → Actions → Variables)."
             exit 1
           fi
 
@@ -65,7 +65,7 @@ jobs:
             local gh_name="$1"
             local val="${2:-}"
             if [ -z "${val}" ]; then
-              echo "::error::Set GitHub variable ${gh_name} on the production environment."
+              echo "::error::Set GitHub variable ${gh_name} on the prod GitHub environment."
               exit 1
             fi
           }
