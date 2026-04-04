@@ -3,16 +3,16 @@
 ## Prerequisites
 - GitHub Environments:
   - `staging` (auto)
-  - `production` (required reviewers)
+  - `prod` (required reviewers; name must match `environment:` in `.github/workflows/promote-prod.yml`)
 - GitHub secrets:
   - `AWS_ROLE_ARN_STAGING`
   - `AWS_ROLE_ARN_PROD`
 - GitHub variables (repository or environment-scoped as noted in [deploy-staging.md](deploy-staging.md)):
-  - `AWS_REGION`
+  - `AWS_REGION` — must be visible to each deploy job. **Environment-scoped** variables apply only to that environment: if `AWS_REGION` is set only on **staging**, **Promote to Production** still fails until you set `AWS_REGION` on **`prod`** as well, **or** define `AWS_REGION` once as a **repository** Actions variable (recommended if staging and prod use the same region).
   - `STAGING_BASE_URL` (staging)
-  - `PROD_BASE_URL` (production)
+  - `PROD_BASE_URL` (`prod` environment)
   - `ZAP_TARGET_URL_STAGING`
-  - **Staging** (`staging` environment) and **production** (`production` environment) must each define:
+  - **Staging** (`staging` environment) and **prod** (`prod` environment) must each define:
     - `PAYMENT_SETTLEMENT_MODE` (`mock` or `onchain`)
     - `BASE_RPC_URL` (required when `PAYMENT_SETTLEMENT_MODE=onchain`)
     - `MNEMOSPARK_RECIPIENT_WALLET`
@@ -36,7 +36,7 @@ Guided deploy must supply **`PaymentSettlementMode`**, **`BaseRpcUrl`**, and wal
 2. `Deploy Staging` runs automatically (ensure staging GitHub variables are set **before** merge, or the job will fail until they are)
 3. `Security Post Deploy` runs (Trivy, Checkov, ZAP)
 4. Trigger `Promote to Production` manually
-5. Production deploy requires environment approval
+5. Production deploy requires approval on the **`prod`** GitHub environment
 
 ## Rollback
 Use CloudFormation stack history to redeploy previous known-good template/artifact and re-run smoke tests.
