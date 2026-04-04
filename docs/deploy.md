@@ -8,7 +8,7 @@
   - `AWS_ROLE_ARN_STAGING`
   - `AWS_ROLE_ARN_PROD`
 - GitHub variables (repository or environment-scoped as noted in [deploy-staging.md](deploy-staging.md)):
-  - `AWS_REGION`
+  - `AWS_REGION` — must be visible to each deploy job. **Environment-scoped** variables apply only to that environment: if `AWS_REGION` is set only on **staging**, **Promote to Production** still fails until you set `AWS_REGION` on **production** as well, **or** define `AWS_REGION` once as a **repository** Actions variable (recommended if staging and prod use the same region).
   - `STAGING_BASE_URL` (staging)
   - `PROD_BASE_URL` (production)
   - `ZAP_TARGET_URL_STAGING`
