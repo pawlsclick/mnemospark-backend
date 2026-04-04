@@ -38,30 +38,40 @@ Parameters:
     Description: TTL in seconds for API call logging records
   MnemosparkRecipientWallet:
     Type: String
-    Default: "0x47D241ae97fE37186AC59894290CA1c54c060A6c"
-    Description: Recipient wallet address for x402 USDC payments
+    Default: ""
+    Description: >-
+      Recipient wallet address (0x...) for x402 USDC payments. Set per environment
+      via parameter overrides; do not rely on template defaults for real funds.
   PaymentNetwork:
     Type: String
     Default: eip155:8453
     Description: CAIP-2 network identifier for payment verification
   PaymentAssetAddress:
     Type: String
-    Default: "0x833589fCD6EDb6E08f4C7C32D4f71b54bdA02913"
-    Description: USDC token contract address for payment verification
+    Default: ""
+    Description: >-
+      USDC (or payment asset) contract address for payment verification. Set per
+      environment via parameter overrides.
   PaymentSettlementMode:
     Type: String
-    Default: onchain
     AllowedValues:
       - mock
       - onchain
     Description: >-
-      Payment settlement mode for upload flow. Default is onchain (real USDC
-      transfers on Base). Set to mock only for testing/development (generates
-      deterministic pseudo-tx IDs, no on-chain transaction).
+      Payment settlement mode for upload flow. Pass mock or onchain explicitly per
+      environment (no template default). mock: deterministic pseudo-tx IDs; onchain:
+      real transfers on Base (requires BaseRpcUrl and RelayerPrivateKeySecretId).
   BaseRpcUrl:
     Type: String
-    Default: ""
-    Description: Base chain RPC URL used when PaymentSettlementMode is onchain
+    Description: >-
+      Base chain RPC URL for on-chain settlement and relayer monitor. Required when
+      PaymentSettlementMode is onchain; may be empty when mock (pass explicitly).
+  RelayerPrivateKeySecretId:
+    Type: String
+    Description: >-
+      Secrets Manager secret id (name, not ARN) for the relayer private key; passed
+      to MNEMOSPARK_RELAYER_SECRET_ID. Create per environment in Secrets Manager;
+      IAM allows GetSecretValue for this id only.
   RelayerPrivateKey:
     Type: String
     Default: ""
@@ -104,10 +114,11 @@ Parameters:
     Description: If true, housekeeping reports overdue objects without deleting
   RelayerWalletAddress:
     Type: String
-    Default: "0x604d308201626a0A8a67B46112943D08dbd99bC8"
+    Default: ""
     Description: >-
       Base relayer wallet address (0x...) for monitoring and RelayerTransactions pk.
-      Override per environment if needed; monitor Lambda no-ops when set empty.
+      Set per environment; must match the key in RelayerPrivateKeySecretId. Monitor
+      Lambda no-ops when empty.
   RelayerMonitorScheduleExpression:
     Type: String
     Default: rate(30 minutes)
@@ -548,7 +559,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
-                Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:mnemospark/relayer-private-key*"
+                Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${RelayerPrivateKeySecretId}*"
         - PolicyName: payment-settle-api-calls-write
           PolicyDocument:
             Version: "2012-10-17"
@@ -1213,7 +1224,7 @@ Resources:
           MNEMOSPARK_PAYMENT_ASSET: !Ref PaymentAssetAddress
           MNEMOSPARK_PAYMENT_SETTLEMENT_MODE: !Ref PaymentSettlementMode
           MNEMOSPARK_BASE_RPC_URL: !Ref BaseRpcUrl
-          MNEMOSPARK_RELAYER_SECRET_ID: mnemospark/relayer-private-key
+          MNEMOSPARK_RELAYER_SECRET_ID: !Ref RelayerPrivateKeySecretId
           RELAYER_TRANSACTIONS_TABLE_NAME: !Ref RelayerTransactionsTable
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
