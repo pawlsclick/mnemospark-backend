@@ -3,7 +3,7 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   mnemospark-backend internet-facing REST API.
   Path-based routing to Lambda functions with wallet-proof Lambda authorizer auth, throttling,
-  quota, request validation, and CORS. Resources are tagged Project: mnemospark.
+  quota, request validation, CORS, and regional AWS WAFv2 on the REST API stage. Resources are tagged Project: mnemospark.
 
 Parameters:
   StageName:
@@ -863,6 +863,58 @@ Resources:
                 - type: object
                 - type: string
               description: Alternate inline payment authorization envelope.
+
+  MnemosparkBackendApiWebAcl:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub "${AWS::StackName}-rest-api-waf"
+      Scope: REGIONAL
+      Description: !Sub "WAF for stack ${AWS::StackName} stage ${StageName}"
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub "${AWS::StackName}RestApiWaf"
+        SampledRequestsEnabled: true
+      Rules:
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 0
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${AWS::StackName}AwsManagedCommon"
+            SampledRequestsEnabled: true
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 1
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${AWS::StackName}AwsManagedKnownBadInputs"
+            SampledRequestsEnabled: true
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  MnemosparkBackendApiWebAclAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    DependsOn:
+      - MnemosparkBackendApiStage
+    Properties:
+      WebACLArn: !GetAtt MnemosparkBackendApiWebAcl.Arn
+      ResourceArn: !Sub
+        - "arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${RestApiId}/stages/${Stage}"
+        - RestApiId: !Ref MnemosparkBackendApi
+          Stage: !Ref StageName
 
   DashboardGraphQLLambdaRole:
     Type: AWS::IAM::Role
@@ -1806,6 +1858,11 @@ Outputs:
   ApiGatewayAccessLogGroupName:
     Description: CloudWatch Logs group for API Gateway access logs
     Value: !Ref ApiGatewayAccessLogsLogGroup
+  MnemosparkBackendApiWebAclArn:
+    Description: Regional AWS WAFv2 web ACL ARN for the public REST API stage
+    Value: !GetAtt MnemosparkBackendApiWebAcl.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-MnemosparkBackendApiWebAclArn"
   CloudTrailArn:
     Description: CloudTrail ARN for API and account activity
     Value: !GetAtt MnemosparkCloudTrail.Arn
