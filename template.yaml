@@ -151,6 +151,7 @@ Globals:
 Resources:
   DynamoDbKmsKey:
     Type: AWS::KMS::Key
+    DeletionPolicy: Retain
     Properties:
       Description: !Sub "CMK for DynamoDB encryption (${AWS::StackName})"
       EnableKeyRotation: true
