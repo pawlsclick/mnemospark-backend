@@ -149,11 +149,59 @@ Globals:
       Project: mnemospark
 
 Resources:
+  DynamoDbKmsKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub "CMK for DynamoDB encryption (${AWS::StackName})"
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowAccountRootAdmin
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: AllowDynamoDBUse
+            Effect: Allow
+            Principal:
+              Service: dynamodb.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+              - kms:ReEncrypt*
+              - kms:CreateGrant
+              - kms:DescribeKey
+            Resource: "*"
+            Condition:
+              StringEquals:
+                "kms:CallerAccount": !Ref AWS::AccountId
+              StringLike:
+                "kms:ViaService": !Sub "dynamodb.${AWS::Region}.amazonaws.com"
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  DynamoDbKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${AWS::StackName}-dynamodb"
+      TargetKeyId: !Ref DynamoDbKmsKey
+
   QuotesTable:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: !Sub "${AWS::StackName}-quotes"
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DynamoDbKmsKey.Arn
       AttributeDefinitions:
         - AttributeName: quote_id
           AttributeType: S
@@ -172,6 +220,12 @@ Resources:
     Properties:
       TableName: !Sub "${AWS::StackName}-upload-transaction-log"
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DynamoDbKmsKey.Arn
       AttributeDefinitions:
         - AttributeName: quote_id
           AttributeType: S
@@ -191,6 +245,12 @@ Resources:
     Properties:
       TableName: !Sub "${AWS::StackName}-upload-idempotency"
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DynamoDbKmsKey.Arn
       AttributeDefinitions:
         - AttributeName: idempotency_key
           AttributeType: S
@@ -209,6 +269,12 @@ Resources:
     Properties:
       TableName: !Sub "${AWS::StackName}-wallet-auth-events"
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DynamoDbKmsKey.Arn
       AttributeDefinitions:
         - AttributeName: event_id
           AttributeType: S
@@ -227,6 +293,12 @@ Resources:
     Properties:
       TableName: !Sub "${AWS::StackName}-api-calls"
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DynamoDbKmsKey.Arn
       AttributeDefinitions:
         - AttributeName: request_id
           AttributeType: S
@@ -245,6 +317,12 @@ Resources:
     Properties:
       TableName: !Sub "${AWS::StackName}-payments"
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DynamoDbKmsKey.Arn
       AttributeDefinitions:
         - AttributeName: wallet_address
           AttributeType: S
@@ -264,6 +342,12 @@ Resources:
     Properties:
       TableName: !Sub "${AWS::StackName}-active-storage-objects"
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DynamoDbKmsKey.Arn
       AttributeDefinitions:
         - AttributeName: wallet_address
           AttributeType: S
@@ -296,6 +380,12 @@ Resources:
     Properties:
       TableName: !Sub "${AWS::StackName}-renewal-transaction-log"
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DynamoDbKmsKey.Arn
       AttributeDefinitions:
         - AttributeName: bucket_name
           AttributeType: S
@@ -328,6 +418,12 @@ Resources:
     Properties:
       TableName: !Sub "${AWS::StackName}-relayer-transactions"
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DynamoDbKmsKey.Arn
       AttributeDefinitions:
         - AttributeName: pk
           AttributeType: S
@@ -347,6 +443,12 @@ Resources:
     Properties:
       TableName: !Sub "${AWS::StackName}-relayer-stats"
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DynamoDbKmsKey.Arn
       AttributeDefinitions:
         - AttributeName: pk
           AttributeType: S
@@ -362,6 +464,12 @@ Resources:
     Properties:
       TableName: !Sub "${AWS::StackName}-relayer-health"
       BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DynamoDbKmsKey.Arn
       AttributeDefinitions:
         - AttributeName: pk
           AttributeType: S
