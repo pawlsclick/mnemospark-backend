@@ -885,7 +885,9 @@ Resources:
         MetricName: !Sub "${AWS::StackName}RestApiWaf"
         SampledRequestsEnabled: true
       Rules:
-        - Name: AWSManagedRulesCommonRuleSet
+        # POST /storage/upload (any stage prefix): allow large JSON bodies for inline ciphertext
+        # without weakening other Common Rule Set rules on this path.
+        - Name: AwsManagedCommonStorageUploadPost
           Priority: 0
           OverrideAction:
             None: {}
@@ -893,12 +895,68 @@ Resources:
             ManagedRuleGroupStatement:
               VendorName: AWS
               Name: AWSManagedRulesCommonRuleSet
+              ScopeDownStatement:
+                AndStatement:
+                  Statements:
+                    - ByteMatchStatement:
+                        SearchString: POST
+                        FieldToMatch:
+                          Method: {}
+                        TextTransformations:
+                          - Priority: 0
+                            Type: NONE
+                        PositionalConstraint: EXACTLY
+                    - ByteMatchStatement:
+                        SearchString: "/storage/upload"
+                        FieldToMatch:
+                          UriPath: {}
+                        TextTransformations:
+                          - Priority: 0
+                            Type: NONE
+                        PositionalConstraint: ENDS_WITH
+              RuleActionOverrides:
+                - Name: SizeRestrictions_BODY
+                  ActionToUse:
+                    Count: {}
           VisibilityConfig:
             CloudWatchMetricsEnabled: true
-            MetricName: !Sub "${AWS::StackName}AwsManagedCommon"
+            MetricName: !Sub "${AWS::StackName}AwsManagedCommonUpload"
+            SampledRequestsEnabled: true
+        - Name: AwsManagedCommonDefault
+          Priority: 1
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+              ScopeDownStatement:
+                NotStatement:
+                  Statement:
+                    AndStatement:
+                      Statements:
+                        - ByteMatchStatement:
+                            SearchString: POST
+                            FieldToMatch:
+                              Method: {}
+                            TextTransformations:
+                              - Priority: 0
+                                Type: NONE
+                            PositionalConstraint: EXACTLY
+                        - ByteMatchStatement:
+                            SearchString: "/storage/upload"
+                            FieldToMatch:
+                              UriPath: {}
+                            TextTransformations:
+                              - Priority: 0
+                                Type: NONE
+                            PositionalConstraint: ENDS_WITH
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${AWS::StackName}AwsManagedCommonDefault"
             SampledRequestsEnabled: true
         - Name: AWSManagedRulesKnownBadInputsRuleSet
-          Priority: 1
+          Priority: 2
           OverrideAction:
             None: {}
           Statement:
