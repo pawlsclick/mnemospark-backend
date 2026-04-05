@@ -766,6 +766,12 @@ Resources:
               Action:
                 - dynamodb:PutItem
               Resource: !GetAtt WalletAuthEventsTable.Arn
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:DescribeKey
+                - kms:GenerateDataKey
+              Resource: !GetAtt DynamoDbKmsKey.Arn
 
   ApiGatewayAccessLogsLogGroup:
     Type: AWS::Logs::LogGroup
@@ -1141,6 +1147,28 @@ Resources:
         - Key: Project
           Value: mnemospark
 
+  # SSE-KMS (customer managed): Lambda principals need KMS use of the table CMK for DDB APIs.
+  DynamoDbCmkLambdaAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${AWS::StackName}-ddb-cmk-kms-use"
+      Description: KMS use of stack DynamoDB CMK for Lambda DynamoDB API calls
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+              - kms:GenerateDataKey
+            Resource: !GetAtt DynamoDbKmsKey.Arn
+      Roles:
+        - !Ref PriceStorageLambdaRole
+        - !Ref UploadLambdaRole
+        - !Ref PaymentSettleLambdaRole
+        - !Ref BaseRelayerMonitorLambdaRole
+        - !Ref DashboardGraphQLLambdaRole
+
   DashboardGraphqlAuthorizerFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -1485,6 +1513,12 @@ Resources:
               Action:
                 - dynamodb:PutItem
               Resource: !GetAtt ApiCallsTable.Arn
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:DescribeKey
+                - kms:GenerateDataKey
+              Resource: !GetAtt DynamoDbKmsKey.Arn
 
   StorageDownloadFunction:
     Type: AWS::Serverless::Function
@@ -1511,6 +1545,12 @@ Resources:
               Action:
                 - dynamodb:PutItem
               Resource: !GetAtt ApiCallsTable.Arn
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:DescribeKey
+                - kms:GenerateDataKey
+              Resource: !GetAtt DynamoDbKmsKey.Arn
       Events:
         StorageDownloadGet:
           Type: Api
@@ -1609,6 +1649,12 @@ Resources:
                 - dynamodb:GetItem
                 - dynamodb:DeleteItem
               Resource: !GetAtt ActiveStorageObjectTable.Arn
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:DescribeKey
+                - kms:GenerateDataKey
+              Resource: !GetAtt DynamoDbKmsKey.Arn
 
   StorageHousekeepingFunction:
     Type: AWS::Serverless::Function
@@ -1658,6 +1704,12 @@ Resources:
                 - s3:GetObject
                 - s3:DeleteObject
               Resource: !Sub "arn:aws:s3:::mnemospark-*/*"
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:DescribeKey
+                - kms:GenerateDataKey
+              Resource: !GetAtt DynamoDbKmsKey.Arn
 
   StorageHousekeepingScheduleRule:
     Type: AWS::Events::Rule
