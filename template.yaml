@@ -618,6 +618,7 @@ Resources:
                 Action:
                   - s3:CreateBucket
                   - s3:ListBucket
+                  - s3:GetBucketLocation
                 Resource: !Sub "arn:aws:s3:::mnemospark-*"
               - Effect: Allow
                 Action:
@@ -1532,6 +1533,7 @@ Resources:
             - Effect: Allow
               Action:
                 - s3:ListBucket
+                - s3:GetBucketLocation
               Resource: !Sub "arn:aws:s3:::mnemospark-*"
             - Effect: Allow
               Action:
@@ -1564,6 +1566,7 @@ Resources:
             - Effect: Allow
               Action:
                 - s3:ListBucket
+                - s3:GetBucketLocation
               Resource: !Sub "arn:aws:s3:::mnemospark-*"
             - Effect: Allow
               Action:
@@ -1662,6 +1665,7 @@ Resources:
               Action:
                 - s3:ListBucket
                 - s3:DeleteBucket
+                - s3:GetBucketLocation
               Resource: !Sub "arn:aws:s3:::mnemospark-*"
             - Effect: Allow
               Action:

@@ -28,6 +28,8 @@ def load_app_module():
 
 app = load_app_module()
 
+from common.storage_bucket_region import BucketRegionMismatchError  # noqa: E402
+
 
 class FakeDynamoTable:
     def __init__(self, key_fields):
@@ -106,6 +108,7 @@ class FakeDynamoResource:
 class FakeS3Client:
     def __init__(self):
         self.buckets = set()
+        self.bucket_home_regions: dict[str, str] = {}
         self.objects = set()
         self.created_buckets = []
         self.put_calls = []
@@ -117,10 +120,22 @@ class FakeS3Client:
                 {"Error": {"Code": "404", "Message": "not found"}},
                 "HeadBucket",
             )
-        return {}
+        region = self.bucket_home_regions.get(Bucket, "us-east-1")
+        return {"BucketRegion": region}
+
+    def get_bucket_location(self, Bucket):
+        r = self.bucket_home_regions.get(Bucket, "us-east-1")
+        return {"LocationConstraint": None if r == "us-east-1" else r}
 
     def create_bucket(self, Bucket, CreateBucketConfiguration=None):
         self.buckets.add(Bucket)
+        lc = (
+            CreateBucketConfiguration.get("LocationConstraint")
+            if CreateBucketConfiguration
+            else None
+        )
+        home = "us-east-1" if not lc else str(lc)
+        self.bucket_home_regions[Bucket] = home
         self.created_buckets.append(
             {"Bucket": Bucket, "CreateBucketConfiguration": CreateBucketConfiguration}
         )
@@ -243,6 +258,37 @@ class StorageUploadHelperTests(unittest.TestCase):
             s3_client.created_buckets[0]["CreateBucketConfiguration"],
             {"LocationConstraint": "eu-west-1"},
         )
+
+    def test_ensure_bucket_exists_existing_bucket_matching_region_succeeds(self):
+        s3_client = FakeS3Client()
+        bucket = "mnemospark-test-bucket"
+        s3_client.buckets.add(bucket)
+        s3_client.bucket_home_regions[bucket] = "eu-west-1"
+
+        app._ensure_bucket_exists(
+            s3_client=s3_client,
+            bucket_name=bucket,
+            location="eu-west-1",
+        )
+
+        self.assertEqual(len(s3_client.created_buckets), 0)
+
+    def test_ensure_bucket_exists_existing_bucket_region_mismatch_raises(self):
+        s3_client = FakeS3Client()
+        bucket = "mnemospark-test-bucket"
+        s3_client.buckets.add(bucket)
+        s3_client.bucket_home_regions[bucket] = "eu-west-1"
+
+        with self.assertRaises(BucketRegionMismatchError) as ctx:
+            app._ensure_bucket_exists(
+                s3_client=s3_client,
+                bucket_name=bucket,
+                location="us-west-2",
+            )
+
+        self.assertEqual(ctx.exception.bucket_home_region, "eu-west-1")
+        self.assertEqual(ctx.exception.requested_region, "us-west-2")
+        self.assertEqual(len(s3_client.created_buckets), 0)
 
     def test_extract_transfer_authorization_preserves_explicit_zero_value(self):
         payment_payload = {
