@@ -912,6 +912,7 @@ Resources:
         AllowMethods: "'GET,POST,DELETE,OPTIONS'"
         AllowHeaders: !Sub "'${RestApiCorsAllowHeaders}'"
         AllowOrigin: !Sub "'${RestApiCorsAllowOrigin}'"
+        AllowCredentials: "'true'"
       GatewayResponses:
         MISSING_AUTHENTICATION_TOKEN:
           StatusCode: "403"
