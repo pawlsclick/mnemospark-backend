@@ -112,6 +112,25 @@ class StorageLsWebMintTests(unittest.TestCase):
 
 class StorageLsWebExchangeTests(unittest.TestCase):
     @mock.patch.object(app, "_session_table")
+    @mock.patch.object(app, "_log_api_call_result")
+    def test_exchange_invalid_code_logs_audit(self, mock_log, mock_table_factory):
+        fake = FakeTable()
+        mock_table_factory.return_value = fake
+        event = {
+            "httpMethod": "POST",
+            "path": "/storage/ls-web/exchange",
+            "requestContext": {"resourcePath": "/storage/ls-web/exchange"},
+            "body": json.dumps({"code": "unknown-code"}),
+        }
+        resp = app.lambda_handler(event, None)
+        self.assertEqual(resp["statusCode"], 401)
+        mock_log.assert_called()
+        kwargs = mock_log.call_args.kwargs
+        self.assertEqual(kwargs.get("status_code"), 401)
+        self.assertEqual(kwargs.get("result"), "unauthorized")
+        self.assertEqual(kwargs.get("error_code"), "invalid_or_expired_code")
+
+    @mock.patch.object(app, "_session_table")
     @mock.patch.object(app, "_log_api_call_result", lambda *a, **k: None)
     def test_exchange_replay_rejected(self, mock_table_factory):
         fake = FakeTable()

@@ -22,14 +22,10 @@ List mode (object_key omitted): list_objects_v2:
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, cast
 
 import boto3
@@ -38,6 +34,24 @@ from botocore.exceptions import ClientError
 try:
     from common.http_response_headers import rest_api_json_headers
     from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
+    from common.storage_wallet_s3 import (
+        BadRequestError,
+        ForbiddenError,
+        S3ListBucketAccessError,
+        S3ListContinuationError,
+        bucket_name_from_wallet,
+        decode_json_event_body,
+        list_objects_v2_page,
+        normalize_wallet_address,
+        NOT_FOUND_S3_ERROR_CODES,
+        parse_list_max_keys_from_params,
+        parse_optional_string_param,
+        require_authorized_wallet_match,
+        s3_error_code,
+        s3_last_modified_iso_utc,
+        validate_bucket_naming_rules,
+        validate_object_key_single_segment,
+    )
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
@@ -45,6 +59,24 @@ except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from common.http_response_headers import rest_api_json_headers
     from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
+    from common.storage_wallet_s3 import (
+        BadRequestError,
+        ForbiddenError,
+        S3ListBucketAccessError,
+        S3ListContinuationError,
+        bucket_name_from_wallet,
+        decode_json_event_body,
+        list_objects_v2_page,
+        normalize_wallet_address,
+        NOT_FOUND_S3_ERROR_CODES,
+        parse_list_max_keys_from_params,
+        parse_optional_string_param,
+        require_authorized_wallet_match,
+        s3_error_code,
+        s3_last_modified_iso_utc,
+        validate_bucket_naming_rules,
+        validate_object_key_single_segment,
+    )
 
 
 log_api_call = load_log_api_call()
@@ -58,34 +90,19 @@ DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_R
 DEFAULT_LIST_MAX_KEYS = 1000
 LIST_MAX_KEYS_CAP = 1000
 
-ADDRESS_PATTERN = re.compile(r"^0x[a-fA-F0-9]{40}$")
-BUCKET_NAME_MIN_LEN = 3
-BUCKET_NAME_MAX_LEN = 63
-BUCKET_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.-]*[a-z0-9]$")
-BUCKET_FORBIDDEN_PREFIXES = ("xn--", "sthree-", "amzn-s3-demo-")
-BUCKET_FORBIDDEN_SUFFIXES = ("-s3alias", "--ol-s3", ".mrap", "--x-s3", "--table-s3")
-BUCKET_IP_PATTERN = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
-
-NOT_FOUND_S3_ERROR_CODES = {
-    "403",
-    "404",
-    "AccessDenied",
-    "AllAccessDisabled",
-    "NoSuchBucket",
-    "NoSuchKey",
-    "NotFound",
-}
-INVALID_LIST_ARGUMENT_S3_ERROR_CODES = {
-    "InvalidArgument",
-}
+# Backward-compatible names for unit/integration tests and callers.
+_bucket_name = bucket_name_from_wallet
+_normalize_address = normalize_wallet_address
+_decode_event_body = decode_json_event_body
+_parse_optional_string = parse_optional_string_param
 
 
-class BadRequestError(ValueError):
-    """Raised when request validation fails."""
-
-
-class ForbiddenError(ValueError):
-    """Raised when authorizer wallet context is missing or mismatched."""
+def _parse_max_keys(params: dict[str, Any]) -> int:
+    return parse_list_max_keys_from_params(
+        params,
+        default=DEFAULT_LIST_MAX_KEYS,
+        cap=LIST_MAX_KEYS_CAP,
+    )
 
 
 @dataclass(frozen=True)
@@ -126,34 +143,13 @@ def _error_response(status_code: int, error: str, message: str, details: Any = N
     return _response(status_code, body)
 
 
-def _decode_event_body(event: dict[str, Any]) -> dict[str, Any]:
-    raw_body = event.get("body")
-    if raw_body in (None, ""):
-        return {}
-
-    if event.get("isBase64Encoded"):
-        try:
-            raw_body = base64.b64decode(raw_body).decode("utf-8")
-        except Exception as exc:
-            raise BadRequestError("body must be valid base64-encoded JSON") from exc
-
-    try:
-        decoded = json.loads(raw_body)
-    except json.JSONDecodeError as exc:
-        raise BadRequestError("body must be valid JSON") from exc
-
-    if not isinstance(decoded, dict):
-        raise BadRequestError("JSON body must be an object")
-    return decoded
-
-
 def _collect_request_params(event: dict[str, Any]) -> dict[str, Any]:
     query_params = event.get("queryStringParameters") or {}
     if not isinstance(query_params, dict):
         raise BadRequestError("queryStringParameters must be an object")
 
     params = {key: value for key, value in query_params.items() if value is not None}
-    params.update(_decode_event_body(event))
+    params.update(decode_json_event_body(event))
     return params
 
 
@@ -164,86 +160,11 @@ def _require_string_field(params: dict[str, Any], field_name: str) -> str:
     return value.strip()
 
 
-def _normalize_address(value: str, field_name: str) -> str:
-    candidate = value.strip()
-    if not ADDRESS_PATTERN.fullmatch(candidate):
-        raise BadRequestError(f"{field_name} must be a 0x-prefixed 20-byte hex address")
-    return f"0x{candidate[2:].lower()}"
-
-
-def _extract_authorizer_wallet(event: dict[str, Any]) -> str | None:
-    request_context = event.get("requestContext")
-    if not isinstance(request_context, dict):
-        return None
-    authorizer = request_context.get("authorizer")
-    if not isinstance(authorizer, dict):
-        return None
-
-    candidates: list[Any] = [
-        authorizer.get("walletAddress"),
-        authorizer.get("wallet_address"),
-    ]
-    lambda_authorizer_context = authorizer.get("lambda")
-    if isinstance(lambda_authorizer_context, dict):
-        candidates.extend(
-            [
-                lambda_authorizer_context.get("walletAddress"),
-                lambda_authorizer_context.get("wallet_address"),
-            ]
-        )
-
-    for candidate in candidates:
-        if not isinstance(candidate, str) or not candidate.strip():
-            continue
-        try:
-            return _normalize_address(candidate, "authorizer walletAddress")
-        except BadRequestError as exc:
-            raise ForbiddenError("wallet authorization context is invalid") from exc
-
-    return None
-
-
-def _require_authorized_wallet(event: dict[str, Any], wallet_address: str) -> None:
-    authorized_wallet = _extract_authorizer_wallet(event)
-    if authorized_wallet is None:
-        raise ForbiddenError("wallet authorization context is required")
-    if authorized_wallet != wallet_address:
-        raise ForbiddenError("wallet_address does not match authorized wallet")
-
-
-def _validate_object_key(object_key: str) -> None:
-    if not object_key or "/" in object_key or "\\" in object_key or object_key in {".", ".."}:
-        raise BadRequestError("object_key must be a single path segment")
-
-
-def _wallet_hash(wallet_address: str, length: int = 16) -> str:
-    return hashlib.sha256(wallet_address.encode("utf-8")).hexdigest()[:length]
-
-
-def _bucket_name(wallet_address: str) -> str:
-    return f"mnemospark-{_wallet_hash(wallet_address)}"
-
-
-def _validate_bucket_name(name: str) -> None:
-    if not (BUCKET_NAME_MIN_LEN <= len(name) <= BUCKET_NAME_MAX_LEN):
-        raise ValueError(f"Bucket name must be {BUCKET_NAME_MIN_LEN}-{BUCKET_NAME_MAX_LEN} characters")
-    if not BUCKET_NAME_PATTERN.match(name):
-        raise ValueError("Bucket name must use only lowercase letters, digits, dots, and hyphens")
-    if name.startswith(BUCKET_FORBIDDEN_PREFIXES) or name.endswith(BUCKET_FORBIDDEN_SUFFIXES):
-        raise ValueError("Bucket name uses a forbidden prefix or suffix")
-    if BUCKET_IP_PATTERN.match(name):
-        raise ValueError("Bucket name must not be formatted as an IP address")
-
-
-def _error_code(exc: ClientError) -> str:
-    return exc.response.get("Error", {}).get("Code", "")
-
-
 def _assert_bucket_access(s3_client: Any, bucket_name: str) -> None:
     try:
         s3_client.head_bucket(Bucket=bucket_name)
     except ClientError as exc:
-        if _error_code(exc) in NOT_FOUND_S3_ERROR_CODES:
+        if s3_error_code(exc) in NOT_FOUND_S3_ERROR_CODES:
             raise NotFoundError("bucket_not_found", "Bucket not found for this wallet") from exc
         raise
 
@@ -252,48 +173,10 @@ def _get_object_size(s3_client: Any, bucket_name: str, object_key: str) -> int:
     try:
         response = s3_client.head_object(Bucket=bucket_name, Key=object_key)
     except ClientError as exc:
-        if _error_code(exc) in NOT_FOUND_S3_ERROR_CODES:
+        if s3_error_code(exc) in NOT_FOUND_S3_ERROR_CODES:
             raise NotFoundError("object_not_found", f"Object not found: {object_key}") from exc
         raise
     return int(response.get("ContentLength", 0))
-
-
-def _last_modified_iso(dt: Any) -> str | None:
-    if dt is None or not isinstance(dt, datetime):
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
-
-
-def _parse_max_keys(params: dict[str, Any]) -> int:
-    raw = params.get("max_keys")
-    if raw in (None, ""):
-        return DEFAULT_LIST_MAX_KEYS
-    if isinstance(raw, bool):
-        raise BadRequestError("max_keys must be an integer between 1 and 1000")
-    if isinstance(raw, str):
-        try:
-            raw = int(raw.strip(), 10)
-        except ValueError as exc:
-            raise BadRequestError("max_keys must be an integer between 1 and 1000") from exc
-    if not isinstance(raw, int) or isinstance(raw, bool):
-        raise BadRequestError("max_keys must be an integer between 1 and 1000")
-    if raw < 1 or raw > LIST_MAX_KEYS_CAP:
-        raise BadRequestError("max_keys must be an integer between 1 and 1000")
-    return raw
-
-
-def _parse_optional_string(params: dict[str, Any], field: str) -> str | None:
-    raw = params.get(field)
-    if raw is None:
-        return None
-    if not isinstance(raw, str):
-        raise BadRequestError(f"{field} must be a string")
-    s = raw.strip()
-    return s or None
 
 
 def _list_objects(
@@ -304,31 +187,29 @@ def _list_objects(
     continuation_token: str | None,
     prefix: str | None,
 ) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {"Bucket": bucket_name, "MaxKeys": max_keys}
-    if continuation_token:
-        kwargs["ContinuationToken"] = continuation_token
-    if prefix:
-        kwargs["Prefix"] = prefix
     try:
-        return s3_client.list_objects_v2(**kwargs)
-    except ClientError as exc:
-        error_code = _error_code(exc)
-        if error_code in NOT_FOUND_S3_ERROR_CODES:
-            raise NotFoundError("bucket_not_found", "Bucket not found for this wallet") from exc
-        if error_code in INVALID_LIST_ARGUMENT_S3_ERROR_CODES:
-            raise BadRequestError("continuation_token is invalid or expired") from exc
-        raise
+        return list_objects_v2_page(
+            s3_client,
+            bucket_name,
+            max_keys=max_keys,
+            continuation_token=continuation_token,
+            prefix=prefix,
+        )
+    except S3ListBucketAccessError as exc:
+        raise NotFoundError("bucket_not_found", "Bucket not found for this wallet") from exc
+    except S3ListContinuationError as exc:
+        raise BadRequestError(str(exc)) from exc
 
 
 def parse_input(event: dict[str, Any]) -> ParsedLsRequest:
     params = _collect_request_params(event)
 
-    wallet_address = _normalize_address(_require_string_field(params, "wallet_address"), "wallet_address")
-    object_key_raw = _parse_optional_string(params, "object_key")
+    wallet_address = normalize_wallet_address(_require_string_field(params, "wallet_address"), "wallet_address")
+    object_key_raw = parse_optional_string_param(params, "object_key")
     location = str(params.get("location") or params.get("region") or DEFAULT_LOCATION).strip() or DEFAULT_LOCATION
 
     if object_key_raw is not None:
-        _validate_object_key(object_key_raw)
+        validate_object_key_single_segment(object_key_raw)
         return ParsedLsRequest(
             wallet_address=wallet_address,
             location=location,
@@ -339,9 +220,13 @@ def parse_input(event: dict[str, Any]) -> ParsedLsRequest:
             prefix=None,
         )
 
-    continuation_token = _parse_optional_string(params, "continuation_token")
-    prefix = _parse_optional_string(params, "prefix")
-    max_keys = _parse_max_keys(params)
+    continuation_token = parse_optional_string_param(params, "continuation_token")
+    prefix = parse_optional_string_param(params, "prefix")
+    max_keys = parse_list_max_keys_from_params(
+        params,
+        default=DEFAULT_LIST_MAX_KEYS,
+        cap=LIST_MAX_KEYS_CAP,
+    )
 
     return ParsedLsRequest(
         wallet_address=wallet_address,
@@ -367,17 +252,17 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             list_mode=request.list_mode,
             location=request.location,
         )
-        _require_authorized_wallet(event, request.wallet_address)
+        require_authorized_wallet_match(event, request.wallet_address)
         _log_event(
             logging.DEBUG,
             "storage_ls_authorized_wallet_confirmed",
             wallet_address=request.wallet_address,
         )
         s3_client = boto3.client("s3", region_name=request.location)
-        bucket_name = _bucket_name(request.wallet_address)
+        bucket_name = bucket_name_from_wallet(request.wallet_address)
 
         try:
-            _validate_bucket_name(bucket_name)
+            validate_bucket_naming_rules(bucket_name)
         except ValueError as exc:
             raise BadRequestError(str(exc)) from exc
 
@@ -403,7 +288,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     {
                         "key": key,
                         "size_bytes": size_bytes,
-                        "last_modified": _last_modified_iso(lm),
+                        "last_modified": s3_last_modified_iso_utc(lm),
                     }
                 )
             is_truncated = bool(list_resp.get("IsTruncated"))
