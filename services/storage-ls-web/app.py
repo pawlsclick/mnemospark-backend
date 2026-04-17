@@ -17,6 +17,7 @@ import logging
 import os
 import secrets
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, cast
@@ -99,6 +100,12 @@ class UnauthorizedError(ValueError):
 
 class MethodNotAllowedError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class NotFoundError(Exception):
+    error: str
+    message: str
 
 
 def _ls_web_cors_origin() -> str:
@@ -237,7 +244,7 @@ def _list_objects_ls_web(
             prefix=prefix,
         )
     except S3ListBucketAccessError as exc:
-        raise BadRequestError("bucket not found for this wallet") from exc
+        raise NotFoundError("bucket_not_found", "Bucket not found for this wallet") from exc
     except S3ListContinuationError as exc:
         raise BadRequestError(str(exc)) from exc
 
@@ -577,6 +584,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             object_key=None,
         )
         return _error_response(400, "Bad request", str(exc))
+    except NotFoundError as exc:
+        _log_api_call_result(
+            event,
+            context,
+            status_code=404,
+            result="not_found",
+            error_code=exc.error,
+            error_message=exc.message,
+            wallet_address=None,
+            object_key=None,
+        )
+        return _error_response(404, exc.error, exc.message)
     except MethodNotAllowedError as exc:
         return _error_response(405, "method_not_allowed", str(exc))
     except ClientError as exc:
