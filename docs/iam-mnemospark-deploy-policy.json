@@ -101,13 +101,15 @@
             "Action": [
                 "dynamodb:CreateTable",
                 "dynamodb:DeleteTable",
+                "dynamodb:DescribeContinuousBackups",
                 "dynamodb:DescribeTable",
                 "dynamodb:DescribeTimeToLive",
-                "dynamodb:UpdateTable",
-                "dynamodb:UpdateTimeToLive",
+                "dynamodb:ListTagsOfResource",
                 "dynamodb:TagResource",
                 "dynamodb:UntagResource",
-                "dynamodb:ListTagsOfResource"
+                "dynamodb:UpdateContinuousBackups",
+                "dynamodb:UpdateTable",
+                "dynamodb:UpdateTimeToLive"
             ],
             "Resource": "*"
         },
@@ -266,6 +268,38 @@
             "Sid": "STSGetCallerIdentity",
             "Effect": "Allow",
             "Action": "sts:GetCallerIdentity",
+            "Resource": "*"
+        },
+        {
+            "Sid": "KMSForStackManagedDynamoDbKey",
+            "Effect": "Allow",
+            "Action": [
+                "kms:CancelKeyDeletion",
+                "kms:CreateAlias",
+                "kms:CreateGrant",
+                "kms:CreateKey",
+                "kms:Decrypt",
+                "kms:DeleteAlias",
+                "kms:DescribeKey",
+                "kms:DisableKey",
+                "kms:DisableKeyRotation",
+                "kms:EnableKey",
+                "kms:EnableKeyRotation",
+                "kms:GenerateDataKey",
+                "kms:GetKeyPolicy",
+                "kms:GetKeyRotationStatus",
+                "kms:ListAliases",
+                "kms:ListGrants",
+                "kms:ListResourceTags",
+                "kms:PutKeyPolicy",
+                "kms:ReEncryptFrom",
+                "kms:ReEncryptTo",
+                "kms:RevokeGrant",
+                "kms:ScheduleKeyDeletion",
+                "kms:TagResource",
+                "kms:UntagResource",
+                "kms:UpdateAlias"
+            ],
             "Resource": "*"
         }
     ]
