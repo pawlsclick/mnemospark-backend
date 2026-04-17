@@ -44,6 +44,7 @@ try:
         parse_list_max_keys_field,
         parse_optional_string_param,
         s3_error_code,
+        s3_not_found_for_download,
         s3_last_modified_iso_utc,
         validate_bucket_naming_rules,
         validate_object_key_single_segment,
@@ -69,6 +70,7 @@ except ModuleNotFoundError:
         parse_list_max_keys_field,
         parse_optional_string_param,
         s3_error_code,
+        s3_not_found_for_download,
         s3_last_modified_iso_utc,
         validate_bucket_naming_rules,
         validate_object_key_single_segment,
@@ -502,7 +504,7 @@ def handle_download(event: dict[str, Any], context: Any) -> dict[str, Any]:
         try:
             s3_client.head_object(Bucket=bucket_name, Key=ok)
         except ClientError as exc:
-            if _s3_storage_head_not_found(exc):
+            if s3_not_found_for_download(exc):
                 results.append(
                     {
                         "object_key": ok,
