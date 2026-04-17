@@ -1,7 +1,7 @@
 openapi: "3.2.0"
 info:
   title: mnemospark-backend API
-  version: "0.1.5"
+  version: "0.1.6"
   license:
     name: Proprietary
   description: >
@@ -257,6 +257,149 @@ paths:
           $ref: "#/components/responses/BadRequestError"
         "403":
           $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /storage/ls-web/session:
+    post:
+      tags: [storage]
+      summary: Mint ls-web session (CLI / wallet proof)
+      description: >
+        Creates a 6-hour browser session for `https://app.mnemospark.ai`: stores wallet and
+        region in DynamoDB, returns a single-use opaque `code`, `app` URL with `?code=`,
+        and `expires_at`. Requires `X-Wallet-Signature` (same wallet-proof flow as other
+        storage routes). No delete surface for ls-web callers.
+      operationId: postStorageLsWebSession
+      security:
+        - walletProof: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StorageLsWebSessionRequest"
+      responses:
+        "200":
+          description: Exchange code and app URL minted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLsWebSessionMintResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /storage/ls-web/exchange:
+    post:
+      tags: [storage]
+      summary: Exchange one-time code for HttpOnly session cookie
+      description: >
+        Validates `code`, marks it consumed, and returns `Set-Cookie` for `mnemospark_ls_web`
+        (HttpOnly, Secure, Domain=.mnemospark.ai, Path=/, SameSite=Lax). CORS uses
+        `https://app.mnemospark.ai` with credentials. Does not use `X-Wallet-Signature`.
+      operationId: postStorageLsWebExchange
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StorageLsWebExchangeRequest"
+      responses:
+        "200":
+          description: Cookie issued
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLsWebExchangeResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          description: Invalid or reused code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /storage/ls-web/list:
+    post:
+      tags: [storage]
+      summary: List wallet bucket (ls-web session cookie)
+      description: >
+        Same S3 list semantics as POST `/storage/ls` list mode; wallet comes from the
+        session row. Requires `mnemospark_ls_web` cookie from `/storage/ls-web/exchange`.
+        POST-only for uniform CSRF posture with exchange/download.
+      operationId: postStorageLsWebList
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StorageLsWebListRequest"
+      responses:
+        "200":
+          description: List response (subset compatible with StorageLsListResponse)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLsListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          description: Missing or expired session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /storage/ls-web/download:
+    post:
+      tags: [storage]
+      summary: Batch presigned GET URLs (ls-web session cookie)
+      description: >
+        Up to 25 `object_keys` per request; each key must exist in the wallet bucket and
+        obey single-segment rules like `/storage/download`. `expires_in_seconds` optional
+        (1–3600, default from `STORAGE_DOWNLOAD_URL_TTL_SECONDS`). Returns per-key results
+        with `url` and `expires_at` or `error` / `message` on failure.
+      operationId: postStorageLsWebDownload
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StorageLsWebDownloadRequest"
+      responses:
+        "200":
+          description: Presigned URLs per object key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageLsWebDownloadBatchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          description: Missing or expired session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           $ref: "#/components/responses/NotFoundError"
         "500":
@@ -822,6 +965,126 @@ components:
           maximum: 1000
         prefix:
           type: string
+
+    StorageLsWebSessionRequest:
+      type: object
+      properties:
+        location:
+          type: string
+          description: AWS region for subsequent S3 list/download (defaults to Lambda region).
+
+    StorageLsWebSessionMintResponse:
+      type: object
+      required:
+        - success
+        - code
+        - app
+        - expires_at
+      properties:
+        success:
+          type: boolean
+        code:
+          type: string
+          description: Single-use opaque exchange code (plaintext once; server stores SHA-256 only).
+        app:
+          type: string
+          format: uri
+          description: Entry URL for the web app, typically `https://app.mnemospark.ai/?code=...`.
+        expires_at:
+          type: string
+          description: ISO 8601 UTC; session TTL is 6 hours from mint.
+
+    StorageLsWebExchangeRequest:
+      type: object
+      required:
+        - code
+      properties:
+        code:
+          type: string
+
+    StorageLsWebExchangeResponse:
+      type: object
+      required:
+        - success
+      properties:
+        success:
+          type: boolean
+
+    StorageLsWebListRequest:
+      type: object
+      properties:
+        continuation_token:
+          type: string
+        max_keys:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        prefix:
+          type: string
+        location:
+          type: string
+
+    StorageLsWebDownloadRequest:
+      type: object
+      required:
+        - object_keys
+      properties:
+        object_keys:
+          type: array
+          minItems: 1
+          maxItems: 25
+          items:
+            type: string
+        expires_in_seconds:
+          type: integer
+          minimum: 1
+          maximum: 3600
+        location:
+          type: string
+
+    StorageLsWebDownloadResultSuccess:
+      type: object
+      required:
+        - object_key
+        - url
+        - expires_at
+      properties:
+        object_key:
+          type: string
+        url:
+          type: string
+          format: uri
+        expires_at:
+          type: string
+
+    StorageLsWebDownloadResultError:
+      type: object
+      required:
+        - object_key
+        - error
+        - message
+      properties:
+        object_key:
+          type: string
+        error:
+          type: string
+        message:
+          type: string
+
+    StorageLsWebDownloadBatchResponse:
+      type: object
+      required:
+        - success
+        - results
+      properties:
+        success:
+          type: boolean
+        results:
+          type: array
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/StorageLsWebDownloadResultSuccess"
+              - $ref: "#/components/schemas/StorageLsWebDownloadResultError"
 
     PriceStorageResponse:
       type: object

@@ -13,6 +13,7 @@ Supported flow:
   * GET,POST /storage/ls
   * GET,POST /storage/download
   * POST,DELETE /storage/delete
+  * POST /storage/ls-web/session
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ PUBLIC_ROUTE_METHODS: dict[str, set[str]] = {
     "/storage/ls": {"GET", "POST"},
     "/storage/download": {"GET", "POST"},
     "/storage/delete": {"POST", "DELETE"},
+    "/storage/ls-web/session": {"POST"},
 }
 DEFAULT_AUTH_EVENT_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days
 

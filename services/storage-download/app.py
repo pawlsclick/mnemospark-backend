@@ -9,12 +9,9 @@ Flow:
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 import logging
 import os
-import re
 from functools import partial
 from dataclasses import dataclass
 from typing import Any
@@ -32,6 +29,17 @@ try:
         request_path,
         sanitize_error_message,
     )
+    from common.storage_wallet_s3 import (
+        BadRequestError,
+        ForbiddenError,
+        bucket_name_from_wallet,
+        coerce_presigned_ttl_seconds,
+        decode_json_event_body,
+        normalize_wallet_address,
+        require_authorized_wallet_match,
+        s3_not_found_for_download,
+        validate_object_key_single_segment,
+    )
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
@@ -45,6 +53,17 @@ except ModuleNotFoundError:
         request_method,
         request_path,
         sanitize_error_message,
+    )
+    from common.storage_wallet_s3 import (
+        BadRequestError,
+        ForbiddenError,
+        bucket_name_from_wallet,
+        coerce_presigned_ttl_seconds,
+        decode_json_event_body,
+        normalize_wallet_address,
+        require_authorized_wallet_match,
+        s3_not_found_for_download,
+        validate_object_key_single_segment,
     )
 
 
@@ -61,18 +80,6 @@ _sanitize_error_message = sanitize_error_message
 US_EAST_1_REGION = "us-" + "east-1"
 DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
 DEFAULT_PRESIGNED_TTL_SECONDS = int(os.environ.get("STORAGE_DOWNLOAD_URL_TTL_SECONDS", "300"))
-
-ADDRESS_PATTERN = re.compile(r"^0x[a-fA-F0-9]{40}$")
-NOT_FOUND_ERROR_CODES = {"404", "NotFound", "NoSuchBucket", "NoSuchKey"}
-
-
-class BadRequestError(ValueError):
-    """Raised when request validation fails."""
-
-
-class ForbiddenError(ValueError):
-    """Raised when authorizer wallet context is missing or mismatched."""
-
 
 class MethodNotAllowedError(ValueError):
     """Raised when an unsupported HTTP method is provided."""
@@ -111,34 +118,13 @@ def _error_response(status_code: int, error: str, message: str, details: Any = N
     return _response(status_code, body)
 
 
-def _decode_event_body(event: dict[str, Any]) -> dict[str, Any]:
-    raw_body = event.get("body")
-    if raw_body in (None, ""):
-        return {}
-
-    if event.get("isBase64Encoded"):
-        try:
-            raw_body = base64.b64decode(raw_body).decode("utf-8")
-        except Exception as exc:
-            raise BadRequestError("body must be valid base64-encoded JSON") from exc
-
-    try:
-        decoded = json.loads(raw_body)
-    except json.JSONDecodeError as exc:
-        raise BadRequestError("body must be valid JSON") from exc
-
-    if not isinstance(decoded, dict):
-        raise BadRequestError("JSON body must be an object")
-    return decoded
-
-
 def _collect_request_params(event: dict[str, Any]) -> dict[str, Any]:
     query_params = event.get("queryStringParameters") or {}
     if not isinstance(query_params, dict):
         raise BadRequestError("queryStringParameters must be an object")
 
     params = {key: value for key, value in query_params.items() if value is not None}
-    params.update(_decode_event_body(event))
+    params.update(decode_json_event_body(event))
     return params
 
 
@@ -150,90 +136,13 @@ def _require_string_field(params: dict[str, Any], *field_names: str) -> str:
     raise BadRequestError(f"{field_names[0]} is required")
 
 
-def _normalize_address(value: str, field_name: str) -> str:
-    candidate = value.strip()
-    if not ADDRESS_PATTERN.fullmatch(candidate):
-        raise BadRequestError(f"{field_name} must be a 0x-prefixed 20-byte hex address")
-    return f"0x{candidate[2:].lower()}"
-
-
-def _extract_authorizer_wallet(event: dict[str, Any]) -> str | None:
-    request_context = event.get("requestContext")
-    if not isinstance(request_context, dict):
-        return None
-    authorizer = request_context.get("authorizer")
-    if not isinstance(authorizer, dict):
-        return None
-
-    candidates: list[Any] = [
-        authorizer.get("walletAddress"),
-        authorizer.get("wallet_address"),
-    ]
-    lambda_authorizer_context = authorizer.get("lambda")
-    if isinstance(lambda_authorizer_context, dict):
-        candidates.extend(
-            [
-                lambda_authorizer_context.get("walletAddress"),
-                lambda_authorizer_context.get("wallet_address"),
-            ]
-        )
-
-    for candidate in candidates:
-        if not isinstance(candidate, str) or not candidate.strip():
-            continue
-        try:
-            return _normalize_address(candidate, "authorizer walletAddress")
-        except BadRequestError as exc:
-            raise ForbiddenError("wallet authorization context is invalid") from exc
-
-    return None
-
-
-def _require_authorized_wallet(event: dict[str, Any], wallet_address: str) -> None:
-    authorized_wallet = _extract_authorizer_wallet(event)
-    if authorized_wallet is None:
-        raise ForbiddenError("wallet authorization context is required")
-    if authorized_wallet != wallet_address:
-        raise ForbiddenError("wallet_address does not match authorized wallet")
-
-
-def _validate_object_key(object_key: str) -> str:
-    object_key = object_key.strip()
-    if not object_key or "/" in object_key or "\\" in object_key or object_key in {".", ".."}:
-        raise BadRequestError("object_key must be a single path segment")
-    return object_key
-
-
-def _coerce_expires_in_seconds(value: Any) -> int:
-    if value is None or value == "":
-        return DEFAULT_PRESIGNED_TTL_SECONDS
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise BadRequestError("expires_in_seconds must be an integer") from exc
-    if parsed < 1 or parsed > 3600:
-        raise BadRequestError("expires_in_seconds must be between 1 and 3600")
-    return parsed
-
-
-def _wallet_hash(wallet_address: str, length: int = 16) -> str:
-    return hashlib.sha256(wallet_address.encode("utf-8")).hexdigest()[:length]
-
-
-def _bucket_name(wallet_address: str) -> str:
-    return f"mnemospark-{_wallet_hash(wallet_address)}"
-
-
-def _error_code(exc: ClientError) -> str:
-    return str(exc.response.get("Error", {}).get("Code", ""))
-
-
 def _error_message(exc: ClientError) -> str:
     return str(exc.response.get("Error", {}).get("Message", str(exc)))
 
 
-def _is_not_found_error(exc: ClientError) -> bool:
-    return _error_code(exc) in NOT_FOUND_ERROR_CODES
+_bucket_name = bucket_name_from_wallet
+_normalize_address = normalize_wallet_address
+_decode_event_body = decode_json_event_body
 
 
 def parse_input(event: dict[str, Any]) -> ParsedDownloadRequest:
@@ -243,15 +152,18 @@ def parse_input(event: dict[str, Any]) -> ParsedDownloadRequest:
 
     params = _collect_request_params(event)
 
-    wallet_address = _normalize_address(
+    wallet_address = normalize_wallet_address(
         _require_string_field(params, "wallet_address", "walletAddress"),
         "wallet_address",
     )
-    object_key = _validate_object_key(
+    object_key = validate_object_key_single_segment(
         _require_string_field(params, "object_key", "objectKey"),
     )
     location = str(params.get("location") or params.get("region") or DEFAULT_LOCATION).strip() or DEFAULT_LOCATION
-    expires_in_seconds = _coerce_expires_in_seconds(params.get("expires_in_seconds"))
+    expires_in_seconds = coerce_presigned_ttl_seconds(
+        params.get("expires_in_seconds"),
+        default=DEFAULT_PRESIGNED_TTL_SECONDS,
+    )
 
     return ParsedDownloadRequest(
         wallet_address=wallet_address,
@@ -263,12 +175,12 @@ def parse_input(event: dict[str, Any]) -> ParsedDownloadRequest:
 
 def generate_download_url(request: ParsedDownloadRequest, s3_client: Any | None = None) -> dict[str, Any]:
     s3_client = s3_client or boto3.client("s3", region_name=request.location)
-    bucket_name = _bucket_name(request.wallet_address)
+    bucket_name = bucket_name_from_wallet(request.wallet_address)
 
     try:
         s3_client.head_bucket(Bucket=bucket_name)
     except ClientError as exc:
-        if _is_not_found_error(exc):
+        if s3_not_found_for_download(exc):
             raise NotFoundError(
                 error="bucket_not_found",
                 message="Bucket not found for this wallet.",
@@ -279,7 +191,7 @@ def generate_download_url(request: ParsedDownloadRequest, s3_client: Any | None 
     try:
         s3_client.head_object(Bucket=bucket_name, Key=request.object_key)
     except ClientError as exc:
-        if _is_not_found_error(exc):
+        if s3_not_found_for_download(exc):
             raise NotFoundError(
                 error="object_not_found",
                 message=f"Object not found: {request.object_key}.",
@@ -313,7 +225,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             wallet_address=request.wallet_address,
             object_key=request.object_key,
         )
-        _require_authorized_wallet(event, request.wallet_address)
+        require_authorized_wallet_match(event, request.wallet_address)
         response_body = generate_download_url(request)
         _log_event(
             logging.INFO,
