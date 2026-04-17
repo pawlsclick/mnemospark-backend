@@ -133,7 +133,7 @@ Parameters:
       Lambdas echo this via MNEMOSPARK_CORS_ALLOW_ORIGIN). Prefer explicit HTTPS origins in production.
   RestApiCorsAllowHeaders:
     Type: String
-    Default: "Content-Type,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,X-PAYMENT,x-payment,x-payment-required,x-payment-response"
+    Default: "Content-Type,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,X-PAYMENT,x-payment,x-payment-required,x-payment-response,Cookie"
     Description: Allowed CORS request headers for the REST API (SAM Cors AllowHeaders string).
   DashboardGraphqlCorsAllowOrigin:
     Type: String
@@ -305,6 +305,39 @@ Resources:
       KeySchema:
         - AttributeName: request_id
           KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  LsWebSessionTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-ls-web-sessions"
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DynamoDbKmsKey.Arn
+      AttributeDefinitions:
+        - AttributeName: session_id
+          AttributeType: S
+        - AttributeName: exchange_code_hash
+          AttributeType: S
+      KeySchema:
+        - AttributeName: session_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: GsiExchangeCode
+          KeySchema:
+            - AttributeName: exchange_code_hash
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
       TimeToLiveSpecification:
         AttributeName: expires_at
         Enabled: true
@@ -1001,6 +1034,48 @@ Resources:
               maximum: 1000
             prefix:
               type: string
+        StorageLsWebSessionRequest:
+          type: object
+          properties:
+            location:
+              type: string
+        StorageLsWebExchangeRequest:
+          type: object
+          required:
+            - code
+          properties:
+            code:
+              type: string
+        StorageLsWebListRequest:
+          type: object
+          properties:
+            continuation_token:
+              type: string
+            max_keys:
+              type: integer
+              minimum: 1
+              maximum: 1000
+            prefix:
+              type: string
+            location:
+              type: string
+        StorageLsWebDownloadRequest:
+          type: object
+          required:
+            - object_keys
+          properties:
+            object_keys:
+              type: array
+              minItems: 1
+              maxItems: 25
+              items:
+                type: string
+            expires_in_seconds:
+              type: integer
+              minimum: 1
+              maximum: 3600
+            location:
+              type: string
         PaymentSettleRequest:
           type: object
           required:
@@ -1684,6 +1759,105 @@ Resources:
                 - kms:GenerateDataKey
               Resource: !GetAtt DynamoDbKmsKey.Arn
 
+  StorageLsWebFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: storage_ls_web_entry.lambda_handler
+      CodeUri: services
+      Environment:
+        Variables:
+          LS_WEB_SESSION_TABLE_NAME: !Ref LsWebSessionTable
+          API_CALLS_TABLE_NAME: !Ref ApiCallsTable
+          API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
+          MNEMOSPARK_LS_WEB_CORS_ORIGIN: "https://app.mnemospark.ai"
+          MNEMOSPARK_LS_WEB_APP_URL: "https://app.mnemospark.ai"
+      Events:
+        StorageLsWebSessionPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/ls-web/session
+            Method: POST
+            Auth:
+              Authorizer: WalletRequestAuthorizer
+            RequestModel:
+              Model: StorageLsWebSessionRequest
+              Required: false
+              ValidateBody: true
+              ValidateParameters: true
+        StorageLsWebExchangePost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/ls-web/exchange
+            Method: POST
+            RequestModel:
+              Model: StorageLsWebExchangeRequest
+              Required: true
+              ValidateBody: true
+              ValidateParameters: true
+        StorageLsWebListPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/ls-web/list
+            Method: POST
+            RequestModel:
+              Model: StorageLsWebListRequest
+              Required: false
+              ValidateBody: true
+              ValidateParameters: true
+        StorageLsWebDownloadPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/ls-web/download
+            Method: POST
+            RequestModel:
+              Model: StorageLsWebDownloadRequest
+              Required: true
+              ValidateBody: true
+              ValidateParameters: true
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:Query
+                - dynamodb:UpdateItem
+              Resource:
+                - !GetAtt LsWebSessionTable.Arn
+                - !Sub "${LsWebSessionTable.Arn}/index/*"
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:aws:s3:::mnemospark-*"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub "arn:aws:s3:::mnemospark-*/*"
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt ApiCallsTable.Arn
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:DescribeKey
+                - kms:GenerateDataKey
+              Resource: !GetAtt DynamoDbKmsKey.Arn
+
+  StorageLsWebFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${StorageLsWebFunction}"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
   StorageHousekeepingFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -2099,6 +2273,16 @@ Outputs:
     Value: !GetAtt ApiCallsTable.Arn
     Export:
       Name: !Sub "${AWS::StackName}-ApiCallsTableArn"
+  LsWebSessionTableName:
+    Description: DynamoDB table name for ls-web browser session rows
+    Value: !Ref LsWebSessionTable
+    Export:
+      Name: !Sub "${AWS::StackName}-LsWebSessionTableName"
+  LsWebSessionTableArn:
+    Description: DynamoDB table ARN for ls-web browser session rows
+    Value: !GetAtt LsWebSessionTable.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-LsWebSessionTableArn"
   PriceStorageLambdaRoleArn:
     Description: IAM role ARN for price-storage Lambda (quotes read/write)
     Value: !GetAtt PriceStorageLambdaRole.Arn
@@ -2135,6 +2319,9 @@ Outputs:
   StorageLsFunctionArn:
     Description: Lambda function ARN for /storage/ls
     Value: !GetAtt StorageLsFunction.Arn
+  StorageLsWebFunctionArn:
+    Description: Lambda function ARN for /storage/ls-web/* BFF routes
+    Value: !GetAtt StorageLsWebFunction.Arn
   StorageDownloadFunctionArn:
     Description: Lambda function ARN for /storage/download
     Value: !GetAtt StorageDownloadFunction.Arn
