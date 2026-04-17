@@ -401,7 +401,7 @@ def handle_list(event: dict[str, Any], context: Any) -> dict[str, Any]:
         s3_client.head_bucket(Bucket=bucket_name)
     except ClientError as exc:
         if _s3_storage_head_not_found(exc):
-            return _error_response(404, "bucket_not_found", "Bucket not found for this wallet.")
+            raise NotFoundError("bucket_not_found", "Bucket not found for this wallet.") from exc
         raise
 
     list_resp = _list_objects_ls_web(
@@ -478,7 +478,7 @@ def handle_download(event: dict[str, Any], context: Any) -> dict[str, Any]:
         s3_client.head_bucket(Bucket=bucket_name)
     except ClientError as exc:
         if _s3_storage_head_not_found(exc):
-            return _error_response(404, "bucket_not_found", "Bucket not found for this wallet.")
+            raise NotFoundError("bucket_not_found", "Bucket not found for this wallet.") from exc
         raise
 
     expires_wall = int(time.time()) + expires_in
