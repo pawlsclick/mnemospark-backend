@@ -127,7 +127,7 @@ Parameters:
     Description: EventBridge schedule for Base relayer monitor (stats, health, alerts)
   RestApiCorsAllowOrigin:
     Type: String
-    Default: "*"
+    Default: "https://app.mnemospark.ai"
     Description: >
       Access-Control-Allow-Origin for wallet REST API (comma-separated list allowed in SAM Cors;
       Lambdas echo this via MNEMOSPARK_CORS_ALLOW_ORIGIN). Prefer explicit HTTPS origins in production.
