@@ -89,11 +89,36 @@ US_EAST_1_REGION = "us-" + "east-1"
 DEFAULT_LOCATION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or US_EAST_1_REGION
 SESSION_TTL_SECONDS = 21600
 COOKIE_NAME = "mnemospark_ls_web"
-COOKIE_DOMAIN = ".mnemospark.ai"
 DOWNLOAD_MAX_KEYS = 25
 DEFAULT_LIST_MAX_KEYS = 1000
 LIST_MAX_KEYS_CAP = 1000
 DEFAULT_PRESIGNED_TTL_SECONDS = int(os.environ.get("STORAGE_DOWNLOAD_URL_TTL_SECONDS", "300"))
+
+
+def _ls_web_cookie_domain() -> str | None:
+    """Return Domain= value, or None to omit (host-only cookie for execute-api staging URL)."""
+    raw = os.environ.get("LS_WEB_COOKIE_DOMAIN", ".mnemospark.ai").strip()
+    return raw or None
+
+
+def _ls_web_cookie_same_site() -> str:
+    raw = (os.environ.get("LS_WEB_COOKIE_SAMESITE") or "Lax").strip() or "Lax"
+    if raw not in ("Lax", "Strict", "None"):
+        return "Lax"
+    return raw
+
+
+def _ls_web_set_cookie_header(session_id: str, max_age: int) -> str:
+    parts = [
+        f"{COOKIE_NAME}={session_id}",
+        "HttpOnly",
+        "Secure",
+    ]
+    domain = _ls_web_cookie_domain()
+    if domain:
+        parts.append(f"Domain={domain}")
+    parts.extend(["Path=/", f"SameSite={_ls_web_cookie_same_site()}", f"Max-Age={max_age}"])
+    return "; ".join(parts)
 
 
 class UnauthorizedError(ValueError):
@@ -337,16 +362,7 @@ def handle_exchange(event: dict[str, Any], context: Any) -> dict[str, Any]:
         raise
     exp = _num_to_int(row.get("session_expires_at", 0))
     max_age = max(0, exp - now)
-    cookie_parts = [
-        f"{COOKIE_NAME}={session_id}",
-        "HttpOnly",
-        "Secure",
-        f"Domain={COOKIE_DOMAIN}",
-        "Path=/",
-        "SameSite=Lax",
-        f"Max-Age={max_age}",
-    ]
-    set_cookie = "; ".join(cookie_parts)
+    set_cookie = _ls_web_set_cookie_header(session_id, max_age)
     _log_api_call_result(
         event,
         context,
