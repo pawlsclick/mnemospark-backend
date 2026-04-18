@@ -50,11 +50,11 @@ Optional (defaults shown if unset in the workflow):
 
 ## REST API CORS (ls-web on `app.mnemospark.ai`)
 
-**Deploy Staging** passes **`RestApiCorsAllowOrigin=https://app.mnemospark.ai`** and a full **`RestApiCorsAllowHeaders`** string that includes **`Cookie`**. Together with **`AllowCredentials: true`** on the REST API when `StageName=staging` (see `template.yaml`), API Gateway preflight succeeds for browser **`fetch(..., { credentials: 'include' })`** to `/storage/ls-web/*`.
+**Deploy Staging** passes **`RestApiCorsAllowOrigin=https://app.mnemospark.ai`** so Lambdas that echo **`MNEMOSPARK_CORS_ALLOW_ORIGIN`** match the app shell.
+
+For **`StageName=staging`**, **`template.yaml`** sets API Gateway **`Cors`** explicitly: **`AllowOrigin`** is **`https://app.mnemospark.ai`**, **`AllowHeaders`** includes **`Cookie`**, and **`AllowCredentials`** is **`true`**. That avoids passing a comma-separated **`RestApiCorsAllowHeaders`** through **`sam deploy --parameter-overrides`**, which **splits on commas** and would never apply the full header list.
 
 The static app shell calls whichever API base URL it is configured with (for example the staging execute URL during backend QA). **`https://api.mnemospark.ai`** is the production API Gateway custom domain; it only lists files once that environment exposes `/storage/ls-web/*` and matching CORS.
-
-**SAM CLI note:** `sam deploy --parameter-overrides` accepts a full comma-separated value when it is passed as a single quoted `Key=Value` argument. The workflow passes **`RestApiCorsAllowHeaders`** that way so `AllowHeaders` reaches CloudFormation unchanged.
 
 ## Dashboard GraphQL API key (Secrets Manager only)
 

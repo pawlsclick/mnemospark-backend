@@ -141,8 +141,8 @@ Parameters:
     Description: Access-Control-Allow-Origin for dashboard GraphQL Lambda (DASHBOARD_GRAPHQL_CORS_ALLOW_ORIGIN).
 
 Conditions:
-  # Staging: enable API Gateway CORS credentials for ls-web (fetch(..., { credentials: 'include' })).
-  # Requires non-wildcard RestApiCorsAllowOrigin (see deploy-staging workflow overrides).
+  # Staging: API Gateway CORS for ls-web uses fixed AllowOrigin/AllowHeaders below (SAM --parameter-overrides
+  # cannot pass comma-separated RestApiCorsAllowHeaders reliably). AllowCredentials true for this stage only.
   IsStagingStage: !Equals [!Ref StageName, staging]
 
 Globals:
@@ -915,8 +915,14 @@ Resources:
           {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.resourcePath","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationError":"$context.integrationErrorMessage"}
       Cors:
         AllowMethods: "'GET,POST,DELETE,OPTIONS'"
-        AllowHeaders: !Sub "'${RestApiCorsAllowHeaders}'"
-        AllowOrigin: !Sub "'${RestApiCorsAllowOrigin}'"
+        AllowHeaders: !If
+          - IsStagingStage
+          - "'Content-Type,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,X-PAYMENT,x-payment,x-payment-required,x-payment-response,Cookie'"
+          - !Sub "'${RestApiCorsAllowHeaders}'"
+        AllowOrigin: !If
+          - IsStagingStage
+          - "'https://app.mnemospark.ai'"
+          - !Sub "'${RestApiCorsAllowOrigin}'"
         AllowCredentials: !If [IsStagingStage, true, false]
       GatewayResponses:
         MISSING_AUTHENTICATION_TOKEN:
@@ -925,7 +931,10 @@ Resources:
             Headers:
               X-Content-Type-Options: "'nosniff'"
               Cache-Control: "'no-store'"
-              Access-Control-Allow-Origin: !Sub "'${RestApiCorsAllowOrigin}'"
+              Access-Control-Allow-Origin: !If
+                - IsStagingStage
+                - "'https://app.mnemospark.ai'"
+                - !Sub "'${RestApiCorsAllowOrigin}'"
           ResponseTemplates:
             application/json: '{"message":"Forbidden"}'
         ACCESS_DENIED:
@@ -934,7 +943,10 @@ Resources:
             Headers:
               X-Content-Type-Options: "'nosniff'"
               Cache-Control: "'no-store'"
-              Access-Control-Allow-Origin: !Sub "'${RestApiCorsAllowOrigin}'"
+              Access-Control-Allow-Origin: !If
+                - IsStagingStage
+                - "'https://app.mnemospark.ai'"
+                - !Sub "'${RestApiCorsAllowOrigin}'"
           ResponseTemplates:
             application/json: '{"message":"Forbidden"}'
       Models:
