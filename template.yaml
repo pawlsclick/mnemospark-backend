@@ -1789,9 +1789,9 @@ Resources:
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
           MNEMOSPARK_LS_WEB_CORS_ORIGIN: "https://app.mnemospark.ai"
           MNEMOSPARK_LS_WEB_APP_URL: "https://app.mnemospark.ai"
-          # Staging: sentinel host-only (non-empty; Lambda often omits empty env values). SameSite=None for cross-site until a mnemospark.ai API hostname exists.
-          LS_WEB_COOKIE_DOMAIN: !If [IsStagingStage, "host-only", ".mnemospark.ai"]
-          LS_WEB_COOKIE_SAMESITE: !If [IsStagingStage, "None", "Lax"]
+          # Staging API is on api-staging.mnemospark.ai (same-site with app); use production-like cookie flags.
+          LS_WEB_COOKIE_DOMAIN: ".mnemospark.ai"
+          LS_WEB_COOKIE_SAMESITE: "Lax"
       Events:
         StorageLsWebSessionPost:
           Type: Api

@@ -11,7 +11,7 @@ Browser-oriented flow for **`https://app.mnemospark.ai`**: the CLI (or any walle
 | Session TTL | **6 hours** (21 600 seconds) from successful **mint** |
 | Exchange code | High-entropy opaque string; server stores **SHA-256** only; **single-use** |
 | Session cookie name | **`mnemospark_ls_web`** |
-| Cookie attributes | `HttpOnly`, `Secure`, `Path=/`. **`Domain`** / **`SameSite`** come from Lambda env (see `template.yaml`). **Production:** `Domain=.mnemospark.ai`, `SameSite=Lax`. **Staging (execute-api URL):** `LS_WEB_COOKIE_DOMAIN=host-only` (omit `Domain=`) and `SameSite=None`—many browsers still block or partition these cross-site cookies, so QA against the raw execute-api URL is unreliable. **Recommended:** map a hostname under **`mnemospark.ai`** (for example **`staging.api.mnemospark.ai`**) to the staging API and use the same **`Domain=.mnemospark.ai`** + **`Lax`** pattern as production. |
+| Cookie attributes | `HttpOnly`, `Secure`, `Path=/`, **`Domain=.mnemospark.ai`**, **`SameSite=Lax`** on both **prod** and **staging** (staging API is served on **`api-staging.mnemospark.ai`**, same-site with **`app.mnemospark.ai`**). The Python handler still accepts the **`host-only`** sentinel for ad-hoc testing against raw execute-api URLs. |
 | DynamoDB | Table `LS_WEB_SESSION_TABLE_NAME`; PK `session_id`; GSI **`GsiExchangeCode`** on `exchange_code_hash`; TTL attribute **`expires_at`** |
 
 ## CORS and credentials
@@ -87,7 +87,7 @@ JSON body:
 
 ## CSRF
 
-**Production** uses **`SameSite=Lax`** plus **POST** for exchange, list, and download (same-site between `app` and `api` under `mnemospark.ai`). **Staging** uses **`SameSite=None`** only so the session cookie is sent on cross-site `fetch` to the execute-api URL; keep exchange/list/download on **POST** and treat the shell as a trusted client surface.
+**SameSite=Lax** plus **POST** for exchange, list, and download: **`app.mnemospark.ai`** and **`api.mnemospark.ai`** / **`api-staging.mnemospark.ai`** are the same site (registrable **`mnemospark.ai`**). Treat the shell as a trusted client surface.
 
 ## Related
 
