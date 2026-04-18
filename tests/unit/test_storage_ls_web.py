@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import sys
 import time
 import unittest
@@ -111,6 +112,40 @@ class StorageLsWebMintTests(unittest.TestCase):
 
 
 class StorageLsWebExchangeTests(unittest.TestCase):
+    @mock.patch.dict(
+        os.environ,
+        {"LS_WEB_COOKIE_DOMAIN": "", "LS_WEB_COOKIE_SAMESITE": "None"},
+        clear=False,
+    )
+    @mock.patch.object(app, "_session_table")
+    @mock.patch.object(app, "_log_api_call_result", lambda *a, **k: None)
+    def test_exchange_set_cookie_host_only_and_samesite_none(self, mock_table_factory):
+        fake = FakeTable()
+        mock_table_factory.return_value = fake
+        code = "staging-cookie-code"
+        code_hash = app._hash_exchange_code(code)
+        sid = "sess-cookie"
+        fake.by_sid[sid] = {
+            "session_id": sid,
+            "wallet_address": "0x" + "e" * 40,
+            "exchange_code_hash": code_hash,
+            "exchanged": False,
+            "session_expires_at": int(time.time()) + 3600,
+            "location": "us-east-1",
+        }
+        event = {
+            "httpMethod": "POST",
+            "path": "/storage/ls-web/exchange",
+            "requestContext": {"resourcePath": "/storage/ls-web/exchange"},
+            "body": json.dumps({"code": code}),
+        }
+        resp = app.lambda_handler(event, None)
+        self.assertEqual(resp["statusCode"], 200)
+        set_cookie = resp["headers"].get("Set-Cookie") or resp["headers"].get("set-cookie") or ""
+        self.assertIn("SameSite=None", set_cookie)
+        self.assertNotIn("Domain=", set_cookie)
+        self.assertIn("Secure", set_cookie)
+
     @mock.patch.object(app, "_session_table")
     @mock.patch.object(app, "_log_api_call_result")
     def test_exchange_invalid_code_logs_audit(self, mock_log, mock_table_factory):

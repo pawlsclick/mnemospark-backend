@@ -11,7 +11,7 @@ Browser-oriented flow for **`https://app.mnemospark.ai`**: the CLI (or any walle
 | Session TTL | **6 hours** (21 600 seconds) from successful **mint** |
 | Exchange code | High-entropy opaque string; server stores **SHA-256** only; **single-use** |
 | Session cookie name | **`mnemospark_ls_web`** |
-| Cookie attributes | `HttpOnly`, `Secure`, `Domain=.mnemospark.ai`, `Path=/`, `SameSite=Lax` |
+| Cookie attributes | `HttpOnly`, `Secure`, `Path=/`. **`Domain`** / **`SameSite`** come from Lambda env (see `template.yaml`): **production** uses `Domain=.mnemospark.ai` and `SameSite=Lax` (same-site between `app` and `api` under `mnemospark.ai`). **Staging** uses the execute-api hostname: **omit `Domain`** (host-only cookie) and **`SameSite=None`** so `https://app.mnemospark.ai` → `*.execute-api.amazonaws.com` `fetch` POSTs still send the cookie. |
 | DynamoDB | Table `LS_WEB_SESSION_TABLE_NAME`; PK `session_id`; GSI **`GsiExchangeCode`** on `exchange_code_hash`; TTL attribute **`expires_at`** |
 
 ## CORS and credentials
@@ -87,7 +87,7 @@ JSON body:
 
 ## CSRF
 
-**SameSite=Lax** plus **POST** for exchange, list, and download reduces CSRF risk. The web app should still follow normal SPA hygiene (trusted API origin only).
+**Production** uses **`SameSite=Lax`** plus **POST** for exchange, list, and download (same-site between `app` and `api` under `mnemospark.ai`). **Staging** uses **`SameSite=None`** only so the session cookie is sent on cross-site `fetch` to the execute-api URL; keep exchange/list/download on **POST** and treat the shell as a trusted client surface.
 
 ## Related
 
