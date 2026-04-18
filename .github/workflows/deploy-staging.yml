@@ -77,8 +77,7 @@ jobs:
           # ls-web: browser uses credentials + Cookie; API Gateway preflight must allow Cookie and must
           # not use Access-Control-Allow-Origin: * with Allow-Credentials (see docs/storage-ls-web.md).
           REST_API_CORS_HEADERS='Content-Type,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,X-PAYMENT,x-payment,x-payment-required,x-payment-response,Cookie'
-          # SAM CLI splits --parameter-overrides on commas; escape each comma in the value (see AWS SAM deploy docs).
-          REST_API_CORS_HEADERS_ESC="${REST_API_CORS_HEADERS//,/\\,}"
+          # SAM CLI accepts commas in a single Key=Value override argument; keep this as plain CSV.
           sam deploy --config-file samconfig.staging.toml \
             --region "${{ vars.AWS_REGION }}" \
             --no-fail-on-empty-changeset \
@@ -92,7 +91,7 @@ jobs:
               "PriceStorageFloor=${PRICE_STORAGE_FLOOR}" \
               "PriceStorageMarkup=${PRICE_STORAGE_MARKUP}" \
               "RestApiCorsAllowOrigin=https://app.mnemospark.ai" \
-              "RestApiCorsAllowHeaders=${REST_API_CORS_HEADERS_ESC}"
+              "RestApiCorsAllowHeaders=${REST_API_CORS_HEADERS}"
 
       - name: Smoke tests
         if: ${{ vars.STAGING_BASE_URL != '' && !contains(vars.STAGING_BASE_URL, 'example.com') }}

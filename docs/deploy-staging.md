@@ -54,7 +54,7 @@ Optional (defaults shown if unset in the workflow):
 
 The static app shell calls whichever API base URL it is configured with (for example the staging execute URL during backend QA). **`https://api.mnemospark.ai`** is the production API Gateway custom domain; it only lists files once that environment exposes `/storage/ls-web/*` and matching CORS.
 
-**SAM CLI note:** `sam deploy --parameter-overrides` treats **commas** as separators between `Key=Value` pairs. The workflow therefore backslash-escapes every comma inside **`RestApiCorsAllowHeaders`** before passing it to `sam deploy`. Without that, `RestApiCorsAllowHeaders` and related CORS updates are parsed incorrectly and never reach CloudFormation.
+**SAM CLI note:** `sam deploy --parameter-overrides` accepts a full comma-separated value when it is passed as a single quoted `Key=Value` argument. The workflow passes **`RestApiCorsAllowHeaders`** that way so `AllowHeaders` reaches CloudFormation unchanged.
 
 ## Dashboard GraphQL API key (Secrets Manager only)
 
