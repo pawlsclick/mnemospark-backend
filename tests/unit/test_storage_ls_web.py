@@ -110,6 +110,33 @@ class StorageLsWebMintTests(unittest.TestCase):
         self.assertEqual(stored["wallet_address"], self.wallet.lower())
         self.assertEqual(stored["location"], "us-east-1")
 
+    @mock.patch.dict(
+        os.environ,
+        {"MNEMOSPARK_LS_WEB_APP_PREFIX_QUERY": "api=staging"},
+        clear=False,
+    )
+    @mock.patch.object(app, "_session_table")
+    @mock.patch.object(app, "_log_api_call_result", lambda *a, **k: None)
+    def test_mint_app_url_includes_prefix_query_before_code(self, mock_table_factory):
+        fake = FakeTable()
+        mock_table_factory.return_value = fake
+        event = {
+            "httpMethod": "POST",
+            "path": "/storage/ls-web/session",
+            "requestContext": {
+                "resourcePath": "/storage/ls-web/session",
+                "authorizer": {"walletAddress": self.wallet},
+            },
+            "body": json.dumps({"location": "us-east-1"}),
+        }
+        resp = app.lambda_handler(event, None)
+        self.assertEqual(resp["statusCode"], 200)
+        body = json.loads(resp["body"])
+        self.assertTrue(body["success"])
+        self.assertIn("app.mnemospark.ai", body["app"])
+        self.assertIn("api=staging", body["app"])
+        self.assertRegex(body["app"], r"[?&]api=staging&code=")
+
 
 class StorageLsWebExchangeTests(unittest.TestCase):
     @mock.patch.dict(

@@ -311,8 +311,13 @@ def handle_mint(event: dict[str, Any], context: Any) -> dict[str, Any]:
         },
         ConditionExpression="attribute_not_exists(session_id)",
     )
-    app_base = os.environ.get("MNEMOSPARK_LS_WEB_APP_URL", "https://app.mnemospark.ai").rstrip("/")
-    app = f"{app_base}/?code={quote(code, safe='')}"
+    app_base = os.environ.get("MNEMOSPARK_LS_WEB_APP_URL", "https://app.mnemospark.ai").strip().rstrip("/")
+    prefix_query = os.environ.get("MNEMOSPARK_LS_WEB_APP_PREFIX_QUERY", "").strip()
+    enc = quote(code, safe="")
+    if prefix_query:
+        app = f"{app_base}/?{prefix_query}&code={enc}"
+    else:
+        app = f"{app_base}/?code={enc}"
     body_out = {
         "success": True,
         "code": code,
