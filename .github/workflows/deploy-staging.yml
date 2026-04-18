@@ -74,10 +74,9 @@ jobs:
           if [ "${PAYMENT_SETTLEMENT_MODE}" = "onchain" ]; then
             require_var BASE_RPC_URL "${BASE_RPC_URL}"
           fi
-          # ls-web: browser uses credentials + Cookie; API Gateway preflight must allow Cookie and must
-          # not use Access-Control-Allow-Origin: * with Allow-Credentials (see docs/storage-ls-web.md).
-          REST_API_CORS_HEADERS='Content-Type,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,X-PAYMENT,x-payment,x-payment-required,x-payment-response,Cookie'
-          # SAM CLI accepts commas in a single Key=Value override argument; keep this as plain CSV.
+          # ls-web: set RestApiCorsAllowOrigin for Lambda MNEMOSPARK_CORS_ALLOW_ORIGIN. API Gateway
+          # AllowHeaders/AllowOrigin for staging are inlined in template.yaml (IsStagingStage) because
+          # sam deploy --parameter-overrides splits on commas inside values.
           sam deploy --config-file samconfig.staging.toml \
             --region "${{ vars.AWS_REGION }}" \
             --no-fail-on-empty-changeset \
@@ -90,8 +89,7 @@ jobs:
               "PaymentAssetAddress=${PAYMENT_ASSET_ADDRESS}" \
               "PriceStorageFloor=${PRICE_STORAGE_FLOOR}" \
               "PriceStorageMarkup=${PRICE_STORAGE_MARKUP}" \
-              "RestApiCorsAllowOrigin=https://app.mnemospark.ai" \
-              "RestApiCorsAllowHeaders=${REST_API_CORS_HEADERS}"
+              "RestApiCorsAllowOrigin=https://app.mnemospark.ai"
 
       - name: Smoke tests
         if: ${{ vars.STAGING_BASE_URL != '' && !contains(vars.STAGING_BASE_URL, 'example.com') }}
