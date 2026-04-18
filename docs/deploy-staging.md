@@ -54,6 +54,8 @@ Optional (defaults shown if unset in the workflow):
 
 The static app shell calls whichever API base URL it is configured with (for example the staging execute URL during backend QA). **`https://api.mnemospark.ai`** is the production API Gateway custom domain; it only lists files once that environment exposes `/storage/ls-web/*` and matching CORS.
 
+**SAM CLI note:** `sam deploy --parameter-overrides` treats **commas** as separators between `Key=Value` pairs. The workflow therefore backslash-escapes every comma inside **`RestApiCorsAllowHeaders`** before passing it to `sam deploy`. Without that, `RestApiCorsAllowHeaders` and related CORS updates are parsed incorrectly and never reach CloudFormation.
+
 ## Dashboard GraphQL API key (Secrets Manager only)
 
 The dashboard GraphQL HTTP API (`POST /graphql`) authorizer reads the expected `x-api-key` from **`mnemospark/<stage>/dashboard-graphql-api-key`** (see table above). No GitHub variable or secret is used for that identifier or value.
