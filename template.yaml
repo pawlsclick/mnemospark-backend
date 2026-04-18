@@ -1841,6 +1841,25 @@ Resources:
               Required: true
               ValidateBody: true
               ValidateParameters: true
+        # OPTIONS via Lambda: SAM API Cors mock omits Access-Control-Allow-Credentials on preflight.
+        StorageLsWebExchangeOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/ls-web/exchange
+            Method: OPTIONS
+        StorageLsWebListOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/ls-web/list
+            Method: OPTIONS
+        StorageLsWebDownloadOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /storage/ls-web/download
+            Method: OPTIONS
       Policies:
         - Version: "2012-10-17"
           Statement:
