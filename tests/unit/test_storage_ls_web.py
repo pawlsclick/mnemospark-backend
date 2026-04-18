@@ -114,7 +114,7 @@ class StorageLsWebMintTests(unittest.TestCase):
 class StorageLsWebExchangeTests(unittest.TestCase):
     @mock.patch.dict(
         os.environ,
-        {"LS_WEB_COOKIE_DOMAIN": "", "LS_WEB_COOKIE_SAMESITE": "None"},
+        {"LS_WEB_COOKIE_DOMAIN": "host-only", "LS_WEB_COOKIE_SAMESITE": "None"},
         clear=False,
     )
     @mock.patch.object(app, "_session_table")
