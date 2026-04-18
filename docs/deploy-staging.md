@@ -48,6 +48,12 @@ Optional (defaults shown if unset in the workflow):
 
 `PaymentNetwork` and other template parameters keep their `template.yaml` defaults unless you add overrides locally.
 
+## REST API CORS (ls-web on `app.mnemospark.ai`)
+
+**Deploy Staging** passes **`RestApiCorsAllowOrigin=https://app.mnemospark.ai`** and a full **`RestApiCorsAllowHeaders`** string that includes **`Cookie`**. Together with **`AllowCredentials: true`** on the REST API when `StageName=staging` (see `template.yaml`), API Gateway preflight succeeds for browser **`fetch(..., { credentials: 'include' })`** to `/storage/ls-web/*`.
+
+The static app shell calls whichever API base URL it is configured with (for example the staging execute URL during backend QA). **`https://api.mnemospark.ai`** is the production API Gateway custom domain; it only lists files once that environment exposes `/storage/ls-web/*` and matching CORS.
+
 ## Dashboard GraphQL API key (Secrets Manager only)
 
 The dashboard GraphQL HTTP API (`POST /graphql`) authorizer reads the expected `x-api-key` from **`mnemospark/<stage>/dashboard-graphql-api-key`** (see table above). No GitHub variable or secret is used for that identifier or value.

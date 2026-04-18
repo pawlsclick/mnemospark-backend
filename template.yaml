@@ -140,6 +140,11 @@ Parameters:
     Default: "*"
     Description: Access-Control-Allow-Origin for dashboard GraphQL Lambda (DASHBOARD_GRAPHQL_CORS_ALLOW_ORIGIN).
 
+Conditions:
+  # Staging: enable API Gateway CORS credentials for ls-web (fetch(..., { credentials: 'include' })).
+  # Requires non-wildcard RestApiCorsAllowOrigin (see deploy-staging workflow overrides).
+  IsStagingStage: !Equals [!Ref StageName, staging]
+
 Globals:
   Function:
     Runtime: python3.13
@@ -912,6 +917,7 @@ Resources:
         AllowMethods: "'GET,POST,DELETE,OPTIONS'"
         AllowHeaders: !Sub "'${RestApiCorsAllowHeaders}'"
         AllowOrigin: !Sub "'${RestApiCorsAllowOrigin}'"
+        AllowCredentials: !If [IsStagingStage, true, false]
       GatewayResponses:
         MISSING_AUTHENTICATION_TOKEN:
           StatusCode: "403"
