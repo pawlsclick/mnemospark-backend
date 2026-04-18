@@ -11,7 +11,7 @@ Browser-oriented flow for **`https://app.mnemospark.ai`**: the CLI (or any walle
 | Session TTL | **6 hours** (21 600 seconds) from successful **mint** |
 | Exchange code | High-entropy opaque string; server stores **SHA-256** only; **single-use** |
 | Session cookie name | **`mnemospark_ls_web`** |
-| Cookie attributes | `HttpOnly`, `Secure`, `Path=/`. **`Domain`** / **`SameSite`** come from Lambda env (see `template.yaml`): **production** uses `Domain=.mnemospark.ai` and `SameSite=Lax` (same-site between `app` and `api` under `mnemospark.ai`). **Staging** uses the execute-api hostname: **omit `Domain`** (host-only cookie) and **`SameSite=None`** so `https://app.mnemospark.ai` → `*.execute-api.amazonaws.com` `fetch` POSTs still send the cookie. |
+| Cookie attributes | `HttpOnly`, `Secure`, `Path=/`. **`Domain`** / **`SameSite`** come from Lambda env (see `template.yaml`). **Production:** `Domain=.mnemospark.ai`, `SameSite=Lax`. **Staging (execute-api URL):** `LS_WEB_COOKIE_DOMAIN=host-only` (omit `Domain=`) and `SameSite=None`—many browsers still block or partition these cross-site cookies, so QA against the raw execute-api URL is unreliable. **Recommended:** map a hostname under **`mnemospark.ai`** (for example **`staging.api.mnemospark.ai`**) to the staging API and use the same **`Domain=.mnemospark.ai`** + **`Lax`** pattern as production. |
 | DynamoDB | Table `LS_WEB_SESSION_TABLE_NAME`; PK `session_id`; GSI **`GsiExchangeCode`** on `exchange_code_hash`; TTL attribute **`expires_at`** |
 
 ## CORS and credentials

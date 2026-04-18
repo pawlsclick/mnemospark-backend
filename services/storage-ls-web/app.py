@@ -96,9 +96,18 @@ DEFAULT_PRESIGNED_TTL_SECONDS = int(os.environ.get("STORAGE_DOWNLOAD_URL_TTL_SEC
 
 
 def _ls_web_cookie_domain() -> str | None:
-    """Return Domain= value, or None to omit (host-only cookie for execute-api staging URL)."""
-    raw = os.environ.get("LS_WEB_COOKIE_DOMAIN", ".mnemospark.ai").strip()
-    return raw or None
+    """Return Domain= value, or None to omit (host-only cookie).
+
+    Staging uses literal **host-only** in CloudFormation because empty Lambda env
+    values are often dropped, which would otherwise fall back to .mnemospark.ai and
+    break Set-Cookie from execute-api hosts.
+    """
+    if "LS_WEB_COOKIE_DOMAIN" not in os.environ:
+        return ".mnemospark.ai"
+    raw = os.environ["LS_WEB_COOKIE_DOMAIN"].strip()
+    if not raw or raw.lower() == "host-only":
+        return None
+    return raw
 
 
 def _ls_web_cookie_same_site() -> str:
