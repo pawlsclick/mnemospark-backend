@@ -1789,6 +1789,8 @@ Resources:
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
           MNEMOSPARK_LS_WEB_CORS_ORIGIN: "https://app.mnemospark.ai"
           MNEMOSPARK_LS_WEB_APP_URL: "https://app.mnemospark.ai"
+          # Staging mint must open the shell with ?api=staging so exchange/list hit api-staging (not prod).
+          MNEMOSPARK_LS_WEB_APP_PREFIX_QUERY: !If [IsStagingStage, "api=staging", ""]
           # Staging API is on api-staging.mnemospark.ai (same-site with app); use production-like cookie flags.
           LS_WEB_COOKIE_DOMAIN: ".mnemospark.ai"
           LS_WEB_COOKIE_SAMESITE: "Lax"
