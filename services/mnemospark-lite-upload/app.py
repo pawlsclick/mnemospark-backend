@@ -30,6 +30,8 @@ from urllib.parse import unquote
 
 import boto3
 from botocore.exceptions import ClientError
+from urllib import request as urllib_request
+from urllib.error import HTTPError, URLError
 
 try:
     from common.http_response_headers import rest_api_json_headers
@@ -64,6 +66,7 @@ DEFAULT_REGION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REG
 
 MAX_UPLOAD_SIZE_BYTES = 4_800_000_000
 DEFAULT_PRESIGN_TTL_SECONDS = 900
+X402_PRICE_MICRO_USDC = 20_000  # $0.02 in USDC (6 decimals)
 
 s3 = boto3.client("s3", region_name=DEFAULT_REGION)
 dynamodb = boto3.resource("dynamodb", region_name=DEFAULT_REGION)
@@ -281,9 +284,6 @@ def _mint_ls_web_app_url(*, payer_wallet: str, location: str) -> dict[str, str]:
     )
     app_base = (os.environ.get("MNEMOSPARK_LS_WEB_APP_URL") or "https://app.mnemospark.ai").strip().rstrip("/")
     prefix_query = (os.environ.get("MNEMOSPARK_LS_WEB_APP_PREFIX_QUERY") or "").strip()
-    enc = _b64url_encode(code.encode("utf-8"))
-    # We must not alter the exchange code; use raw url encoding semantics compatible with storage-ls-web.
-    # storage-ls-web uses urllib.parse.quote(code, safe="") which is equivalent for token_urlsafe values.
     from urllib.parse import quote
 
     enc_q = quote(code, safe="")
@@ -291,7 +291,115 @@ def _mint_ls_web_app_url(*, payer_wallet: str, location: str) -> dict[str, str]:
         app = f"{app_base}/?{prefix_query}&code={enc_q}"
     else:
         app = f"{app_base}/?code={enc_q}"
-    return {"code": code, "app": app, "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z"}
+    return {
+        "code": code,
+        "app": app,
+        "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+    }
+
+
+def _payment_config() -> dict[str, str]:
+    recipient_wallet_raw = os.environ.get("MNEMOSPARK_RECIPIENT_WALLET", "").strip()
+    payment_network_raw = os.environ.get("MNEMOSPARK_PAYMENT_NETWORK", "").strip()
+    payment_asset_raw = os.environ.get("MNEMOSPARK_PAYMENT_ASSET", "").strip()
+    if not recipient_wallet_raw:
+        raise RuntimeError("MNEMOSPARK_RECIPIENT_WALLET is not configured")
+    if not payment_network_raw:
+        raise RuntimeError("MNEMOSPARK_PAYMENT_NETWORK is not configured")
+    if not payment_asset_raw:
+        raise RuntimeError("MNEMOSPARK_PAYMENT_ASSET is not configured")
+    # network is CAIP-2 in template, asset/payTo are 0x addresses.
+    recipient_wallet = normalize_wallet_address(recipient_wallet_raw, "recipient_wallet")
+    payment_asset = normalize_wallet_address(payment_asset_raw, "payment_asset")
+    return {"recipient_wallet": recipient_wallet, "payment_network": payment_network_raw, "payment_asset": payment_asset}
+
+
+def _payment_requirements() -> dict[str, Any]:
+    cfg = _payment_config()
+    return {
+        "accepts": [
+            {
+                "scheme": "exact",
+                "network": cfg["payment_network"],
+                "asset": cfg["payment_asset"],
+                "payTo": cfg["recipient_wallet"],
+                "amount": str(X402_PRICE_MICRO_USDC),
+            }
+        ]
+    }
+
+
+def _encode_json_base64(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.b64encode(encoded).decode("ascii")
+
+
+def _x402_payment_required_headers(requirements: dict[str, Any]) -> dict[str, str]:
+    encoded = _encode_json_base64(requirements)
+    return {"PAYMENT-REQUIRED": encoded, "x-payment-required": encoded}
+
+
+def _normalize_headers(event: dict[str, Any]) -> dict[str, str]:
+    raw = event.get("headers") or {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        if not isinstance(k, str) or v is None:
+            continue
+        out[k.strip().lower()] = str(v).strip()
+    return out
+
+
+def _decode_payment_payload(payment_header: str) -> dict[str, Any]:
+    candidates: list[str] = [payment_header]
+    try:
+        decoded = base64.b64decode(payment_header, validate=True).decode("utf-8")
+        candidates.insert(0, decoded)
+    except Exception:
+        pass
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    raise BadRequestError("payment header must be base64-encoded JSON")
+
+
+def _cdp_facilitator_auth_header() -> str:
+    token = (os.environ.get("CDP_X402_FACILITATOR_BEARER_TOKEN") or "").strip()
+    if not token:
+        raise RuntimeError("CDP_X402_FACILITATOR_BEARER_TOKEN is not configured")
+    return f"Bearer {token}"
+
+
+def _cdp_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    base = "https://api.cdp.coinbase.com/platform"
+    url = f"{base}{path}"
+    data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    req = urllib_request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={
+            "Authorization": _cdp_facilitator_auth_header(),
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8")
+            parsed = json.loads(raw) if raw else {}
+            if not isinstance(parsed, dict):
+                raise RuntimeError("CDP response must be a JSON object")
+            return parsed
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise BadRequestError(f"CDP facilitator error ({exc.code}): {body}") from exc
+    except URLError as exc:
+        raise RuntimeError("Unable to reach CDP facilitator") from exc
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -329,24 +437,35 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     body = decode_json_event_body(event)
     req = _parse_upload_request(body)
 
-    # TODO (integrate-cdp-x402): require & verify x402 payment (CDP facilitator). For now, require payment header presence.
-    headers = event.get("headers") or {}
-    if not isinstance(headers, dict):
-        headers = {}
-    payment_header = headers.get("x-payment") or headers.get("X-PAYMENT") or headers.get("PAYMENT-SIGNATURE")
-    if not isinstance(payment_header, str) or not payment_header.strip():
-        # Minimal Payment Required response; exact x402 challenge will be implemented with CDP facilitator integration.
+    headers = _normalize_headers(event)
+    payment_header = headers.get("payment-signature") or headers.get("x-payment")
+    requirements = _payment_requirements()
+    if not payment_header:
         return _response(
             402,
-            {
-                "error": "payment_required",
-                "message": "Payment is required.",
-                "details": {"max_size_bytes": MAX_UPLOAD_SIZE_BYTES},
-            },
+            {"error": "payment_required", "message": "Payment is required."},
+            headers=_x402_payment_required_headers(requirements),
         )
+    payment_payload = _decode_payment_payload(payment_header)
+
+    # Verify + settle via CDP facilitator.
+    verify_resp = _cdp_post(
+        "/v2/x402/verify",
+        {"x402Version": int(payment_payload.get("x402Version") or 2), "paymentPayload": payment_payload, "paymentRequirements": requirements},
+    )
+    if not bool(verify_resp.get("isValid")):
+        return _response(402, {"error": "payment_invalid", "message": str(verify_resp.get("invalidMessage") or "Payment is invalid.")})
+    payer_wallet = normalize_wallet_address(str(verify_resp.get("payer") or ""), "payer_wallet")
+
+    settle_resp = _cdp_post(
+        "/v2/x402/settle",
+        {"x402Version": int(payment_payload.get("x402Version") or 2), "paymentPayload": payment_payload, "paymentRequirements": requirements},
+    )
+    if not bool(settle_resp.get("success")):
+        return _response(402, {"error": "payment_settle_failed", "message": str(settle_resp.get("errorMessage") or "Payment settlement failed.")})
+    transaction_hash = str(settle_resp.get("transaction") or "").strip() or None
 
     now = datetime.now(timezone.utc)
-    payer_wallet = normalize_wallet_address(str(body.get("payer_wallet") or body.get("wallet_address") or ""), "payer_wallet")
     upload_id = secrets.token_urlsafe(16)
     completion_token = secrets.token_urlsafe(32)
     completion_token_hash = _hash_token(completion_token)
@@ -390,6 +509,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         "expires_at": _expires_at_iso(now),
         "ttl_epoch_seconds": _ttl_epoch_seconds(now),
         "completion_token_hash": completion_token_hash,
+        "transaction_hash": transaction_hash,
     }
     _uploads_table().put_item(Item=item, ConditionExpression="attribute_not_exists(upload_id)")
 
@@ -408,7 +528,12 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
                 "completion_token": completion_token,
                 "list_scope_bearer": bearer,
             },
-            "metadata": None,
+            "metadata": {
+                "protocol": "x402",
+                "network": _payment_config()["payment_network"],
+                "price": "$0.02",
+                "payment": {"success": True, "transactionHash": transaction_hash},
+            },
         },
     )
 

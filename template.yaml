@@ -144,6 +144,14 @@ Parameters:
       HMAC secret used to sign bearer tokens for mnemospark-lite read endpoints
       (GET /api/mnemospark-lite/uploads, GET /api/mnemospark-lite/download/{uploadId}).
 
+  CdpX402FacilitatorBearerToken:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: >-
+      CDP API bearer token (JWT) used to authenticate requests to the x402 facilitator
+      endpoints at https://api.cdp.coinbase.com/platform/v2/x402.
+
     Type: String
     Default: "*"
     Description: Access-Control-Allow-Origin for dashboard GraphQL Lambda (DASHBOARD_GRAPHQL_CORS_ALLOW_ORIGIN).
@@ -1988,6 +1996,10 @@ Resources:
           LS_WEB_SESSION_TABLE_NAME: !Ref LsWebSessionTable
           MNEMOSPARK_LS_WEB_APP_URL: "https://app.mnemospark.ai"
           MNEMOSPARK_LS_WEB_APP_PREFIX_QUERY: !If [IsStagingStage, "api=staging", ""]
+          MNEMOSPARK_RECIPIENT_WALLET: !Ref MnemosparkRecipientWallet
+          MNEMOSPARK_PAYMENT_NETWORK: !Ref PaymentNetwork
+          MNEMOSPARK_PAYMENT_ASSET: !Ref PaymentAssetAddress
+          CDP_X402_FACILITATOR_BEARER_TOKEN: !Ref CdpX402FacilitatorBearerToken
       Events:
         MnemosparkLiteUploadPost:
           Type: Api
