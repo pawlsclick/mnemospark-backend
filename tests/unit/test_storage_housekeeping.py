@@ -95,11 +95,26 @@ class FakeDynamoResource:
 class FakeS3Client:
     def __init__(self):
         self.buckets: dict[str, set[str]] = {}
+        self.bucket_creation_dates: dict[str, datetime] = {}
         self.deleted_objects: list[tuple[str, str]] = []
         self.deleted_buckets: list[str] = []
 
+    def seed_bucket(self, bucket: str, created_at: datetime | None = None):
+        self.buckets.setdefault(bucket, set())
+        if created_at is None:
+            created_at = datetime.now(timezone.utc)
+        self.bucket_creation_dates[bucket] = created_at
+
     def seed_object(self, bucket: str, key: str):
+        self.seed_bucket(bucket)
         self.buckets.setdefault(bucket, set()).add(key)
+
+    def list_buckets(self):
+        buckets = []
+        for name in sorted(self.buckets):
+            created_at = self.bucket_creation_dates.get(name, datetime.now(timezone.utc))
+            buckets.append({"Name": name, "CreationDate": created_at})
+        return {"Buckets": buckets}
 
     def head_bucket(self, Bucket):
         if Bucket not in self.buckets:
@@ -135,6 +150,7 @@ class FakeS3Client:
             raise ClientError({"Error": {"Code": "BucketNotEmpty", "Message": "bucket not empty"}}, "DeleteBucket")
         self.deleted_buckets.append(Bucket)
         self.buckets.pop(Bucket, None)
+        self.bucket_creation_dates.pop(Bucket, None)
         return {}
 
 
@@ -397,6 +413,28 @@ class StorageHousekeepingLambdaTests(unittest.TestCase):
         self.assertTrue(body["success"])
         self.assertEqual(body["housekeeping_mode"], "legacy_interval")
         self.assertEqual(body["lite_buckets_deleted"], 0)
+
+    def test_lite_bucket_cleanup_skips_recent_empty_bucket(self):
+        now = datetime(2026, 2, 25, 12, 0, tzinfo=timezone.utc)
+        bucket_name = "mnemospark-lite-recent"
+        self.s3_client.seed_bucket(bucket_name, created_at=now - timedelta(minutes=10))
+
+        deleted = app._cleanup_empty_mnemospark_lite_buckets(self.s3_client, now=now)
+
+        self.assertEqual(deleted, 0)
+        self.assertIn(bucket_name, self.s3_client.buckets)
+        self.assertNotIn(bucket_name, self.s3_client.deleted_buckets)
+
+    def test_lite_bucket_cleanup_deletes_old_empty_bucket(self):
+        now = datetime(2026, 2, 25, 12, 0, tzinfo=timezone.utc)
+        bucket_name = "mnemospark-lite-stale"
+        self.s3_client.seed_bucket(bucket_name, created_at=now - timedelta(days=2))
+
+        deleted = app._cleanup_empty_mnemospark_lite_buckets(self.s3_client, now=now)
+
+        self.assertEqual(deleted, 1)
+        self.assertNotIn(bucket_name, self.s3_client.buckets)
+        self.assertIn(bucket_name, self.s3_client.deleted_buckets)
 
 
 class RenewalCalendarHousekeepingTests(unittest.TestCase):

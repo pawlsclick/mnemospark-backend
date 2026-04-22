@@ -44,6 +44,8 @@ DEFAULT_BILLING_INTERVAL_DAYS = 30
 DEFAULT_GRACE_PERIOD_DAYS = 2
 DEFAULT_SCAN_LIMIT = 100
 LITE_BUCKET_PREFIX = "mnemospark-lite-"
+# Keep empty lite buckets for at least the upload presign window.
+LITE_BUCKET_DELETE_GRACE_PERIOD_SECONDS = 15 * 60
 
 TRANSACTION_LOG_TABLE_ENV = "UPLOAD_TRANSACTION_LOG_TABLE_NAME"
 ACTIVE_STORAGE_OBJECT_TABLE_ENV = "ACTIVE_STORAGE_OBJECT_TABLE_NAME"
@@ -371,12 +373,26 @@ def _delete_bucket_if_empty(s3_client: Any, bucket_name: str) -> bool:
     return True
 
 
-def _cleanup_empty_mnemospark_lite_buckets(s3_client: Any) -> int:
+def _cleanup_empty_mnemospark_lite_buckets(s3_client: Any, now: datetime | None = None) -> int:
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
+
     deleted = 0
     response = s3_client.list_buckets()
     for b in response.get("Buckets") or []:
         name = b.get("Name")
         if not isinstance(name, str) or not name.startswith(LITE_BUCKET_PREFIX):
+            continue
+        created_at_raw = b.get("CreationDate")
+        if not isinstance(created_at_raw, datetime):
+            continue
+        created_at = created_at_raw if created_at_raw.tzinfo else created_at_raw.replace(tzinfo=timezone.utc)
+        age_seconds = (now - created_at.astimezone(timezone.utc)).total_seconds()
+        if age_seconds < LITE_BUCKET_DELETE_GRACE_PERIOD_SECONDS:
             continue
         try:
             if _delete_bucket_if_empty(s3_client=s3_client, bucket_name=name):
