@@ -424,7 +424,9 @@ def _cdp_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
             return parsed
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise BadRequestError(f"CDP facilitator error ({exc.code}): {body}") from exc
+        if 400 <= exc.code < 500:
+            raise BadRequestError(f"CDP facilitator error ({exc.code}): {body}") from exc
+        raise RuntimeError(f"CDP facilitator error ({exc.code}): {body}") from exc
     except URLError as exc:
         raise RuntimeError("Unable to reach CDP facilitator") from exc
 
@@ -507,7 +509,14 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     except ClientError as exc:
         code = s3_error_code(exc)
         if code in {"404", "NoSuchBucket", "NotFound"}:
-            s3.create_bucket(Bucket=bucket)
+            normalized_region = (DEFAULT_REGION or "").strip()
+            if not normalized_region or normalized_region == US_EAST_1_REGION:
+                s3.create_bucket(Bucket=bucket)
+            else:
+                s3.create_bucket(
+                    Bucket=bucket,
+                    CreateBucketConfiguration={"LocationConstraint": normalized_region},
+                )
         else:
             raise
     _ensure_bucket_lifecycle_expiration(bucket=bucket)
