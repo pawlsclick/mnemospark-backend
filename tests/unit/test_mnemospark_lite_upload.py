@@ -174,6 +174,45 @@ class CompleteUploadOrderingTests(unittest.TestCase):
         self.assertEqual(response["statusCode"], 200)
         self.assertEqual(calls, ["update", "mint", "update"])
 
+    def test_complete_retries_when_marked_uploaded_but_token_still_present(self):
+        token = "completion-token"
+        upload_id = "up_retryable"
+        item = {
+            "upload_id": upload_id,
+            "completion_token_hash": app._hash_token(token),
+            "status": "uploaded",
+            "bucket": "mnemospark-lite-test",
+            "filename": "artifact.bin",
+            "payer_wallet": "0x" + ("1" * 40),
+            "max_size": 1000,
+        }
+        event = {"body": json.dumps({"uploadId": upload_id, "completion_token": token})}
+
+        calls = []
+
+        def update_side_effect(*args, **kwargs):
+            calls.append("update")
+            return {}
+
+        def mint_side_effect(*args, **kwargs):
+            calls.append("mint")
+            return {"app": "https://app.mnemospark.ai/?code=abc", "code": "abc", "expires_at": "2030-01-01T00:00:00Z"}
+
+        table = mock.Mock()
+        table.get_item.return_value = {"Item": item}
+        table.update_item.side_effect = update_side_effect
+
+        with (
+            mock.patch.object(app, "_uploads_table", return_value=table),
+            mock.patch.object(app.s3, "head_object", return_value={"ContentLength": 100}),
+            mock.patch.object(app, "_mint_ls_web_app_url", side_effect=mint_side_effect),
+        ):
+            response = app._handle_post_complete(event)
+
+        self.assertEqual(response["statusCode"], 200)
+        self.assertEqual(calls, ["mint", "update"])
+        table.update_item.assert_called_once()
+
 
 class BucketLifecycleTests(unittest.TestCase):
     def setUp(self):
