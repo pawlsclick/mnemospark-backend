@@ -97,6 +97,8 @@ LITE_BUCKET_PREFIX = "mnemospark-lite-"
 
 
 def _bucket_name_from_wallet_lite(wallet_address: str) -> str:
+    # Intentionally service-local: ls-web bucket routing is independent from
+    # lite-upload service routing and can evolve separately if needed.
     h = hashlib.sha256(wallet_address.encode("utf-8")).hexdigest()[:16]
     return f"{LITE_BUCKET_PREFIX}{h}"
 

@@ -227,7 +227,9 @@ def _parse_upload_request(body: dict[str, Any]) -> UploadRequest:
 
 
 def _bucket_name_from_wallet_lite(wallet_address: str) -> str:
-    # keep hashing behavior identical to common.storage_wallet_s3.wallet_hash_hex
+    # Intentionally service-local: lite-upload bucket routing is a separate concern
+    # from other services and may diverge without changing shared helpers.
+    # Keep hashing behavior aligned with common.storage_wallet_s3.wallet_hash_hex.
     import hashlib
 
     h = hashlib.sha256(wallet_address.encode("utf-8")).hexdigest()[:16]
