@@ -143,9 +143,12 @@ def _lite_records_by_filename(wallet: str) -> dict[str, dict[str, Any]]:
         filename = it.get("filename")
         if not isinstance(filename, str) or not filename.strip():
             continue
-        out[filename.strip()] = {
+        filename_key = filename.strip()
+        if filename_key in out:
+            continue
+        out[filename_key] = {
             "id": str(it.get("upload_id") or ""),
-            "filename": filename.strip(),
+            "filename": filename_key,
             "contentType": str(it.get("content_type") or ""),
             "tier": str(it.get("tier") or ""),
             "maxSize": _as_int(it.get("max_size")),

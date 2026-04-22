@@ -463,6 +463,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     body = decode_json_event_body(event)
     req = _parse_upload_request(body)
+    max_size = _tier_max_size_bytes(req.tier)
+    if req.size_bytes > max_size:
+        raise BadRequestError(f"size_bytes exceeds tier max size ({max_size} bytes)")
 
     headers = _normalize_headers(event)
     payment_header = headers.get("payment-signature") or headers.get("x-payment")
@@ -496,9 +499,6 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     upload_id = secrets.token_urlsafe(16)
     completion_token = secrets.token_urlsafe(32)
     completion_token_hash = _hash_token(completion_token)
-    max_size = _tier_max_size_bytes(req.tier)
-    if req.size_bytes > max_size:
-        raise BadRequestError(f"size_bytes exceeds tier max size ({max_size} bytes)")
     bucket = _bucket_name_from_wallet_lite(payer_wallet)
 
     # Create bucket if missing (same behavior as existing workflow).
@@ -538,6 +538,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         "ttl_epoch_seconds": _ttl_epoch_seconds(now),
         "completion_token_hash": completion_token_hash,
         "transaction_hash": transaction_hash,
+        "price_paid": "$0.02",
     }
     _uploads_table().put_item(Item=item, ConditionExpression="attribute_not_exists(upload_id)")
 
