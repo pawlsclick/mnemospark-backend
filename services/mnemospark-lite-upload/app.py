@@ -199,7 +199,11 @@ def _parse_upload_request(body: dict[str, Any]) -> UploadRequest:
     filename_raw = body.get("filename")
     content_type_raw = body.get("contentType") or body.get("content_type")
     tier_raw = body.get("tier")
-    size_bytes_raw = body.get("size_bytes") or body.get("sizeBytes") or body.get("size")
+    size_bytes_raw = body.get("size_bytes")
+    if size_bytes_raw is None:
+        size_bytes_raw = body.get("sizeBytes")
+    if size_bytes_raw is None:
+        size_bytes_raw = body.get("size")
 
     if not isinstance(filename_raw, str) or not filename_raw.strip():
         raise BadRequestError("filename is required")
@@ -513,7 +517,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         Params={"Bucket": bucket, "Key": req.filename, "ContentType": req.content_type},
         ExpiresIn=DEFAULT_PRESIGN_TTL_SECONDS,
     )
-    curl_example = f"curl --data-binary @\"{req.filename}\" -H \"Content-Type: {req.content_type}\" \"{upload_url}\""
+    curl_example = f"curl -X PUT --data-binary @\"{req.filename}\" -H \"Content-Type: {req.content_type}\" \"{upload_url}\""
 
     bearer = _sign_bearer({"w": payer_wallet, "exp": int(time.time()) + 86400})
 
@@ -578,6 +582,8 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
 
     if _hash_token(token) != str(item.get("completion_token_hash") or ""):
         return _error(401, "unauthorized", "Invalid or expired completion token.")
+    if str(item.get("status") or "") != "pending":
+        return _error(409, "conflict", "Upload has already been completed.")
 
     bucket = str(item.get("bucket") or "").strip()
     key = str(item.get("filename") or "").strip()
@@ -601,7 +607,7 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
 
     _uploads_table().update_item(
         Key={"upload_id": upload_id},
-        UpdateExpression="SET #s=:s, actual_size=:a, public_url=:p, site_url=:u",
+        UpdateExpression="SET #s=:s, actual_size=:a, public_url=:p, site_url=:u REMOVE completion_token_hash",
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={
             ":s": "uploaded",
