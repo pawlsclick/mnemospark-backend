@@ -103,3 +103,116 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
         body = json.loads(response["body"])
         self.assertEqual(body["error"], "bad_request")
         self.assertIn("Uploaded object not found", body["message"])
+
+
+class CompleteUploadOrderingTests(unittest.TestCase):
+    def test_complete_does_not_mint_session_when_conditional_update_fails(self):
+        token = "completion-token"
+        upload_id = "up_conflict"
+        item = {
+            "upload_id": upload_id,
+            "completion_token_hash": app._hash_token(token),
+            "status": "pending",
+            "bucket": "mnemospark-lite-test",
+            "filename": "artifact.bin",
+            "payer_wallet": "0x" + ("1" * 40),
+            "max_size": 1000,
+        }
+        event = {"body": json.dumps({"uploadId": upload_id, "completion_token": token})}
+        conditional_error = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+
+        table = mock.Mock()
+        table.get_item.return_value = {"Item": item}
+        table.update_item.side_effect = conditional_error
+
+        with (
+            mock.patch.object(app, "_uploads_table", return_value=table),
+            mock.patch.object(app.s3, "head_object", return_value={"ContentLength": 100}),
+            mock.patch.object(app, "_mint_ls_web_app_url") as mint_mock,
+        ):
+            response = app._handle_post_complete(event)
+
+        self.assertEqual(response["statusCode"], 409)
+        mint_mock.assert_not_called()
+        table.update_item.assert_called_once()
+
+    def test_complete_mints_session_after_status_update_gate(self):
+        token = "completion-token"
+        upload_id = "up_success"
+        item = {
+            "upload_id": upload_id,
+            "completion_token_hash": app._hash_token(token),
+            "status": "pending",
+            "bucket": "mnemospark-lite-test",
+            "filename": "artifact.bin",
+            "payer_wallet": "0x" + ("1" * 40),
+            "max_size": 1000,
+        }
+        event = {"body": json.dumps({"uploadId": upload_id, "completion_token": token})}
+
+        calls = []
+
+        def update_side_effect(*args, **kwargs):
+            calls.append("update")
+            return {}
+
+        def mint_side_effect(*args, **kwargs):
+            calls.append("mint")
+            return {"app": "https://app.mnemospark.ai/?code=abc", "code": "abc", "expires_at": "2030-01-01T00:00:00Z"}
+
+        table = mock.Mock()
+        table.get_item.return_value = {"Item": item}
+        table.update_item.side_effect = update_side_effect
+
+        with (
+            mock.patch.object(app, "_uploads_table", return_value=table),
+            mock.patch.object(app.s3, "head_object", return_value={"ContentLength": 100}),
+            mock.patch.object(app, "_mint_ls_web_app_url", side_effect=mint_side_effect),
+        ):
+            response = app._handle_post_complete(event)
+
+        self.assertEqual(response["statusCode"], 200)
+        self.assertEqual(calls, ["update", "mint", "update"])
+
+
+class BucketLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        app._LIFECYCLE_ENSURED_BUCKETS.clear()
+
+    def test_ensure_bucket_lifecycle_skips_put_when_rule_exists(self):
+        rule_id = f"mnemospark-lite-expire-{app.LIFECYCLE_EXPIRE_DAYS}d"
+
+        with (
+            mock.patch.object(
+                app.s3,
+                "get_bucket_lifecycle_configuration",
+                return_value={"Rules": [{"ID": rule_id, "Status": "Enabled"}]},
+            ),
+            mock.patch.object(app.s3, "put_bucket_lifecycle_configuration") as put_mock,
+        ):
+            app._ensure_bucket_lifecycle_expiration(bucket="mnemospark-lite-test")
+
+        put_mock.assert_not_called()
+
+    def test_ensure_bucket_lifecycle_preserves_existing_rules_when_adding(self):
+        existing_rule = {
+            "ID": "external-rule",
+            "Status": "Enabled",
+            "Filter": {"Prefix": "archive/"},
+            "Expiration": {"Days": 365},
+        }
+
+        with (
+            mock.patch.object(
+                app.s3,
+                "get_bucket_lifecycle_configuration",
+                return_value={"Rules": [existing_rule]},
+            ),
+            mock.patch.object(app.s3, "put_bucket_lifecycle_configuration") as put_mock,
+        ):
+            app._ensure_bucket_lifecycle_expiration(bucket="mnemospark-lite-test")
+
+        put_mock.assert_called_once()
+        rules = put_mock.call_args.kwargs["LifecycleConfiguration"]["Rules"]
+        self.assertIn(existing_rule, rules)
+        self.assertTrue(any(rule.get("ID", "").startswith("mnemospark-lite-expire-") for rule in rules))
