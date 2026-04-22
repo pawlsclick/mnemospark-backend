@@ -1894,6 +1894,7 @@ Resources:
       Environment:
         Variables:
           LS_WEB_SESSION_TABLE_NAME: !Ref LsWebSessionTable
+          MNEMOSPARK_LITE_UPLOADS_TABLE_NAME: !Ref MnemosparkLiteUploadRegistryTable
           API_CALLS_TABLE_NAME: !Ref ApiCallsTable
           API_CALLS_TTL_SECONDS: !Ref ApiCallsTtlSeconds
           MNEMOSPARK_LS_WEB_CORS_ORIGIN: "https://app.mnemospark.ai"
@@ -1981,6 +1982,12 @@ Resources:
               Resource:
                 - !GetAtt LsWebSessionTable.Arn
                 - !Sub "${LsWebSessionTable.Arn}/index/*"
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+              Resource:
+                - !GetAtt MnemosparkLiteUploadRegistryTable.Arn
+                - !Sub "${MnemosparkLiteUploadRegistryTable.Arn}/index/*"
             - Effect: Allow
               Action:
                 - s3:ListBucket

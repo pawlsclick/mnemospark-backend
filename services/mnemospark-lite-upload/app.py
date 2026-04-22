@@ -296,6 +296,8 @@ def _mint_ls_web_app_url(*, payer_wallet: str, location: str) -> dict[str, str]:
             "session_id": session_id,
             "wallet_address": payer_wallet,
             "location": location,
+            # Tell ls-web BFF to list/download from mnemospark-lite-* buckets for this session.
+            "bucket_mode": "lite",
             "exchange_code_hash": code_hash,
             "exchanged": False,
             "session_expires_at": expires_at,

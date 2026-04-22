@@ -93,6 +93,70 @@ DOWNLOAD_MAX_KEYS = 25
 DEFAULT_LIST_MAX_KEYS = 1000
 LIST_MAX_KEYS_CAP = 1000
 DEFAULT_PRESIGNED_TTL_SECONDS = int(os.environ.get("STORAGE_DOWNLOAD_URL_TTL_SECONDS", "300"))
+LITE_BUCKET_PREFIX = "mnemospark-lite-"
+
+
+def _bucket_name_from_wallet_lite(wallet_address: str) -> str:
+    h = hashlib.sha256(wallet_address.encode("utf-8")).hexdigest()[:16]
+    return f"{LITE_BUCKET_PREFIX}{h}"
+
+
+def _lite_uploads_table() -> Any | None:
+    name = (os.environ.get("MNEMOSPARK_LITE_UPLOADS_TABLE_NAME") or "").strip()
+    if not name:
+        return None
+    return boto3.resource("dynamodb").Table(name)
+
+
+def _as_iso_str(v: Any) -> str | None:
+    if not isinstance(v, str):
+        return None
+    s = v.strip()
+    return s or None
+
+
+def _as_int(v: Any) -> int | None:
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, Decimal):
+        return int(v)
+    if isinstance(v, int):
+        return v
+    return None
+
+
+def _lite_records_by_filename(wallet: str) -> dict[str, dict[str, Any]]:
+    table = _lite_uploads_table()
+    if table is None:
+        return {}
+    resp = table.query(
+        IndexName="GsiByPayerWalletCreatedAt",
+        KeyConditionExpression=Key("payer_wallet").eq(wallet),
+        ScanIndexForward=False,
+        Limit=1000,
+    )
+    items = resp.get("Items") or []
+    out: dict[str, dict[str, Any]] = {}
+    for it in items:
+        filename = it.get("filename")
+        if not isinstance(filename, str) or not filename.strip():
+            continue
+        out[filename.strip()] = {
+            "id": str(it.get("upload_id") or ""),
+            "filename": filename.strip(),
+            "contentType": str(it.get("content_type") or ""),
+            "tier": str(it.get("tier") or ""),
+            "maxSize": _as_int(it.get("max_size")),
+            "actualSize": _as_int(it.get("actual_size")),
+            "publicUrl": _as_iso_str(it.get("public_url")) or (str(it.get("public_url") or "").strip() or None),
+            "status": str(it.get("status") or ""),
+            "pricePaid": str(it.get("price_paid") or "").strip() or None,
+            "expiresAt": _as_iso_str(it.get("expires_at")) or "",
+            "createdAt": _as_iso_str(it.get("created_at")) or "",
+        }
+    return out
 
 
 def _ls_web_cookie_domain() -> str | None:
@@ -423,7 +487,11 @@ def handle_list(event: dict[str, Any], context: Any) -> dict[str, Any]:
     ).strip() or DEFAULT_LOCATION
 
     s3_client = boto3.client("s3", region_name=location)
-    bucket_name = bucket_name_from_wallet(wallet)
+    bucket_mode = str(session.get("bucket_mode") or "").strip().lower()
+    if bucket_mode == "lite":
+        bucket_name = _bucket_name_from_wallet_lite(wallet)
+    else:
+        bucket_name = bucket_name_from_wallet(wallet)
     try:
         validate_bucket_naming_rules(bucket_name)
     except ValueError as exc:
@@ -444,6 +512,7 @@ def handle_list(event: dict[str, Any], context: Any) -> dict[str, Any]:
         prefix=prefix,
     )
     contents = list_resp.get("Contents") or []
+    lite_by_filename = _lite_records_by_filename(wallet) if bucket_mode == "lite" else {}
     objects_out: list[dict[str, Any]] = []
     for item in contents:
         key = item.get("Key")
@@ -451,9 +520,13 @@ def handle_list(event: dict[str, Any], context: Any) -> dict[str, Any]:
             continue
         size_bytes = int(item.get("Size") or 0)
         lm = item.get("LastModified")
-        objects_out.append(
-            {"key": key, "size_bytes": size_bytes, "last_modified": s3_last_modified_iso_utc(lm)}
-        )
+        base_obj: dict[str, Any] = {"key": key, "size_bytes": size_bytes, "last_modified": s3_last_modified_iso_utc(lm)}
+        if bucket_mode == "lite":
+            # For mnemospark-lite sessions, attach UploadRecord-ish fields when available.
+            rec = lite_by_filename.get(key)
+            if rec:
+                base_obj.update(rec)
+        objects_out.append(base_obj)
     is_truncated = bool(list_resp.get("IsTruncated"))
     next_token = list_resp.get("NextContinuationToken")
     next_out: str | None = next_token if isinstance(next_token, str) else None
@@ -500,7 +573,11 @@ def handle_download(event: dict[str, Any], context: Any) -> dict[str, Any]:
     ).strip() or DEFAULT_LOCATION
 
     s3_client = boto3.client("s3", region_name=location)
-    bucket_name = bucket_name_from_wallet(wallet)
+    bucket_mode = str(session.get("bucket_mode") or "").strip().lower()
+    if bucket_mode == "lite":
+        bucket_name = _bucket_name_from_wallet_lite(wallet)
+    else:
+        bucket_name = bucket_name_from_wallet(wallet)
     try:
         validate_bucket_naming_rules(bucket_name)
     except ValueError as exc:
