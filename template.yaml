@@ -1292,6 +1292,37 @@ Resources:
             CloudWatchMetricsEnabled: true
             MetricName: !Sub "${AWS::StackName}AwsManagedKnownBadInputs"
             SampledRequestsEnabled: true
+        - Name: RateLimitMnemosparkLiteUploadCompletePost
+          Priority: 3
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: 60
+              AggregateKeyType: IP
+              ScopeDownStatement:
+                AndStatement:
+                  Statements:
+                    - ByteMatchStatement:
+                        SearchString: POST
+                        FieldToMatch:
+                          Method: {}
+                        TextTransformations:
+                          - Priority: 0
+                            Type: NONE
+                        PositionalConstraint: EXACTLY
+                    - ByteMatchStatement:
+                        SearchString: "/api/mnemospark-lite/upload/complete"
+                        FieldToMatch:
+                          UriPath: {}
+                        TextTransformations:
+                          - Priority: 0
+                            Type: NONE
+                        PositionalConstraint: ENDS_WITH
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${AWS::StackName}RateLimitLiteUploadComplete"
+            SampledRequestsEnabled: true
       Tags:
         - Key: Project
           Value: mnemospark
@@ -2047,6 +2078,10 @@ Resources:
           Statement:
             - Effect: Allow
               Action:
+                - s3:ListAllMyBuckets
+              Resource: "*"
+            - Effect: Allow
+              Action:
                 - dynamodb:Scan
                 - dynamodb:DeleteItem
               Resource: !GetAtt UploadTransactionLogTable.Arn
@@ -2068,12 +2103,16 @@ Resources:
               Action:
                 - s3:ListBucket
                 - s3:DeleteBucket
-              Resource: !Sub "arn:aws:s3:::mnemospark-*"
+              Resource:
+                - !Sub "arn:aws:s3:::mnemospark-*"
+                - !Sub "arn:aws:s3:::mnemospark-lite-*"
             - Effect: Allow
               Action:
                 - s3:GetObject
                 - s3:DeleteObject
-              Resource: !Sub "arn:aws:s3:::mnemospark-*/*"
+              Resource:
+                - !Sub "arn:aws:s3:::mnemospark-*/*"
+                - !Sub "arn:aws:s3:::mnemospark-lite-*/*"
             - Effect: Allow
               Action:
                 - kms:Decrypt

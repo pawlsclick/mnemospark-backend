@@ -71,6 +71,8 @@ X402_PRICE_MICRO_USDC = 20_000  # $0.02 in USDC (6 decimals)
 s3 = boto3.client("s3", region_name=DEFAULT_REGION)
 dynamodb = boto3.resource("dynamodb", region_name=DEFAULT_REGION)
 
+LIFECYCLE_EXPIRE_DAYS = 30
+
 
 def _uploads_table() -> Any:
     name = (os.environ.get("MNEMOSPARK_LITE_UPLOADS_TABLE_NAME") or "").strip()
@@ -257,6 +259,25 @@ def _tier_max_size_bytes(tier: str) -> int:
     if t not in mapping:
         raise BadRequestError("tier is invalid")
     return mapping[t]
+
+
+def _ensure_bucket_lifecycle_expiration(*, bucket: str) -> None:
+    # Bucket-level lifecycle: expire objects after 30 days. This enforces retention without a sweeper.
+    rule_id = f"mnemospark-lite-expire-{LIFECYCLE_EXPIRE_DAYS}d"
+    s3.put_bucket_lifecycle_configuration(
+        Bucket=bucket,
+        LifecycleConfiguration={
+            "Rules": [
+                {
+                    "ID": rule_id,
+                    "Status": "Enabled",
+                    "Filter": {"Prefix": ""},
+                    "Expiration": {"Days": LIFECYCLE_EXPIRE_DAYS},
+                    "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7},
+                }
+            ]
+        },
+    )
 
 
 def _hash_token(token: str) -> str:
@@ -483,6 +504,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
             s3.create_bucket(Bucket=bucket)
         else:
             raise
+    _ensure_bucket_lifecycle_expiration(bucket=bucket)
 
     upload_url = s3.generate_presigned_url(
         "put_object",
