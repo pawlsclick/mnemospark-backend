@@ -74,6 +74,10 @@ dynamodb = boto3.resource("dynamodb", region_name=DEFAULT_REGION)
 LIFECYCLE_EXPIRE_DAYS = 30
 
 
+class UnauthorizedError(ValueError):
+    pass
+
+
 def _uploads_table() -> Any:
     name = (os.environ.get("MNEMOSPARK_LITE_UPLOADS_TABLE_NAME") or "").strip()
     if not name:
@@ -154,29 +158,29 @@ def _sign_bearer(payload: dict[str, Any]) -> str:
 
 def _verify_bearer(token: str) -> dict[str, Any]:
     if "." not in token:
-        raise ForbiddenError("Invalid bearer token")
+        raise UnauthorizedError("Invalid bearer token")
     body_b64, sig_b64 = token.split(".", 1)
     expected = hmac.new(_bearer_secret(), body_b64.encode("utf-8"), hashlib.sha256).digest()
     try:
         actual = _b64url_decode(sig_b64)
     except Exception as exc:
-        raise ForbiddenError("Invalid bearer token") from exc
+        raise UnauthorizedError("Invalid bearer token") from exc
     if not hmac.compare_digest(expected, actual):
-        raise ForbiddenError("Invalid bearer token")
+        raise UnauthorizedError("Invalid bearer token")
     try:
         payload = json.loads(_b64url_decode(body_b64).decode("utf-8"))
     except Exception as exc:
-        raise ForbiddenError("Invalid bearer token") from exc
+        raise UnauthorizedError("Invalid bearer token") from exc
     if not isinstance(payload, dict):
-        raise ForbiddenError("Invalid bearer token")
+        raise UnauthorizedError("Invalid bearer token")
     exp = payload.get("exp")
     if not isinstance(exp, int) or exp <= 0:
-        raise ForbiddenError("Invalid bearer token")
+        raise UnauthorizedError("Invalid bearer token")
     if int(time.time()) > exp:
-        raise ForbiddenError("Bearer token expired")
+        raise UnauthorizedError("Bearer token expired")
     wallet = payload.get("w")
     if not isinstance(wallet, str) or not wallet.strip():
-        raise ForbiddenError("Invalid bearer token")
+        raise UnauthorizedError("Invalid bearer token")
     payer_wallet = normalize_wallet_address(wallet, "bearer wallet")
     return {"payer_wallet": payer_wallet}
 
@@ -453,6 +457,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return _error(404, "not_found", "Route not found")
     except BadRequestError as exc:
         return _error(400, "bad_request", str(exc))
+    except UnauthorizedError as exc:
+        return _error(401, "unauthorized", str(exc))
     except ForbiddenError as exc:
         return _error(403, "forbidden", str(exc))
     except ClientError as exc:
@@ -657,7 +663,7 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
 def _handle_get_uploads(event: dict[str, Any]) -> dict[str, Any]:
     token = _bearer_token(event)
     if token is None:
-        raise ForbiddenError("Authorization bearer token is required")
+        raise UnauthorizedError("Authorization bearer token is required")
     auth = _verify_bearer(token)
     payer_wallet = auth["payer_wallet"]
 
@@ -694,7 +700,7 @@ def _handle_get_uploads(event: dict[str, Any]) -> dict[str, Any]:
 def _handle_get_download(event: dict[str, Any], *, upload_id: str) -> dict[str, Any]:
     token = _bearer_token(event)
     if token is None:
-        raise ForbiddenError("Authorization bearer token is required")
+        raise UnauthorizedError("Authorization bearer token is required")
     auth = _verify_bearer(token)
     payer_wallet = auth["payer_wallet"]
 
