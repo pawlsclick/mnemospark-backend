@@ -592,7 +592,8 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(item, dict):
         return _error(404, "not_found", "Upload not found")
 
-    if _hash_token(token) != str(item.get("completion_token_hash") or ""):
+    token_hash = _hash_token(token)
+    if token_hash != str(item.get("completion_token_hash") or ""):
         return _error(401, "unauthorized", "Invalid or expired completion token.")
     if str(item.get("status") or "") != "pending":
         return _error(409, "conflict", "Upload has already been completed.")
@@ -617,17 +618,25 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
     public_url = minted["app"]
     site_url = public_url
 
-    _uploads_table().update_item(
-        Key={"upload_id": upload_id},
-        UpdateExpression="SET #s=:s, actual_size=:a, public_url=:p, site_url=:u REMOVE completion_token_hash",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={
-            ":s": "uploaded",
-            ":a": content_length,
-            ":p": public_url,
-            ":u": site_url,
-        },
-    )
+    try:
+        _uploads_table().update_item(
+            Key={"upload_id": upload_id},
+            UpdateExpression="SET #s=:s, actual_size=:a, public_url=:p, site_url=:u REMOVE completion_token_hash",
+            ConditionExpression="#s = :pending AND completion_token_hash = :token_hash",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":s": "uploaded",
+                ":pending": "pending",
+                ":token_hash": token_hash,
+                ":a": content_length,
+                ":p": public_url,
+                ":u": site_url,
+            },
+        )
+    except ClientError as exc:
+        if s3_error_code(exc) == "ConditionalCheckFailedException":
+            return _error(409, "conflict", "Upload has already been completed.")
+        raise
 
     record = {
         "id": upload_id,
