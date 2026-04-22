@@ -129,7 +129,7 @@ def _as_int(v: Any) -> int | None:
     return None
 
 
-def _lite_records_by_filename(wallet: str) -> dict[str, dict[str, Any]]:
+def _lite_records_by_object_key(wallet: str) -> dict[str, dict[str, Any]]:
     table = _lite_uploads_table()
     if table is None:
         return {}
@@ -142,15 +142,15 @@ def _lite_records_by_filename(wallet: str) -> dict[str, dict[str, Any]]:
     items = resp.get("Items") or []
     out: dict[str, dict[str, Any]] = {}
     for it in items:
-        filename = it.get("filename")
-        if not isinstance(filename, str) or not filename.strip():
+        object_key = str(it.get("object_key") or "").strip()
+        filename = str(it.get("filename") or "").strip()
+        if not object_key or not filename:
             continue
-        filename_key = filename.strip()
-        if filename_key in out:
+        if object_key in out:
             continue
-        out[filename_key] = {
+        out[object_key] = {
             "id": str(it.get("upload_id") or ""),
-            "filename": filename_key,
+            "filename": filename,
             "contentType": str(it.get("content_type") or ""),
             "tier": str(it.get("tier") or ""),
             "maxSize": _as_int(it.get("max_size")),
@@ -177,6 +177,16 @@ def _ls_web_cookie_domain() -> str | None:
     if not raw or raw.lower() == "host-only":
         return None
     return raw
+
+
+def _validate_lite_object_key(object_key: str) -> str:
+    key = object_key.strip()
+    parts = key.split("/")
+    if len(parts) != 2:
+        raise BadRequestError("object_key must be in upload_id/filename format")
+    upload_id = validate_object_key_single_segment(parts[0])
+    filename = validate_object_key_single_segment(parts[1])
+    return f"{upload_id}/{filename}"
 
 
 def _ls_web_cookie_same_site() -> str:
@@ -517,7 +527,7 @@ def handle_list(event: dict[str, Any], context: Any) -> dict[str, Any]:
         prefix=prefix,
     )
     contents = list_resp.get("Contents") or []
-    lite_by_filename = _lite_records_by_filename(wallet) if bucket_mode == "lite" else {}
+    lite_by_object_key = _lite_records_by_object_key(wallet) if bucket_mode == "lite" else {}
     objects_out: list[dict[str, Any]] = []
     for item in contents:
         key = item.get("Key")
@@ -528,7 +538,7 @@ def handle_list(event: dict[str, Any], context: Any) -> dict[str, Any]:
         base_obj: dict[str, Any] = {"key": key, "size_bytes": size_bytes, "last_modified": s3_last_modified_iso_utc(lm)}
         if bucket_mode == "lite":
             # For mnemospark-lite sessions, attach UploadRecord-ish fields when available.
-            rec = lite_by_filename.get(key)
+            rec = lite_by_object_key.get(key)
             if rec:
                 base_obj.update(rec)
         objects_out.append(base_obj)
@@ -609,7 +619,10 @@ def handle_download(event: dict[str, Any], context: Any) -> dict[str, Any]:
             )
             continue
         try:
-            ok = validate_object_key_single_segment(raw_key)
+            if bucket_mode == "lite":
+                ok = _validate_lite_object_key(raw_key)
+            else:
+                ok = validate_object_key_single_segment(raw_key)
         except BadRequestError as exc:
             results.append({"object_key": raw_key, "error": "bad_request", "message": str(exc)})
             continue
