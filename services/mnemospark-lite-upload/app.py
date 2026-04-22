@@ -528,6 +528,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     completion_token = secrets.token_urlsafe(32)
     completion_token_hash = _hash_token(completion_token)
     bucket = _bucket_name_from_wallet_lite(payer_wallet)
+    object_key = f"{upload_id}/{req.filename}"
 
     # Create bucket if missing (same behavior as existing workflow).
     try:
@@ -545,11 +546,18 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
                 )
         else:
             raise
-    _ensure_bucket_lifecycle_expiration(bucket=bucket)
+    try:
+        _ensure_bucket_lifecycle_expiration(bucket=bucket)
+    except ClientError as exc:
+        logger.warning(
+            "Failed to ensure lifecycle policy for bucket %s (code=%s); continuing upload creation",
+            bucket,
+            s3_error_code(exc),
+        )
 
     upload_url = s3.generate_presigned_url(
         "put_object",
-        Params={"Bucket": bucket, "Key": req.filename, "ContentType": req.content_type},
+        Params={"Bucket": bucket, "Key": object_key, "ContentType": req.content_type},
         ExpiresIn=DEFAULT_PRESIGN_TTL_SECONDS,
     )
     curl_example = f"curl -X PUT --data-binary @\"{req.filename}\" -H \"Content-Type: {req.content_type}\" \"{upload_url}\""
@@ -561,6 +569,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         "payer_wallet": payer_wallet,
         "bucket": bucket,
         "filename": req.filename,
+        "object_key": object_key,
         "content_type": req.content_type,
         "tier": req.tier,
         "max_size": max_size,
@@ -623,10 +632,11 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
         return _error(401, "unauthorized", "Invalid or expired completion token.")
 
     bucket = str(item.get("bucket") or "").strip()
-    key = str(item.get("filename") or "").strip()
+    filename = str(item.get("filename") or "").strip()
+    key = str(item.get("object_key") or filename).strip()
     payer_wallet = str(item.get("payer_wallet") or "").strip()
     max_size = int(item.get("max_size") or 0)
-    if not bucket or not key or not payer_wallet:
+    if not bucket or not filename or not key or not payer_wallet:
         return _error(500, "internal_error", "Upload record is invalid")
 
     try:
@@ -668,7 +678,7 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
 
     record = {
         "id": upload_id,
-        "filename": key,
+        "filename": filename,
         "contentType": item.get("content_type"),
         "tier": item.get("tier"),
         "maxSize": max_size,
@@ -736,7 +746,7 @@ def _handle_get_download(event: dict[str, Any], *, upload_id: str) -> dict[str, 
     download_url: str | None = None
     if str(item.get("status") or "") == "uploaded":
         bucket = str(item.get("bucket") or "").strip()
-        key = str(item.get("filename") or "").strip()
+        key = str(item.get("object_key") or item.get("filename") or "").strip()
         if bucket and key:
             download_url = s3.generate_presigned_url(
                 "get_object",

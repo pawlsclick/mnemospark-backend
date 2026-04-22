@@ -210,3 +210,84 @@ class BucketLifecycleTests(unittest.TestCase):
         rules = put_mock.call_args.kwargs["LifecycleConfiguration"]["Rules"]
         self.assertIn(existing_rule, rules)
         self.assertTrue(any(rule.get("ID", "").startswith("mnemospark-lite-expire-") for rule in rules))
+
+
+class PostUploadReliabilityTests(unittest.TestCase):
+    def test_post_upload_continues_when_lifecycle_ensure_fails(self):
+        event = {
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+        uploads_table = mock.Mock()
+        lifecycle_error = ClientError({"Error": {"Code": "Throttling"}}, "PutBucketLifecycleConfiguration")
+
+        with (
+            mock.patch.object(app, "_payment_requirements", return_value={"accepts": []}),
+            mock.patch.object(app, "_decode_payment_payload", return_value={"x402Version": 2}),
+            mock.patch.object(
+                app,
+                "_cdp_post",
+                side_effect=[
+                    {"isValid": True, "payer": "0x" + ("1" * 40)},
+                    {"success": True, "transaction": "0xabc"},
+                ],
+            ),
+            mock.patch.object(app.s3, "head_bucket", return_value={}),
+            mock.patch.object(app, "_ensure_bucket_lifecycle_expiration", side_effect=lifecycle_error),
+            mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload"),
+            mock.patch.object(app, "_uploads_table", return_value=uploads_table),
+            mock.patch.object(app, "_payment_config", return_value={"payment_network": "base-sepolia"}),
+            mock.patch.object(app, "_sign_bearer", return_value="bearer"),
+            mock.patch.object(app.secrets, "token_urlsafe", side_effect=["upload123", "completion123"]),
+        ):
+            response = app._handle_post_upload(event)
+
+        self.assertEqual(response["statusCode"], 200)
+        uploads_table.put_item.assert_called_once()
+
+    def test_post_upload_uses_upload_scoped_object_key(self):
+        event = {
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+        uploads_table = mock.Mock()
+
+        with (
+            mock.patch.object(app, "_payment_requirements", return_value={"accepts": []}),
+            mock.patch.object(app, "_decode_payment_payload", return_value={"x402Version": 2}),
+            mock.patch.object(
+                app,
+                "_cdp_post",
+                side_effect=[
+                    {"isValid": True, "payer": "0x" + ("1" * 40)},
+                    {"success": True, "transaction": "0xabc"},
+                ],
+            ),
+            mock.patch.object(app.s3, "head_bucket", return_value={}),
+            mock.patch.object(app, "_ensure_bucket_lifecycle_expiration", return_value=None),
+            mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload") as presign_mock,
+            mock.patch.object(app, "_uploads_table", return_value=uploads_table),
+            mock.patch.object(app, "_payment_config", return_value={"payment_network": "base-sepolia"}),
+            mock.patch.object(app, "_sign_bearer", return_value="bearer"),
+            mock.patch.object(app.secrets, "token_urlsafe", side_effect=["upload123", "completion123"]),
+        ):
+            response = app._handle_post_upload(event)
+
+        self.assertEqual(response["statusCode"], 200)
+        self.assertEqual(presign_mock.call_args.kwargs["Params"]["Key"], "upload123/artifact.bin")
+        self.assertEqual(uploads_table.put_item.call_args.kwargs["Item"]["object_key"], "upload123/artifact.bin")
+        self.assertEqual(uploads_table.put_item.call_args.kwargs["Item"]["filename"], "artifact.bin")
