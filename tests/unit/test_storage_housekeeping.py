@@ -382,6 +382,22 @@ class StorageHousekeepingLambdaTests(unittest.TestCase):
         self.assertEqual(body["objects_due"], 0)
         self.assertEqual(body["objects_deleted"], 0)
 
+    def test_lite_bucket_cleanup_failure_does_not_fail_housekeeping(self):
+        now = datetime(2026, 2, 25, 12, 0, tzinfo=timezone.utc)
+
+        with mock.patch.object(
+            app,
+            "_cleanup_empty_mnemospark_lite_buckets",
+            side_effect=ClientError({"Error": {"Code": "Throttling"}}, "ListBuckets"),
+        ):
+            response = app.lambda_handler({"now": now.isoformat()}, None)
+        body = json.loads(response["body"])
+
+        self.assertEqual(response["statusCode"], 200)
+        self.assertTrue(body["success"])
+        self.assertEqual(body["housekeeping_mode"], "legacy_interval")
+        self.assertEqual(body["lite_buckets_deleted"], 0)
+
 
 class RenewalCalendarHousekeepingTests(unittest.TestCase):
     def setUp(self):

@@ -598,11 +598,11 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(item, dict):
         return _error(404, "not_found", "Upload not found")
 
+    if str(item.get("status") or "") != "pending":
+        return _error(409, "conflict", "Upload has already been completed.")
     token_hash = _hash_token(token)
     if token_hash != str(item.get("completion_token_hash") or ""):
         return _error(401, "unauthorized", "Invalid or expired completion token.")
-    if str(item.get("status") or "") != "pending":
-        return _error(409, "conflict", "Upload has already been completed.")
 
     bucket = str(item.get("bucket") or "").strip()
     key = str(item.get("filename") or "").strip()

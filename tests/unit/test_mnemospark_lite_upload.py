@@ -33,6 +33,32 @@ class FakeUploadsTable:
         return {}
 
 
+class CompleteUploadTokenAndStatusTests(unittest.TestCase):
+    def test_complete_retry_returns_409_when_upload_already_completed(self):
+        token = "completion-token"
+        upload_id = "up_already_done"
+        item = {
+            "upload_id": upload_id,
+            "completion_token_hash": None,
+            "status": "uploaded",
+            "bucket": "mnemospark-lite-test",
+            "filename": "artifact.bin",
+            "payer_wallet": "0x" + ("1" * 40),
+            "max_size": 1000,
+        }
+        event = {
+            "body": json.dumps({"uploadId": upload_id, "completion_token": token}),
+        }
+
+        with mock.patch.object(app, "_uploads_table", return_value=FakeUploadsTable(item)):
+            response = app._handle_post_complete(event)
+
+        self.assertEqual(response["statusCode"], 409)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "conflict")
+        self.assertEqual(body["message"], "Upload has already been completed.")
+
+
 class LambdaHandlerErrorMappingTests(unittest.TestCase):
     def test_bearer_auth_failures_return_403(self):
         event = {"httpMethod": "GET", "path": "/api/mnemospark-lite/uploads"}

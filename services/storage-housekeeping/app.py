@@ -617,7 +617,12 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             body = _run_legacy_interval_housekeeping(event)
         dry_run = bool(body.get("dry_run")) if isinstance(body, dict) else False
         if not dry_run:
-            body["lite_buckets_deleted"] = _cleanup_empty_mnemospark_lite_buckets(boto3.client("s3", region_name=DEFAULT_LOCATION))
+            try:
+                body["lite_buckets_deleted"] = _cleanup_empty_mnemospark_lite_buckets(
+                    boto3.client("s3", region_name=DEFAULT_LOCATION)
+                )
+            except Exception:
+                body["lite_buckets_deleted"] = 0
         return _response(200, body)
     except BadRequestError as exc:
         return _error_response(400, "Bad request", str(exc))
