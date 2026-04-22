@@ -133,9 +133,17 @@ Parameters:
       Lambdas echo this via MNEMOSPARK_CORS_ALLOW_ORIGIN). Prefer explicit HTTPS origins in production.
   RestApiCorsAllowHeaders:
     Type: String
-    Default: "Content-Type,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,X-PAYMENT,x-payment,x-payment-required,x-payment-response,Cookie"
+    Default: "Content-Type,Authorization,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,X-PAYMENT,x-payment,x-payment-required,x-payment-response,Cookie"
     Description: Allowed CORS request headers for the REST API (SAM Cors AllowHeaders string).
   DashboardGraphqlCorsAllowOrigin:
+  MnemosparkLiteBearerSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: >-
+      HMAC secret used to sign bearer tokens for mnemospark-lite read endpoints
+      (GET /api/mnemospark-lite/uploads, GET /api/mnemospark-lite/download/{uploadId}).
+
     Type: String
     Default: "*"
     Description: Access-Control-Allow-Origin for dashboard GraphQL Lambda (DASHBOARD_GRAPHQL_CORS_ALLOW_ORIGIN).
@@ -413,6 +421,43 @@ Resources:
         - Key: Project
           Value: mnemospark
 
+  MnemosparkLiteUploadRegistryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-mnemospark-lite-uploads"
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DynamoDbKmsKey.Arn
+      AttributeDefinitions:
+        - AttributeName: upload_id
+          AttributeType: S
+        - AttributeName: payer_wallet
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: upload_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: GsiByPayerWalletCreatedAt
+          KeySchema:
+            - AttributeName: payer_wallet
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl_epoch_seconds
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
   RenewalTransactionLogTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -648,6 +693,14 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:DeleteItem
                 Resource: !GetAtt ActiveStorageObjectTable.Arn
+        - PolicyName: upload-dynamodb-ls-web-session-write
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt LsWebSessionTable.Arn
         - PolicyName: upload-s3-storage-write
           PolicyDocument:
             Version: "2012-10-17"
@@ -656,12 +709,29 @@ Resources:
                 Action:
                   - s3:CreateBucket
                   - s3:ListBucket
-                Resource: !Sub "arn:aws:s3:::mnemospark-*"
+                Resource:
+                  - !Sub "arn:aws:s3:::mnemospark-*"
+                  - !Sub "arn:aws:s3:::mnemospark-lite-*"
               - Effect: Allow
                 Action:
                   - s3:GetObject
                   - s3:PutObject
-                Resource: !Sub "arn:aws:s3:::mnemospark-*/*"
+                Resource:
+                  - !Sub "arn:aws:s3:::mnemospark-*/*"
+                  - !Sub "arn:aws:s3:::mnemospark-lite-*/*"
+        - PolicyName: upload-dynamodb-mnemospark-lite-upload-registry
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt MnemosparkLiteUploadRegistryTable.Arn
+                  - !Sub "${MnemosparkLiteUploadRegistryTable.Arn}/index/*"
         - PolicyName: upload-api-calls-write
           PolicyDocument:
             Version: "2012-10-17"
@@ -1875,11 +1945,15 @@ Resources:
             - Effect: Allow
               Action:
                 - s3:ListBucket
-              Resource: !Sub "arn:aws:s3:::mnemospark-*"
+              Resource:
+                - !Sub "arn:aws:s3:::mnemospark-*"
+                - !Sub "arn:aws:s3:::mnemospark-lite-*"
             - Effect: Allow
               Action:
                 - s3:GetObject
-              Resource: !Sub "arn:aws:s3:::mnemospark-*/*"
+              Resource:
+                - !Sub "arn:aws:s3:::mnemospark-*/*"
+                - !Sub "arn:aws:s3:::mnemospark-lite-*/*"
             - Effect: Allow
               Action:
                 - dynamodb:PutItem
@@ -1899,6 +1973,46 @@ Resources:
       Tags:
         - Key: Project
           Value: mnemospark
+
+  MnemosparkLiteUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: mnemospark_lite_upload_entry.lambda_handler
+      CodeUri: services
+      Role: !GetAtt UploadLambdaRole.Arn
+      Environment:
+        Variables:
+          MNEMOSPARK_CORS_ALLOW_ORIGIN: !Ref RestApiCorsAllowOrigin
+          MNEMOSPARK_LITE_UPLOADS_TABLE_NAME: !Ref MnemosparkLiteUploadRegistryTable
+          MNEMOSPARK_LITE_BEARER_SECRET: !Ref MnemosparkLiteBearerSecret
+          LS_WEB_SESSION_TABLE_NAME: !Ref LsWebSessionTable
+          MNEMOSPARK_LS_WEB_APP_URL: "https://app.mnemospark.ai"
+          MNEMOSPARK_LS_WEB_APP_PREFIX_QUERY: !If [IsStagingStage, "api=staging", ""]
+      Events:
+        MnemosparkLiteUploadPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /api/mnemospark-lite/upload
+            Method: POST
+        MnemosparkLiteUploadCompletePost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /api/mnemospark-lite/upload/complete
+            Method: POST
+        MnemosparkLiteUploadsGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /api/mnemospark-lite/uploads
+            Method: GET
+        MnemosparkLiteDownloadGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /api/mnemospark-lite/download/{uploadId}
+            Method: GET
 
   StorageHousekeepingFunction:
     Type: AWS::Serverless::Function

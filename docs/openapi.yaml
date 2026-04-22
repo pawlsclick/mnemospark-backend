@@ -35,6 +35,8 @@ tags:
     description: Payment settlement operations
   - name: storage
     description: Wallet-scoped storage object operations
+  - name: marketplace-lite
+    description: Marketplace-friendly storage facade (mnemospark-lite) operations
   - name: dashboard
     description: Internal Ops Console (dashboard v2) read-only GraphQL transport
 paths:
@@ -601,6 +603,135 @@ paths:
         "204":
           description: No content (CORS preflight)
 
+  /api/mnemospark-lite/upload:
+    post:
+      tags: [marketplace-lite]
+      summary: Create a paid upload slot (mnemospark-lite)
+      description: >
+        Paid x402 entrypoint that returns a presigned PUT URL (`uploadUrl`) and upload metadata.
+        Default flow is two-step: `publicUrl`/`siteUrl` are null until `/api/mnemospark-lite/upload/complete`.
+        Hard max size is 4.8 GB (no multipart uploads in v1).
+      operationId: postMnemosparkLiteUpload
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/PaymentSignatureHeader"
+        - $ref: "#/components/parameters/XPaymentHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MnemosparkLiteUploadRequest"
+      responses:
+        "200":
+          description: Upload slot created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MnemosparkLiteUploadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "402":
+          $ref: "#/components/responses/PaymentRequiredError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/mnemospark-lite/upload/complete:
+    post:
+      tags: [marketplace-lite]
+      summary: Complete upload and mint share URL (mnemospark-lite)
+      description: >
+        Free completion step after PUT: performs S3 HEAD reconciliation, enforces size limits,
+        and mints the ls-web app-entry share URL (`publicUrl`/`siteUrl`).
+      operationId: postMnemosparkLiteUploadComplete
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MnemosparkLiteUploadCompleteRequest"
+      responses:
+        "200":
+          description: Upload completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MnemosparkLiteUploadCompleteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          description: Invalid or expired completion token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/mnemospark-lite/uploads:
+    get:
+      tags: [marketplace-lite]
+      summary: List uploads for the payer wallet (mnemospark-lite)
+      description: >
+        Wallet-scoped listing endpoint for agents. Requires a bearer/JWT issued from the paid upload flow.
+      operationId: getMnemosparkLiteUploads
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Uploads listed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MnemosparkLiteUploadsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/mnemospark-lite/download/{uploadId}:
+    get:
+      tags: [marketplace-lite]
+      summary: Get upload detail and optional presigned download (mnemospark-lite)
+      description: >
+        Wallet-scoped detail endpoint for agents. Requires bearer/JWT and returns an UploadRecord;
+        may include a short-lived presigned GET URL when status is uploaded.
+      operationId: getMnemosparkLiteDownload
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: uploadId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Upload detail returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MnemosparkLiteDownloadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
 components:
   securitySchemes:
     walletProof:
@@ -614,6 +745,14 @@ components:
         The header value is base64-encoded JSON with payloadB64, signature, and address.
         The backend verifies the EIP-712 signature and rejects requests with missing,
         malformed, or invalid proofs (403). Required for all wallet-scoped endpoints.
+
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Bearer token used by mnemospark-lite marketplace facade read endpoints.
+        Issued by the backend after a successful paid upload call and scoped to the payer wallet.
 
     dashboardApiKey:
       type: apiKey
@@ -1291,6 +1430,193 @@ components:
           type: string
         bucket_deleted:
           type: boolean
+
+    MnemosparkLiteUploadRequest:
+      type: object
+      required:
+        - filename
+        - contentType
+        - tier
+        - size_bytes
+      properties:
+        filename:
+          type: string
+          description: Object key (single path segment).
+        contentType:
+          type: string
+          description: MIME type for the upload.
+        tier:
+          type: string
+          description: Tier identifier (e.g. 10mb, 100mb, 500mb, 1gb, 2gb, 3gb).
+        size_bytes:
+          type: integer
+          minimum: 0
+          description: Intended upload size in bytes. Must be <= 4_800_000_000.
+
+    MnemosparkLiteUploadResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          required:
+            - uploadId
+            - uploadUrl
+            - publicUrl
+            - siteUrl
+            - expiresAt
+            - maxSize
+            - curlExample
+            - completion_token
+            - list_scope_bearer
+          properties:
+            uploadId:
+              type: string
+            uploadUrl:
+              type: string
+              format: uri
+            publicUrl:
+              type: string
+              nullable: true
+              description: Null until /upload/complete mints the ls-web share URL.
+            siteUrl:
+              type: string
+              nullable: true
+              description: Alias of publicUrl (same string) once minted.
+            expiresAt:
+              type: string
+              description: >
+                ISO time when the object becomes eligible for deletion under S3 lifecycle (Days=30).
+                AWS may delete any time after this.
+            maxSize:
+              type: integer
+              description: Tier cap in bytes.
+            curlExample:
+              type: string
+            completion_token:
+              type: string
+            list_scope_bearer:
+              type: string
+              description: Bearer token scoped to payer wallet for list/detail APIs.
+        metadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Optional payment metadata (protocol, network, price, payment.transactionHash).
+
+    MnemosparkLiteUploadCompleteRequest:
+      type: object
+      required:
+        - uploadId
+        - completion_token
+      properties:
+        uploadId:
+          type: string
+        completion_token:
+          type: string
+
+    MnemosparkLiteUploadRecord:
+      type: object
+      required:
+        - id
+        - filename
+        - contentType
+        - tier
+        - maxSize
+        - actualSize
+        - publicUrl
+        - status
+        - pricePaid
+        - expiresAt
+        - createdAt
+      properties:
+        id:
+          type: string
+        filename:
+          type: string
+        contentType:
+          type: string
+        tier:
+          type: string
+        maxSize:
+          type: integer
+        actualSize:
+          type: integer
+          nullable: true
+        publicUrl:
+          type: string
+          nullable: true
+        status:
+          type: string
+        pricePaid:
+          type: string
+          nullable: true
+        expiresAt:
+          type: string
+        createdAt:
+          type: string
+
+    MnemosparkLiteUploadCompleteResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          required:
+            - upload
+          properties:
+            upload:
+              $ref: "#/components/schemas/MnemosparkLiteUploadRecord"
+
+    MnemosparkLiteUploadsResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          required:
+            - uploads
+          properties:
+            uploads:
+              type: array
+              items:
+                $ref: "#/components/schemas/MnemosparkLiteUploadRecord"
+
+    MnemosparkLiteDownloadResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          required:
+            - upload
+          properties:
+            upload:
+              allOf:
+                - $ref: "#/components/schemas/MnemosparkLiteUploadRecord"
+                - type: object
+                  properties:
+                    downloadUrl:
+                      type: string
+                      nullable: true
+                      format: uri
+                      description: Optional short-lived presigned GET URL when status is uploaded.
 
     ErrorResponse:
       type: object
