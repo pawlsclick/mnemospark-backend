@@ -458,7 +458,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     except BadRequestError as exc:
         return _error(400, "bad_request", str(exc))
     except UnauthorizedError as exc:
-        return _error(401, "unauthorized", str(exc))
+        return _error(403, "forbidden", str(exc))
     except ForbiddenError as exc:
         return _error(403, "forbidden", str(exc))
     except ClientError as exc:
@@ -611,7 +611,12 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
     if not bucket or not key or not payer_wallet:
         return _error(500, "internal_error", "Upload record is invalid")
 
-    head = s3.head_object(Bucket=bucket, Key=key)
+    try:
+        head = s3.head_object(Bucket=bucket, Key=key)
+    except ClientError as exc:
+        if s3_error_code(exc) in {"404", "NoSuchKey", "NotFound"}:
+            raise BadRequestError("Uploaded object not found; upload the file before completing")
+        raise
     content_length = int(head.get("ContentLength") or 0)
     if content_length <= 0:
         raise BadRequestError("Uploaded object size is invalid")

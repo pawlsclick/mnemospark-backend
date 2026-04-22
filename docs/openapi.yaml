@@ -687,8 +687,8 @@ paths:
                 $ref: "#/components/schemas/MnemosparkLiteUploadsResponse"
         "400":
           $ref: "#/components/responses/BadRequestError"
-        "401":
-          description: Unauthorized
+        "403":
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -721,8 +721,8 @@ paths:
                 $ref: "#/components/schemas/MnemosparkLiteDownloadResponse"
         "400":
           $ref: "#/components/responses/BadRequestError"
-        "401":
-          description: Unauthorized
+        "403":
+          description: Forbidden
           content:
             application/json:
               schema:
