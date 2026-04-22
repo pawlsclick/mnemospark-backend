@@ -245,6 +245,53 @@ class StorageLsWebDownloadTests(unittest.TestCase):
         resp = app.lambda_handler(event, None)
         self.assertEqual(resp["statusCode"], 400)
 
+    @mock.patch.object(app, "_session_table")
+    @mock.patch.object(app, "boto3")
+    @mock.patch.object(app, "_log_api_call_result", lambda *a, **k: None)
+    def test_download_lite_allows_upload_id_filename_object_key(self, mock_boto, mock_table_factory):
+        fake = FakeTable()
+        mock_table_factory.return_value = fake
+        sid = "sidlite"
+        fake.by_sid[sid] = {
+            "session_id": sid,
+            "wallet_address": "0x" + "f" * 40,
+            "exchanged": True,
+            "session_expires_at": int(time.time()) + 3600,
+            "location": "[REDACTED]",
+            "bucket_mode": "lite",
+        }
+
+        class FakeS3:
+            def __init__(self):
+                self.head_object_keys = []
+
+            def head_bucket(self, **kwargs):
+                return {}
+
+            def head_object(self, **kwargs):
+                self.head_object_keys.append(kwargs["Key"])
+                return {}
+
+            def generate_presigned_url(self, _operation, *, Params, ExpiresIn, HttpMethod):
+                return f"https://example.invalid/{Params['Bucket']}/{Params['Key']}?exp={ExpiresIn}&m={HttpMethod}"
+
+        fake_s3 = FakeS3()
+        mock_boto.client.return_value = fake_s3
+        event = {
+            "httpMethod": "POST",
+            "path": "/storage/ls-web/download",
+            "requestContext": {"resourcePath": "/storage/ls-web/download"},
+            "headers": {"Cookie": f"{app.COOKIE_NAME}={sid}"},
+            "body": json.dumps({"object_keys": ["upload123/artifact.bin"]}),
+        }
+        resp = app.lambda_handler(event, None)
+        self.assertEqual(resp["statusCode"], 200)
+        body = json.loads(resp["body"])
+        self.assertTrue(body["success"])
+        self.assertEqual(body["results"][0]["object_key"], "upload123/artifact.bin")
+        self.assertIn("upload123/artifact.bin", body["results"][0]["url"])
+        self.assertEqual(fake_s3.head_object_keys, ["upload123/artifact.bin"])
+
 
 class StorageLsWebListSessionTests(unittest.TestCase):
     @mock.patch.object(app, "_session_table")
@@ -270,6 +317,72 @@ class StorageLsWebListSessionTests(unittest.TestCase):
         }
         resp = app.lambda_handler(event, None)
         self.assertEqual(resp["statusCode"], 401)
+
+    @mock.patch.object(app, "_lite_uploads_table")
+    @mock.patch.object(app, "_session_table")
+    @mock.patch.object(app, "boto3")
+    @mock.patch.object(app, "_log_api_call_result", lambda *a, **k: None)
+    def test_list_lite_enriches_objects_using_full_object_key(
+        self,
+        mock_boto,
+        mock_table_factory,
+        mock_lite_uploads_table,
+    ):
+        fake = FakeTable()
+        mock_table_factory.return_value = fake
+        sid = "sid-lite-list"
+        fake.by_sid[sid] = {
+            "session_id": sid,
+            "wallet_address": "0x" + "1" * 40,
+            "exchanged": True,
+            "session_expires_at": int(time.time()) + 3600,
+            "location": "[REDACTED]",
+            "bucket_mode": "lite",
+        }
+
+        class FakeUploadsTable:
+            def query(self, **kwargs):
+                return {
+                    "Items": [
+                        {
+                            "upload_id": "upload123",
+                            "filename": "artifact.bin",
+                            "object_key": "upload123/artifact.bin",
+                            "content_type": "application/octet-stream",
+                            "tier": "standard",
+                            "max_size": 1024,
+                            "actual_size": 99,
+                            "status": "complete",
+                        }
+                    ]
+                }
+
+        class FakeS3:
+            def head_bucket(self, **kwargs):
+                return {}
+
+            def list_objects_v2(self, **kwargs):
+                return {
+                    "Contents": [{"Key": "upload123/artifact.bin", "Size": 99}],
+                    "IsTruncated": False,
+                }
+
+        mock_lite_uploads_table.return_value = FakeUploadsTable()
+        mock_boto.client.return_value = FakeS3()
+        event = {
+            "httpMethod": "POST",
+            "path": "/storage/ls-web/list",
+            "requestContext": {"resourcePath": "/storage/ls-web/list"},
+            "headers": {"Cookie": f"{app.COOKIE_NAME}={sid}"},
+            "body": "{}",
+        }
+        resp = app.lambda_handler(event, None)
+        self.assertEqual(resp["statusCode"], 200)
+        body = json.loads(resp["body"])
+        self.assertTrue(body["success"])
+        self.assertEqual(body["objects"][0]["key"], "upload123/artifact.bin")
+        self.assertEqual(body["objects"][0]["id"], "upload123")
+        self.assertEqual(body["objects"][0]["filename"], "artifact.bin")
 
 
 class StorageLsWebOptionsTests(unittest.TestCase):
