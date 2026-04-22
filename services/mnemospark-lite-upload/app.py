@@ -72,6 +72,7 @@ s3 = boto3.client("s3", region_name=DEFAULT_REGION)
 dynamodb = boto3.resource("dynamodb", region_name=DEFAULT_REGION)
 
 LIFECYCLE_EXPIRE_DAYS = 30
+_LIFECYCLE_ENSURED_BUCKETS: set[str] = set()
 
 
 class UnauthorizedError(ValueError):
@@ -273,21 +274,38 @@ def _tier_max_size_bytes(tier: str) -> int:
 
 def _ensure_bucket_lifecycle_expiration(*, bucket: str) -> None:
     # Bucket-level lifecycle: expire objects after 30 days. This enforces retention without a sweeper.
+    if bucket in _LIFECYCLE_ENSURED_BUCKETS:
+        return
+
     rule_id = f"mnemospark-lite-expire-{LIFECYCLE_EXPIRE_DAYS}d"
+    desired_rule = {
+        "ID": rule_id,
+        "Status": "Enabled",
+        "Filter": {"Prefix": ""},
+        "Expiration": {"Days": LIFECYCLE_EXPIRE_DAYS},
+        "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7},
+    }
+    existing_rules: list[dict[str, Any]]
+    try:
+        resp = s3.get_bucket_lifecycle_configuration(Bucket=bucket)
+        raw_rules = resp.get("Rules") or []
+        existing_rules = [rule for rule in raw_rules if isinstance(rule, dict)]
+    except ClientError as exc:
+        code = s3_error_code(exc)
+        if code in {"NoSuchLifecycleConfiguration", "404", "NotFound"}:
+            existing_rules = []
+        else:
+            raise
+
+    if any(str(rule.get("ID") or "") == rule_id for rule in existing_rules):
+        _LIFECYCLE_ENSURED_BUCKETS.add(bucket)
+        return
+
     s3.put_bucket_lifecycle_configuration(
         Bucket=bucket,
-        LifecycleConfiguration={
-            "Rules": [
-                {
-                    "ID": rule_id,
-                    "Status": "Enabled",
-                    "Filter": {"Prefix": ""},
-                    "Expiration": {"Days": LIFECYCLE_EXPIRE_DAYS},
-                    "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7},
-                }
-            ]
-        },
+        LifecycleConfiguration={"Rules": [*existing_rules, desired_rule]},
     )
+    _LIFECYCLE_ENSURED_BUCKETS.add(bucket)
 
 
 def _hash_token(token: str) -> str:
@@ -625,14 +643,10 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
     if max_size > 0 and content_length > max_size:
         raise BadRequestError(f"Uploaded object exceeds tier max size ({max_size} bytes)")
 
-    minted = _mint_ls_web_app_url(payer_wallet=payer_wallet, location=DEFAULT_REGION)
-    public_url = minted["app"]
-    site_url = public_url
-
     try:
         _uploads_table().update_item(
             Key={"upload_id": upload_id},
-            UpdateExpression="SET #s=:s, actual_size=:a, public_url=:p, site_url=:u REMOVE completion_token_hash",
+            UpdateExpression="SET #s=:s, actual_size=:a REMOVE completion_token_hash",
             ConditionExpression="#s = :pending AND completion_token_hash = :token_hash",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={
@@ -640,14 +654,27 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
                 ":pending": "pending",
                 ":token_hash": token_hash,
                 ":a": content_length,
-                ":p": public_url,
-                ":u": site_url,
             },
         )
     except ClientError as exc:
         if s3_error_code(exc) == "ConditionalCheckFailedException":
             return _error(409, "conflict", "Upload has already been completed.")
         raise
+
+    minted = _mint_ls_web_app_url(payer_wallet=payer_wallet, location=DEFAULT_REGION)
+    public_url = minted["app"]
+    site_url = public_url
+    _uploads_table().update_item(
+        Key={"upload_id": upload_id},
+        UpdateExpression="SET public_url=:p, site_url=:u",
+        ConditionExpression="#s = :uploaded",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":uploaded": "uploaded",
+            ":p": public_url,
+            ":u": site_url,
+        },
+    )
 
     record = {
         "id": upload_id,
