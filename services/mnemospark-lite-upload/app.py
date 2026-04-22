@@ -538,7 +538,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         "ttl_epoch_seconds": _ttl_epoch_seconds(now),
         "completion_token_hash": completion_token_hash,
         "transaction_hash": transaction_hash,
-        "price_paid": "$0.02",
+        "price_paid": f"${X402_PRICE_MICRO_USDC / 1_000_000:.2f}",
     }
     _uploads_table().put_item(Item=item, ConditionExpression="attribute_not_exists(upload_id)")
 
