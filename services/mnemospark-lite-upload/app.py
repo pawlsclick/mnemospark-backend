@@ -643,10 +643,13 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
     if max_size > 0 and content_length > max_size:
         raise BadRequestError(f"Uploaded object exceeds tier max size ({max_size} bytes)")
 
+    minted = _mint_ls_web_app_url(payer_wallet=payer_wallet, location=DEFAULT_REGION)
+    public_url = minted["app"]
+    site_url = public_url
     try:
         _uploads_table().update_item(
             Key={"upload_id": upload_id},
-            UpdateExpression="SET #s=:s, actual_size=:a REMOVE completion_token_hash",
+            UpdateExpression="SET #s=:s, actual_size=:a, public_url=:p, site_url=:u REMOVE completion_token_hash",
             ConditionExpression="#s = :pending AND completion_token_hash = :token_hash",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={
@@ -654,27 +657,14 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
                 ":pending": "pending",
                 ":token_hash": token_hash,
                 ":a": content_length,
+                ":p": public_url,
+                ":u": site_url,
             },
         )
     except ClientError as exc:
         if s3_error_code(exc) == "ConditionalCheckFailedException":
             return _error(409, "conflict", "Upload has already been completed.")
         raise
-
-    minted = _mint_ls_web_app_url(payer_wallet=payer_wallet, location=DEFAULT_REGION)
-    public_url = minted["app"]
-    site_url = public_url
-    _uploads_table().update_item(
-        Key={"upload_id": upload_id},
-        UpdateExpression="SET public_url=:p, site_url=:u",
-        ConditionExpression="#s = :uploaded",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={
-            ":uploaded": "uploaded",
-            ":p": public_url,
-            ":u": site_url,
-        },
-    )
 
     record = {
         "id": upload_id,

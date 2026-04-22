@@ -106,7 +106,7 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
 
 
 class CompleteUploadOrderingTests(unittest.TestCase):
-    def test_complete_does_not_mint_session_when_conditional_update_fails(self):
+    def test_complete_mints_before_atomic_update_and_returns_409_on_conflict(self):
         token = "completion-token"
         upload_id = "up_conflict"
         item = {
@@ -133,10 +133,10 @@ class CompleteUploadOrderingTests(unittest.TestCase):
             response = app._handle_post_complete(event)
 
         self.assertEqual(response["statusCode"], 409)
-        mint_mock.assert_not_called()
+        mint_mock.assert_called_once()
         table.update_item.assert_called_once()
 
-    def test_complete_mints_session_after_status_update_gate(self):
+    def test_complete_persists_status_and_urls_in_single_update(self):
         token = "completion-token"
         upload_id = "up_success"
         item = {
@@ -150,29 +150,23 @@ class CompleteUploadOrderingTests(unittest.TestCase):
         }
         event = {"body": json.dumps({"uploadId": upload_id, "completion_token": token})}
 
-        calls = []
-
-        def update_side_effect(*args, **kwargs):
-            calls.append("update")
-            return {}
-
-        def mint_side_effect(*args, **kwargs):
-            calls.append("mint")
-            return {"app": "https://app.mnemospark.ai/?code=abc", "code": "abc", "expires_at": "2030-01-01T00:00:00Z"}
-
         table = mock.Mock()
         table.get_item.return_value = {"Item": item}
-        table.update_item.side_effect = update_side_effect
 
         with (
             mock.patch.object(app, "_uploads_table", return_value=table),
             mock.patch.object(app.s3, "head_object", return_value={"ContentLength": 100}),
-            mock.patch.object(app, "_mint_ls_web_app_url", side_effect=mint_side_effect),
+            mock.patch.object(
+                app,
+                "_mint_ls_web_app_url",
+                return_value={"app": "https://app.mnemospark.ai/?code=abc", "code": "abc", "expires_at": "2030-01-01T00:00:00Z"},
+            ),
         ):
             response = app._handle_post_complete(event)
 
         self.assertEqual(response["statusCode"], 200)
-        self.assertEqual(calls, ["update", "mint", "update"])
+        table.update_item.assert_called_once()
+        self.assertIn("public_url=:p", table.update_item.call_args.kwargs["UpdateExpression"])
 
 
 class BucketLifecycleTests(unittest.TestCase):
