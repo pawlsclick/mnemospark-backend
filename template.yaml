@@ -136,6 +136,9 @@ Parameters:
     Default: "Content-Type,Authorization,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,X-PAYMENT,x-payment,x-payment-required,x-payment-response,Cookie"
     Description: Allowed CORS request headers for the REST API (SAM Cors AllowHeaders string).
   DashboardGraphqlCorsAllowOrigin:
+    Type: String
+    Default: "*"
+    Description: Access-Control-Allow-Origin for dashboard GraphQL Lambda (DASHBOARD_GRAPHQL_CORS_ALLOW_ORIGIN).
   MnemosparkLiteBearerSecret:
     Type: String
     Default: ""
@@ -151,10 +154,6 @@ Parameters:
     Description: >-
       CDP API bearer token (JWT) used to authenticate requests to the x402 facilitator
       endpoints at https://api.cdp.coinbase.com/platform/v2/x402.
-
-    Type: String
-    Default: "*"
-    Description: Access-Control-Allow-Origin for dashboard GraphQL Lambda (DASHBOARD_GRAPHQL_CORS_ALLOW_ORIGIN).
 
 Conditions:
   # Staging: API Gateway CORS for ls-web uses fixed AllowOrigin/AllowHeaders below (SAM --parameter-overrides
@@ -717,6 +716,8 @@ Resources:
                 Action:
                   - s3:CreateBucket
                   - s3:ListBucket
+                  - s3:PutLifecycleConfiguration
+                  - s3:GetLifecycleConfiguration
                 Resource:
                   - !Sub "arn:aws:s3:::mnemospark-*"
                   - !Sub "arn:aws:s3:::mnemospark-lite-*"
