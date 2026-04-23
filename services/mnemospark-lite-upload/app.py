@@ -85,6 +85,10 @@ class SettlementPendingError(RuntimeError):
     pass
 
 
+class PaymentInvalidError(ValueError):
+    pass
+
+
 TRANSFER_WITH_AUTH_TYPES = {
     "TransferWithAuthorization": [
         {"name": "from", "type": "address"},
@@ -165,15 +169,15 @@ def _verify_payment_locally(*, payment_payload: dict[str, Any], requirement: dic
         raise BadRequestError("payment network is required")
 
     if to_addr != expected_to:
-        raise BadRequestError("payment recipient does not match payTo")
+        raise PaymentInvalidError("payment recipient does not match payTo")
     if value != expected_value:
-        raise BadRequestError("payment amount does not match requirement")
+        raise PaymentInvalidError("payment amount does not match requirement")
 
     now = int(time.time())
     if valid_after > now:
-        raise BadRequestError("payment authorization is not yet valid")
+        raise PaymentInvalidError("payment authorization is not yet valid")
     if valid_before <= now:
-        raise BadRequestError("payment authorization has expired")
+        raise PaymentInvalidError("payment authorization has expired")
 
     extra = requirement.get("extra") if isinstance(requirement.get("extra"), dict) else {}
     domain_name = str(extra.get("name") or "")
@@ -207,7 +211,7 @@ def _verify_payment_locally(*, payment_payload: dict[str, Any], requirement: dic
     recovered = Account.recover_message(signable, signature=signature.strip())
     recovered_norm = normalize_wallet_address(recovered, "recovered signer")
     if recovered_norm != from_addr:
-        raise BadRequestError("payment signature does not recover payer wallet")
+        raise PaymentInvalidError("payment signature does not recover payer wallet")
 
 def _uploads_table() -> Any:
     name = (os.environ.get("MNEMOSPARK_LITE_UPLOADS_TABLE_NAME") or "").strip()
@@ -651,6 +655,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             return _handle_get_download(event, upload_id=upload_id)
 
         return _error(404, "not_found", "Route not found")
+    except PaymentInvalidError as exc:
+        return _error(402, "payment_invalid", str(exc))
     except BadRequestError as exc:
         return _error(400, "bad_request", str(exc))
     except UnauthorizedError as exc:

@@ -105,6 +105,65 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
         self.assertEqual(body["error"], "bad_request")
         self.assertIn("Uploaded object not found", body["message"])
 
+    def test_upload_with_invalid_payment_returns_402_payment_invalid(self):
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/upload",
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+
+        with (
+            mock.patch.object(
+                app,
+                "_payment_requirements",
+                return_value={
+                    "accepts": [
+                        {
+                            "scheme": "exact",
+                            "network": "eip155:8453",
+                            "asset": "0x" + ("a" * 40),
+                            "payTo": "0x" + ("b" * 40),
+                            "amount": "20000",
+                            "maxTimeoutSeconds": 3600,
+                            "extra": {"name": "USD Coin", "version": "2"},
+                        }
+                    ]
+                },
+            ),
+            mock.patch.object(
+                app,
+                "_decode_payment_payload",
+                return_value={
+                    "x402Version": 2,
+                    "payload": {
+                        "authorization": {
+                            "from": "0x" + ("1" * 40),
+                        },
+                        "signature": "0x" + ("2" * 130),
+                    },
+                },
+            ),
+            mock.patch.object(
+                app,
+                "_verify_payment_locally",
+                side_effect=app.PaymentInvalidError("payment signature does not recover payer wallet"),
+            ),
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 402)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "payment_invalid")
+        self.assertIn("payment signature does not recover payer wallet", body["message"])
+
 
 class CompleteUploadOrderingTests(unittest.TestCase):
     def test_complete_mints_before_atomic_update_and_returns_409_on_conflict(self):
