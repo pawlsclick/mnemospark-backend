@@ -375,6 +375,9 @@ def _payment_requirements() -> dict[str, Any]:
                 "asset": cfg["payment_asset"],
                 "payTo": cfg["recipient_wallet"],
                 "amount": str(X402_PRICE_MICRO_USDC),
+                # CDP x402 V2 PaymentRequirements expects these fields.
+                "maxTimeoutSeconds": 3600,
+                "extra": {},
             }
         ]
     }

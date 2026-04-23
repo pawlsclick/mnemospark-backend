@@ -240,6 +240,8 @@ class PostUploadReliabilityTests(unittest.TestCase):
                             "asset": "0x" + ("a" * 40),
                             "payTo": "0x" + ("b" * 40),
                             "amount": "20000",
+                            "maxTimeoutSeconds": 3600,
+                            "extra": {},
                         }
                     ]
                 },
@@ -295,6 +297,8 @@ class PostUploadReliabilityTests(unittest.TestCase):
                             "asset": "0x" + ("a" * 40),
                             "payTo": "0x" + ("b" * 40),
                             "amount": "20000",
+                            "maxTimeoutSeconds": 3600,
+                            "extra": {},
                         }
                     ]
                 },
