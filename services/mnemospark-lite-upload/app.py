@@ -126,6 +126,25 @@ def _method(event: dict[str, Any]) -> str:
     return str(raw).upper()
 
 
+def _cdp_network_enum(network: str) -> str:
+    """
+    CDP's x402 facilitator schema uses a small enum for paymentPayload.network
+    (e.g., base, base-sepolia), while Mnemospark uses CAIP-2 (e.g., eip155:8453).
+    """
+    normalized = (network or "").strip().lower()
+    if normalized in {"base", "base-sepolia", "solana", "solana-devnet"}:
+        return normalized
+    if normalized == "eip155:8453":
+        return "base"
+    if normalized == "eip155:84532":
+        return "base-sepolia"
+    if normalized in {"solana:mainnet", "solana:mainnet-beta"}:
+        return "solana"
+    if normalized in {"solana:devnet"}:
+        return "solana-devnet"
+    raise BadRequestError(f"Unsupported payment network for CDP: {network!r}")
+
+
 def _bearer_token(event: dict[str, Any]) -> str | None:
     headers = event.get("headers") or {}
     if not isinstance(headers, dict):
@@ -560,11 +579,21 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
 
     # Settle via CDP facilitator. This is the critical-path call; skipping a
     # separate verify reduces latency and helps stay under API Gateway timeouts.
+    accepted = payment_payload.get("accepted") if isinstance(payment_payload, dict) else None
+    accepted = accepted if isinstance(accepted, dict) else {}
+    cdp_scheme = str(accepted.get("scheme") or requirement.get("scheme") or "exact")
+    cdp_network_raw = str(accepted.get("network") or requirement.get("network") or "")
+    cdp_payment_payload = {
+        "x402Version": int(payment_payload.get("x402Version") or 2),
+        "scheme": cdp_scheme,
+        "network": _cdp_network_enum(cdp_network_raw),
+        "payload": payload_obj,
+    }
     settle_resp = _cdp_post(
         "/v2/x402/settle",
         {
             "x402Version": int(payment_payload.get("x402Version") or 2),
-            "paymentPayload": payment_payload,
+            "paymentPayload": cdp_payment_payload,
             # CDP expects a single PaymentRequirements object here, not
             # the {"accepts":[...]} wrapper used by PAYMENT-REQUIRED.
             "paymentRequirements": requirement,
