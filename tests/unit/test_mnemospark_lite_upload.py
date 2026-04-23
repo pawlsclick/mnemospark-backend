@@ -230,13 +230,16 @@ class PostUploadReliabilityTests(unittest.TestCase):
 
         with (
             mock.patch.object(app, "_payment_requirements", return_value={"accepts": []}),
-            mock.patch.object(app, "_decode_payment_payload", return_value={"x402Version": 2}),
+            mock.patch.object(
+                app,
+                "_decode_payment_payload",
+                return_value={"x402Version": 2, "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
+            ),
             mock.patch.object(
                 app,
                 "_cdp_post",
                 side_effect=[
-                    {"isValid": True, "payer": "0x" + ("1" * 40)},
-                    {"success": True, "transaction": "0xabc"},
+                    {"success": True, "transaction": "0xabc", "payer": "0x" + ("1" * 40)},
                 ],
             ),
             mock.patch.object(app.s3, "head_bucket", return_value={}),
@@ -268,13 +271,16 @@ class PostUploadReliabilityTests(unittest.TestCase):
 
         with (
             mock.patch.object(app, "_payment_requirements", return_value={"accepts": []}),
-            mock.patch.object(app, "_decode_payment_payload", return_value={"x402Version": 2}),
+            mock.patch.object(
+                app,
+                "_decode_payment_payload",
+                return_value={"x402Version": 2, "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
+            ),
             mock.patch.object(
                 app,
                 "_cdp_post",
                 side_effect=[
-                    {"isValid": True, "payer": "0x" + ("1" * 40)},
-                    {"success": True, "transaction": "0xabc"},
+                    {"success": True, "transaction": "0xabc", "payer": "0x" + ("1" * 40)},
                 ],
             ),
             mock.patch.object(app.s3, "head_bucket", return_value={}),
