@@ -56,7 +56,7 @@ jobs:
           RELAYER_WALLET_ADDRESS: ${{ vars.RELAYER_WALLET_ADDRESS }}
           PAYMENT_ASSET_ADDRESS: ${{ vars.PAYMENT_ASSET_ADDRESS }}
           MNEMOSPARK_LITE_BEARER_SECRET: ${{ secrets.MNEMOSPARK_LITE_BEARER_SECRET }}
-          CDP_X402_FACILITATOR_BEARER_TOKEN: ${{ secrets.CDP_X402_FACILITATOR_BEARER_TOKEN }}
+          CDP_API_KEY_SECRET: ${{ secrets.CDP_API_KEY_SECRET }}
           CDP_API_KEY_ID: ${{ secrets.CDP_API_KEY_ID }}
           PRICE_STORAGE_FLOOR: ${{ vars.PRICE_STORAGE_FLOOR || '0' }}
           PRICE_STORAGE_MARKUP: ${{ vars.PRICE_STORAGE_MARKUP || '0' }}
@@ -76,7 +76,7 @@ jobs:
           require_var RELAYER_WALLET_ADDRESS "${RELAYER_WALLET_ADDRESS}"
           require_var PAYMENT_ASSET_ADDRESS "${PAYMENT_ASSET_ADDRESS}"
           require_var MNEMOSPARK_LITE_BEARER_SECRET "${MNEMOSPARK_LITE_BEARER_SECRET}" secret
-          require_var CDP_X402_FACILITATOR_BEARER_TOKEN "${CDP_X402_FACILITATOR_BEARER_TOKEN}" secret
+          require_var CDP_API_KEY_SECRET "${CDP_API_KEY_SECRET}" secret
           require_var CDP_API_KEY_ID "${CDP_API_KEY_ID}" secret
           if [ "${PAYMENT_SETTLEMENT_MODE}" = "onchain" ]; then
             require_var BASE_RPC_URL "${BASE_RPC_URL}"
@@ -95,7 +95,7 @@ jobs:
               "RelayerWalletAddress=${RELAYER_WALLET_ADDRESS}" \
               "PaymentAssetAddress=${PAYMENT_ASSET_ADDRESS}" \
               "MnemosparkLiteBearerSecret=${MNEMOSPARK_LITE_BEARER_SECRET}" \
-              "CdpX402FacilitatorBearerToken=${CDP_X402_FACILITATOR_BEARER_TOKEN}" \
+              "CdpX402FacilitatorBearerToken=${CDP_API_KEY_SECRET}" \
               "CdpApiKeyId=${CDP_API_KEY_ID}" \
               "PriceStorageFloor=${PRICE_STORAGE_FLOOR}" \
               "PriceStorageMarkup=${PRICE_STORAGE_MARKUP}" \
