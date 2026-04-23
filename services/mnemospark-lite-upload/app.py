@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import base64
 import time
+from decimal import Decimal
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -515,6 +516,25 @@ def _strip_nulls(value: Any) -> Any:
     return value
 
 
+def _json_sanitize(value: Any) -> Any:
+    """
+    DynamoDB returns numbers as Decimal; CDP expects JSON-serializable primitives.
+    Convert Decimals to int/float (prefer int when integral) recursively.
+    """
+    if isinstance(value, Decimal):
+        try:
+            if value == value.to_integral_value():
+                return int(value)
+        except Exception:
+            pass
+        return float(value)
+    if isinstance(value, dict):
+        return {str(k): _json_sanitize(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_sanitize(v) for v in value]
+    return value
+
+
 def _format_usdc_price(amount_micro: int) -> str:
     # USDC has 6 decimals.
     return f"${amount_micro / 1_000_000:.2f}"
@@ -595,7 +615,7 @@ def _cdp_post(path: str, payload: dict[str, Any], *, timeout_seconds: float = 10
     request_host = "api.cdp.coinbase.com"
     request_path = f"/platform{path}"
     url = f"https://{request_host}{request_path}"
-    data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    data = json.dumps(_json_sanitize(payload), separators=(",", ":")).encode("utf-8")
     # urllib checks for "Content-type" specifically before auto-inserting its
     # default form-encoded content type, so use that key casing explicitly.
     headers = {
