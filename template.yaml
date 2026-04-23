@@ -152,8 +152,17 @@ Parameters:
     Default: ""
     NoEcho: true
     Description: >-
-      CDP API bearer token (JWT) used to authenticate requests to the x402 facilitator
+      CDP Secret API Key used to authenticate requests to the x402 facilitator
       endpoints at https://api.cdp.coinbase.com/platform/v2/x402.
+
+  CdpApiKeyId:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: >-
+      Coinbase Developer Platform API key ID for x402 facilitator authentication.
+      When set along with CdpX402FacilitatorBearerToken (secret API key), the mnemospark-lite
+      upload handler uses CDP API key headers instead of Authorization: Bearer.
 
 Conditions:
   # Staging: API Gateway CORS for ls-web uses fixed AllowOrigin/AllowHeaders below (SAM --parameter-overrides
@@ -2038,7 +2047,8 @@ Resources:
           MNEMOSPARK_RECIPIENT_WALLET: !Ref MnemosparkRecipientWallet
           MNEMOSPARK_PAYMENT_NETWORK: !Ref PaymentNetwork
           MNEMOSPARK_PAYMENT_ASSET: !Ref PaymentAssetAddress
-          CDP_X402_FACILITATOR_BEARER_TOKEN: !Ref CdpX402FacilitatorBearerToken
+          CDP_API_KEY_SECRET: !Ref CdpX402FacilitatorBearerToken
+          CDP_API_KEY_ID: !Ref CdpApiKeyId
       Events:
         MnemosparkLiteUploadPost:
           Type: Api

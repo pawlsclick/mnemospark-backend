@@ -419,26 +419,31 @@ def _decode_payment_payload(payment_header: str) -> dict[str, Any]:
     raise BadRequestError("payment header must be base64-encoded JSON")
 
 
-def _cdp_facilitator_auth_header() -> str:
-    token = (os.environ.get("CDP_X402_FACILITATOR_BEARER_TOKEN") or "").strip()
-    if not token:
-        raise RuntimeError("CDP_X402_FACILITATOR_BEARER_TOKEN is not configured")
-    return f"Bearer {token}"
+def _cdp_facilitator_auth_headers() -> dict[str, str]:
+    # CDP facilitator auth uses API key headers (id + secret). Docs:
+    # https://docs.cdp.coinbase.com/x402/quickstart-for-buyers
+    key_id = (os.environ.get("CDP_API_KEY_ID") or "").strip()
+    key_secret = (os.environ.get("CDP_API_KEY_SECRET") or "").strip()
+
+    if key_id and key_secret:
+        return {
+            "CDP-API-KEY-ID": key_id,
+            "CDP-API-KEY-SECRET": key_secret,
+        }
+
+    raise RuntimeError("CDP facilitator auth is not configured (set CDP_API_KEY_ID + CDP_API_KEY_SECRET)")
 
 
 def _cdp_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     base = "https://api.cdp.coinbase.com/platform"
     url = f"{base}{path}"
     data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    req = urllib_request.Request(
-        url,
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": _cdp_facilitator_auth_header(),
-            "Content-Type": "application/json",
-        },
-    )
+    # urllib checks for "Content-type" specifically before auto-inserting its
+    # default form-encoded content type, so use that key casing explicitly.
+    headers = {"Content-type": "application/json", **_cdp_facilitator_auth_headers()}
+    req = urllib_request.Request(url, data=data, method="POST")
+    # Avoid Request.add_header(), which lowercases custom header names.
+    req.headers.update(headers)
     try:
         with urllib_request.urlopen(req, timeout=10) as resp:
             raw = resp.read().decode("utf-8")

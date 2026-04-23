@@ -14,7 +14,7 @@ This runbook is for verifying that the mnemospark-lite marketplace storage facad
   - `POST /api/mnemospark-lite/upload/complete`
   - `GET /api/mnemospark-lite/uploads`
   - `GET /api/mnemospark-lite/download/{uploadId}`
-- CDP facilitator auth configured (Lambda env `CDP_X402_FACILITATOR_BEARER_TOKEN`).
+- CDP facilitator auth configured (Lambda env `CDP_API_KEY_SECRET`).
 - Payment recipient configured (stack params / env):
   - `MNEMOSPARK_RECIPIENT_WALLET`
   - `MNEMOSPARK_PAYMENT_NETWORK` (CAIP-2, e.g. `eip155:8453`)
