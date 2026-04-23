@@ -566,6 +566,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
             facilitator_payer_norm = normalize_wallet_address(facilitator_payer, "payer_wallet")
             if facilitator_payer_norm != payer_wallet:
                 logger.warning("Facilitator payer mismatch (payload=%s facilitator=%s)", payer_wallet, facilitator_payer_norm)
+                payer_wallet = facilitator_payer_norm
         except BadRequestError:
             logger.warning("Facilitator returned malformed payer; continuing (payload=%s)", payer_wallet)
     transaction_hash = str(settle_resp.get("transaction") or "").strip() or None
