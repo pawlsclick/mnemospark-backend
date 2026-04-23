@@ -46,7 +46,8 @@ These are stored as **GitHub Environment secrets** on the **staging** environmen
 | GitHub secret | SAM / CloudFormation parameter | Notes |
 |---|---|---|
 | `MNEMOSPARK_LITE_BEARER_SECRET` | `MnemosparkLiteBearerSecret` | HMAC secret for bearer tokens used by `GET /api/mnemospark-lite/uploads` and `GET /api/mnemospark-lite/download/{uploadId}`. |
-| `CDP_X402_FACILITATOR_BEARER_TOKEN` | `CdpX402FacilitatorBearerToken` | CDP x402 facilitator API secret used to call `https://api.cdp.coinbase.com/platform/v2/x402` (`/verify`, `/settle`). |
+| `CDP_X402_FACILITATOR_BEARER_TOKEN` | `CdpX402FacilitatorBearerToken` | CDP x402 facilitator **Secret API Key** used to call `https://api.cdp.coinbase.com/platform/v2/x402` (`/verify`, `/settle`). |
+| `CDP_API_KEY_ID` | `CdpApiKeyId` | CDP x402 facilitator API key **ID** (pairs with the Secret API Key above). |
 
 Optional (defaults shown if unset in the workflow):
 

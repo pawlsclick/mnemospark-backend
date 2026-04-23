@@ -57,6 +57,7 @@ jobs:
           PAYMENT_ASSET_ADDRESS: ${{ vars.PAYMENT_ASSET_ADDRESS }}
           MNEMOSPARK_LITE_BEARER_SECRET: ${{ secrets.MNEMOSPARK_LITE_BEARER_SECRET }}
           CDP_X402_FACILITATOR_BEARER_TOKEN: ${{ secrets.CDP_X402_FACILITATOR_BEARER_TOKEN }}
+          CDP_API_KEY_ID: ${{ secrets.CDP_API_KEY_ID }}
           PRICE_STORAGE_FLOOR: ${{ vars.PRICE_STORAGE_FLOOR || '0' }}
           PRICE_STORAGE_MARKUP: ${{ vars.PRICE_STORAGE_MARKUP || '0' }}
         run: |
@@ -76,6 +77,7 @@ jobs:
           require_var PAYMENT_ASSET_ADDRESS "${PAYMENT_ASSET_ADDRESS}"
           require_var MNEMOSPARK_LITE_BEARER_SECRET "${MNEMOSPARK_LITE_BEARER_SECRET}" secret
           require_var CDP_X402_FACILITATOR_BEARER_TOKEN "${CDP_X402_FACILITATOR_BEARER_TOKEN}" secret
+          require_var CDP_API_KEY_ID "${CDP_API_KEY_ID}" secret
           if [ "${PAYMENT_SETTLEMENT_MODE}" = "onchain" ]; then
             require_var BASE_RPC_URL "${BASE_RPC_URL}"
           fi
@@ -94,6 +96,7 @@ jobs:
               "PaymentAssetAddress=${PAYMENT_ASSET_ADDRESS}" \
               "MnemosparkLiteBearerSecret=${MNEMOSPARK_LITE_BEARER_SECRET}" \
               "CdpX402FacilitatorBearerToken=${CDP_X402_FACILITATOR_BEARER_TOKEN}" \
+              "CdpApiKeyId=${CDP_API_KEY_ID}" \
               "PriceStorageFloor=${PRICE_STORAGE_FLOOR}" \
               "PriceStorageMarkup=${PRICE_STORAGE_MARKUP}" \
               "RestApiCorsAllowOrigin=https://app.mnemospark.ai"
