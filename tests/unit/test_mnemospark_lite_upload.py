@@ -255,15 +255,22 @@ class PostUploadReliabilityTests(unittest.TestCase):
             mock.patch.object(
                 app,
                 "_decode_payment_payload",
-                return_value={"x402Version": 2, "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
+                return_value={
+                    "x402Version": 2,
+                    "payload": {
+                        "authorization": {
+                            "from": "0x" + ("1" * 40),
+                            "to": "0x" + ("b" * 40),
+                            "value": "20000",
+                            "validAfter": "1716150000",
+                            "validBefore": "2716150000",
+                            "nonce": "0x" + ("1" * 64),
+                        },
+                        "signature": "0x" + ("2" * 130),
+                    },
+                },
             ),
-            mock.patch.object(
-                app,
-                "_cdp_post",
-                side_effect=[
-                    {"isValid": True, "payer": "0x" + ("1" * 40)},
-                ],
-            ),
+            mock.patch.object(app, "_verify_payment_locally", return_value=None),
             mock.patch.object(app.s3, "head_bucket", return_value={}),
             mock.patch.object(app, "_ensure_bucket_lifecycle_expiration", side_effect=lifecycle_error),
             mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload"),
@@ -312,15 +319,22 @@ class PostUploadReliabilityTests(unittest.TestCase):
             mock.patch.object(
                 app,
                 "_decode_payment_payload",
-                return_value={"x402Version": 2, "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
+                return_value={
+                    "x402Version": 2,
+                    "payload": {
+                        "authorization": {
+                            "from": "0x" + ("1" * 40),
+                            "to": "0x" + ("b" * 40),
+                            "value": "20000",
+                            "validAfter": "1716150000",
+                            "validBefore": "2716150000",
+                            "nonce": "0x" + ("1" * 64),
+                        },
+                        "signature": "0x" + ("2" * 130),
+                    },
+                },
             ),
-            mock.patch.object(
-                app,
-                "_cdp_post",
-                side_effect=[
-                    {"isValid": True, "payer": "0x" + ("1" * 40)},
-                ],
-            ),
+            mock.patch.object(app, "_verify_payment_locally", return_value=None),
             mock.patch.object(app.s3, "head_bucket", return_value={}),
             mock.patch.object(app, "_ensure_bucket_lifecycle_expiration", return_value=None),
             mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload") as presign_mock,
