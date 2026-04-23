@@ -213,6 +213,56 @@ class BucketLifecycleTests(unittest.TestCase):
 
 
 class PostUploadReliabilityTests(unittest.TestCase):
+    def test_post_upload_sends_scheme_and_network_top_level_to_cdp(self):
+        event = {
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+        uploads_table = mock.Mock()
+
+        requirements = {
+            "accepts": [
+                {
+                    "scheme": "exact",
+                    "network": "eip155:8453",
+                    "asset": "0x" + ("a" * 40),
+                    "payTo": "0x" + ("b" * 40),
+                    "amount": "20000",
+                }
+            ]
+        }
+        payment_payload = {
+            "x402Version": 2,
+            "payload": {"authorization": {"from": "0x" + ("1" * 40)}},
+            "accepted": {"scheme": "exact", "network": "eip155:8453"},
+        }
+
+        with (
+            mock.patch.object(app, "_payment_requirements", return_value=requirements),
+            mock.patch.object(app, "_decode_payment_payload", return_value=payment_payload),
+            mock.patch.object(app, "_cdp_post", return_value={"success": True, "transaction": "0xabc", "payer": "0x" + ("1" * 40)}) as cdp_mock,
+            mock.patch.object(app.s3, "head_bucket", return_value={}),
+            mock.patch.object(app, "_ensure_bucket_lifecycle_expiration", return_value=None),
+            mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload"),
+            mock.patch.object(app, "_uploads_table", return_value=uploads_table),
+            mock.patch.object(app, "_payment_config", return_value={"payment_network": "base-sepolia"}),
+            mock.patch.object(app, "_sign_bearer", return_value="bearer"),
+            mock.patch.object(app.secrets, "token_urlsafe", side_effect=["upload123", "completion123"]),
+        ):
+            response = app._handle_post_upload(event)
+
+        self.assertEqual(response["statusCode"], 200)
+        payload_sent = cdp_mock.call_args.args[1]["paymentPayload"]
+        self.assertEqual(payload_sent.get("scheme"), "exact")
+        self.assertEqual(payload_sent.get("network"), "eip155:8453")
+
     def test_post_upload_continues_when_lifecycle_ensure_fails(self):
         event = {
             "body": json.dumps(
