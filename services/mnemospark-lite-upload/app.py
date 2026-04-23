@@ -35,6 +35,7 @@ from urllib.error import HTTPError, URLError
 import socket
 
 try:
+    from common.eip3009_verification import TRANSFER_WITH_AUTH_TYPES, normalize_transfer_with_auth_nonce
     from common.http_response_headers import rest_api_json_headers
     from common.storage_wallet_s3 import (
         BadRequestError,
@@ -49,6 +50,7 @@ except ModuleNotFoundError:  # pragma: no cover
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.eip3009_verification import TRANSFER_WITH_AUTH_TYPES, normalize_transfer_with_auth_nonce
     from common.http_response_headers import rest_api_json_headers
     from common.storage_wallet_s3 import (
         BadRequestError,
@@ -83,6 +85,123 @@ class UnauthorizedError(ValueError):
 class SettlementPendingError(RuntimeError):
     pass
 
+
+class PaymentInvalidError(ValueError):
+    pass
+
+
+def _chain_id_from_caip2(network: str) -> int:
+    raw = (network or "").strip().lower()
+    if raw.startswith("eip155:"):
+        try:
+            return int(raw.split(":", 1)[1])
+        except Exception as exc:
+            raise BadRequestError(f"Invalid CAIP-2 network: {network!r}") from exc
+    raise BadRequestError(f"Unsupported network (expected CAIP-2 eip155:*): {network!r}")
+
+
+def _normalize_nonce(nonce: Any) -> str:
+    return normalize_transfer_with_auth_nonce(nonce, error_cls=BadRequestError)
+
+
+def _require_int(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise BadRequestError(f"{field} must be an integer")
+    return value
+
+
+def _coerce_int(value: Any, field: str) -> int:
+    if isinstance(value, bool):
+        raise BadRequestError(f"{field} must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isascii() and stripped.isdecimal():
+            try:
+                return int(stripped)
+            except ValueError:
+                pass
+    raise BadRequestError(f"{field} must be an integer")
+
+
+def _verify_payment_locally(*, payment_payload: dict[str, Any], requirement: dict[str, Any]) -> None:
+    """
+    Local EIP-712 verification for EIP-3009 TransferWithAuthorization.
+    Avoids external facilitator calls on the /upload critical path.
+    """
+    payload_obj = payment_payload.get("payload")
+    if not isinstance(payload_obj, dict):
+        raise BadRequestError("payment payload must include payload object")
+    authorization = payload_obj.get("authorization")
+    signature = payload_obj.get("signature")
+    if not isinstance(authorization, dict) or not isinstance(signature, str) or not signature.strip():
+        raise BadRequestError("payment payload missing authorization/signature")
+    if not signature.startswith("0x") or len(signature.strip()) != 132:
+        raise BadRequestError("payment signature must be a 65-byte hex string")
+
+    from_addr = normalize_wallet_address(str(authorization.get("from") or ""), "payment from")
+    to_addr = normalize_wallet_address(str(authorization.get("to") or ""), "payment to")
+    value = _coerce_int(authorization.get("value"), "payment value")
+    valid_after = _coerce_int(authorization.get("validAfter"), "payment validAfter")
+    valid_before = _coerce_int(authorization.get("validBefore"), "payment validBefore")
+    nonce = _normalize_nonce(authorization.get("nonce"))
+
+    expected_to = normalize_wallet_address(str(requirement.get("payTo") or ""), "payment payTo")
+    expected_asset = normalize_wallet_address(str(requirement.get("asset") or ""), "payment asset")
+    expected_value = _coerce_int(requirement.get("amount"), "payment amount")
+    expected_network = str(requirement.get("network") or "").strip()
+    if not expected_network:
+        raise BadRequestError("payment network is required")
+
+    if to_addr != expected_to:
+        raise PaymentInvalidError("payment recipient does not match payTo")
+    if value != expected_value:
+        raise PaymentInvalidError("payment amount does not match requirement")
+
+    now = int(time.time())
+    if valid_after > now:
+        raise PaymentInvalidError("payment authorization is not yet valid")
+    if valid_before <= now:
+        raise PaymentInvalidError("payment authorization has expired")
+
+    extra = requirement.get("extra") if isinstance(requirement.get("extra"), dict) else {}
+    domain_name = str(extra.get("name") or "")
+    domain_version = str(extra.get("version") or "")
+    if not domain_name or not domain_version:
+        raise BadRequestError("EIP-712 domain name/version required in requirement.extra")
+
+    try:
+        from eth_account import Account
+        from eth_account.messages import encode_typed_data
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("eth-account is required for local payment verification") from exc
+
+    chain_id = _chain_id_from_caip2(expected_network)
+    try:
+        signable = encode_typed_data(
+            domain_data={
+                "name": domain_name,
+                "version": domain_version,
+                "chainId": chain_id,
+                "verifyingContract": expected_asset,
+            },
+            message_types=TRANSFER_WITH_AUTH_TYPES,
+            message_data={
+                "from": from_addr,
+                "to": to_addr,
+                "value": int(value),
+                "validAfter": int(valid_after),
+                "validBefore": int(valid_before),
+                "nonce": nonce,
+            },
+        )
+        recovered = Account.recover_message(signable, signature=signature.strip())
+    except Exception as exc:
+        raise PaymentInvalidError("payment signature is invalid") from exc
+    recovered_norm = normalize_wallet_address(recovered, "recovered signer")
+    if recovered_norm != from_addr:
+        raise PaymentInvalidError("payment signature does not recover payer wallet")
 
 def _uploads_table() -> Any:
     name = (os.environ.get("MNEMOSPARK_LITE_UPLOADS_TABLE_NAME") or "").strip()
@@ -189,12 +308,6 @@ def _verify_bearer(token: str) -> dict[str, Any]:
         raise UnauthorizedError("Invalid bearer token")
     payer_wallet = normalize_wallet_address(wallet, "bearer wallet")
     return {"payer_wallet": payer_wallet}
-
-
-def _require_int(value: Any, field: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise BadRequestError(f"{field} must be an integer")
-    return value
 
 
 @dataclass(frozen=True)
@@ -532,6 +645,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             return _handle_get_download(event, upload_id=upload_id)
 
         return _error(404, "not_found", "Route not found")
+    except PaymentInvalidError as exc:
+        return _error(402, "payment_invalid", str(exc))
     except BadRequestError as exc:
         return _error(400, "bad_request", str(exc))
     except UnauthorizedError as exc:
@@ -584,19 +699,9 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
             payer_raw = str(permit2_auth.get("from") or "")
     payer_wallet = normalize_wallet_address(payer_raw, "payer_wallet")
 
-    # Verify via CDP facilitator (fast). Settlement happens later in /complete to
-    # avoid API Gateway timeouts and to mirror the standard presigned upload flow.
-    verify_resp = _cdp_post(
-        "/v2/x402/verify",
-        {
-            "x402Version": int(payment_payload.get("x402Version") or 2),
-            "paymentPayload": _strip_nulls(payment_payload),
-            "paymentRequirements": requirement,
-        },
-        timeout_seconds=5.0,
-    )
-    if not bool(verify_resp.get("isValid")):
-        return _response(402, {"error": "payment_invalid", "message": str(verify_resp.get("invalidMessage") or "Payment is invalid.")})
+    # Verify locally (fast, no external dependency). Settlement happens later in
+    # /complete to avoid API Gateway timeouts.
+    _verify_payment_locally(payment_payload=payment_payload, requirement=requirement)
 
     now = datetime.now(timezone.utc)
     upload_id = secrets.token_urlsafe(16)

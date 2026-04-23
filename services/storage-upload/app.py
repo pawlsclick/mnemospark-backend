@@ -28,6 +28,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 try:
+    from common.eip3009_verification import TRANSFER_WITH_AUTH_TYPES, normalize_transfer_with_auth_nonce
     from common.http_response_headers import rest_api_json_headers
     from common.log_api_call_loader import load_log_api_call
     from common.request_log_utils import (
@@ -42,6 +43,7 @@ except ModuleNotFoundError:
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.eip3009_verification import TRANSFER_WITH_AUTH_TYPES, normalize_transfer_with_auth_nonce
     from common.http_response_headers import rest_api_json_headers
     from common.log_api_call_loader import load_log_api_call
     from common.request_log_utils import (
@@ -112,7 +114,6 @@ PAYMENT_REQUIRED_RESPONSE_HEADERS = ("PAYMENT-REQUIRED", "x-payment-required")
 PAYMENT_RESPONSE_HEADERS = ("PAYMENT-RESPONSE", "x-payment-response")
 
 ADDRESS_PATTERN = re.compile(r"^0x[a-fA-F0-9]{40}$")
-NONCE_PATTERN = re.compile(r"^0x[a-fA-F0-9]{64}$")
 
 BUCKET_NAME_MIN_LEN = 3
 BUCKET_NAME_MAX_LEN = 63
@@ -129,17 +130,6 @@ NETWORK_TO_CAIP2 = {
     "base-sepolia": "eip155:84532",
     "eip155:84532": "eip155:84532",
     "84532": "eip155:84532",
-}
-
-TRANSFER_WITH_AUTH_TYPES = {
-    "TransferWithAuthorization": [
-        {"name": "from", "type": "address"},
-        {"name": "to", "type": "address"},
-        {"name": "value", "type": "uint256"},
-        {"name": "validAfter", "type": "uint256"},
-        {"name": "validBefore", "type": "uint256"},
-        {"name": "nonce", "type": "bytes32"},
-    ]
 }
 
 USDC_TRANSFER_WITH_AUTHORIZATION_ABI = [
@@ -738,12 +728,7 @@ def _decode_payment_payload(payment_header: str) -> dict[str, Any]:
 
 
 def _normalize_nonce(nonce: Any) -> str:
-    if not isinstance(nonce, str):
-        raise BadRequestError("payment nonce must be a hex string")
-    normalized = nonce.strip()
-    if not NONCE_PATTERN.fullmatch(normalized):
-        raise BadRequestError("payment nonce must be 32 bytes hex (0x-prefixed)")
-    return f"0x{normalized[2:].lower()}"
+    return normalize_transfer_with_auth_nonce(nonce, error_cls=BadRequestError)
 
 
 def _extract_transfer_authorization(payment_payload: dict[str, Any]) -> TransferAuthorization:

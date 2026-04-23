@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sys
+import types
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -104,6 +105,197 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
         body = json.loads(response["body"])
         self.assertEqual(body["error"], "bad_request")
         self.assertIn("Uploaded object not found", body["message"])
+
+    def test_upload_with_invalid_payment_returns_402_payment_invalid(self):
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/upload",
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+
+        with (
+            mock.patch.object(
+                app,
+                "_payment_requirements",
+                return_value={
+                    "accepts": [
+                        {
+                            "scheme": "exact",
+                            "network": "eip155:8453",
+                            "asset": "0x" + ("a" * 40),
+                            "payTo": "0x" + ("b" * 40),
+                            "amount": "20000",
+                            "maxTimeoutSeconds": 3600,
+                            "extra": {"name": "USD Coin", "version": "2"},
+                        }
+                    ]
+                },
+            ),
+            mock.patch.object(
+                app,
+                "_decode_payment_payload",
+                return_value={
+                    "x402Version": 2,
+                    "payload": {
+                        "authorization": {
+                            "from": "0x" + ("1" * 40),
+                        },
+                        "signature": "0x" + ("2" * 130),
+                    },
+                },
+            ),
+            mock.patch.object(
+                app,
+                "_verify_payment_locally",
+                side_effect=app.PaymentInvalidError("payment signature does not recover payer wallet"),
+            ),
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 402)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "payment_invalid")
+        self.assertIn("payment signature does not recover payer wallet", body["message"])
+
+    def test_upload_with_unicode_digit_value_returns_400_bad_request(self):
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/upload",
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+
+        with (
+            mock.patch.object(
+                app,
+                "_payment_requirements",
+                return_value={
+                    "accepts": [
+                        {
+                            "scheme": "exact",
+                            "network": "eip155:8453",
+                            "asset": "0x" + ("a" * 40),
+                            "payTo": "0x" + ("b" * 40),
+                            "amount": "20000",
+                            "maxTimeoutSeconds": 3600,
+                            "extra": {"name": "USD Coin", "version": "2"},
+                        }
+                    ]
+                },
+            ),
+            mock.patch.object(
+                app,
+                "_decode_payment_payload",
+                return_value={
+                    "x402Version": 2,
+                    "payload": {
+                        "authorization": {
+                            "from": "0x" + ("1" * 40),
+                            "to": "0x" + ("b" * 40),
+                            "value": "٢٠٠٠٠",
+                            "validAfter": "1716150000",
+                            "validBefore": "2716150000",
+                            "nonce": "0x" + ("1" * 64),
+                        },
+                        "signature": "0x" + ("2" * 130),
+                    },
+                },
+            ),
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 400)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "bad_request")
+        self.assertIn("payment value must be an integer", body["message"])
+
+    def test_upload_with_crypto_parse_error_returns_402_payment_invalid(self):
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/upload",
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+        fake_eth_account = types.ModuleType("eth_account")
+        fake_messages = types.ModuleType("eth_account.messages")
+
+        class FakeAccount:
+            @staticmethod
+            def recover_message(signable, signature):
+                raise ValueError("invalid signature")
+
+        fake_eth_account.Account = FakeAccount
+        fake_messages.encode_typed_data = mock.Mock(return_value=object())
+
+        with (
+            mock.patch.object(
+                app,
+                "_payment_requirements",
+                return_value={
+                    "accepts": [
+                        {
+                            "scheme": "exact",
+                            "network": "eip155:8453",
+                            "asset": "0x" + ("a" * 40),
+                            "payTo": "0x" + ("b" * 40),
+                            "amount": "20000",
+                            "maxTimeoutSeconds": 3600,
+                            "extra": {"name": "USD Coin", "version": "2"},
+                        }
+                    ]
+                },
+            ),
+            mock.patch.object(
+                app,
+                "_decode_payment_payload",
+                return_value={
+                    "x402Version": 2,
+                    "payload": {
+                        "authorization": {
+                            "from": "0x" + ("1" * 40),
+                            "to": "0x" + ("b" * 40),
+                            "value": "20000",
+                            "validAfter": "1716150000",
+                            "validBefore": "2716150000",
+                            "nonce": "0x" + ("1" * 64),
+                        },
+                        "signature": "0x" + ("z" * 130),
+                    },
+                },
+            ),
+            mock.patch.dict(
+                sys.modules,
+                {"eth_account": fake_eth_account, "eth_account.messages": fake_messages},
+            ),
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 402)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "payment_invalid")
+        self.assertIn("payment signature is invalid", body["message"])
 
 
 class CompleteUploadOrderingTests(unittest.TestCase):
@@ -255,15 +447,22 @@ class PostUploadReliabilityTests(unittest.TestCase):
             mock.patch.object(
                 app,
                 "_decode_payment_payload",
-                return_value={"x402Version": 2, "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
+                return_value={
+                    "x402Version": 2,
+                    "payload": {
+                        "authorization": {
+                            "from": "0x" + ("1" * 40),
+                            "to": "0x" + ("b" * 40),
+                            "value": "20000",
+                            "validAfter": "1716150000",
+                            "validBefore": "2716150000",
+                            "nonce": "0x" + ("1" * 64),
+                        },
+                        "signature": "0x" + ("2" * 130),
+                    },
+                },
             ),
-            mock.patch.object(
-                app,
-                "_cdp_post",
-                side_effect=[
-                    {"isValid": True, "payer": "0x" + ("1" * 40)},
-                ],
-            ),
+            mock.patch.object(app, "_verify_payment_locally", return_value=None),
             mock.patch.object(app.s3, "head_bucket", return_value={}),
             mock.patch.object(app, "_ensure_bucket_lifecycle_expiration", side_effect=lifecycle_error),
             mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload"),
@@ -312,15 +511,22 @@ class PostUploadReliabilityTests(unittest.TestCase):
             mock.patch.object(
                 app,
                 "_decode_payment_payload",
-                return_value={"x402Version": 2, "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
+                return_value={
+                    "x402Version": 2,
+                    "payload": {
+                        "authorization": {
+                            "from": "0x" + ("1" * 40),
+                            "to": "0x" + ("b" * 40),
+                            "value": "20000",
+                            "validAfter": "1716150000",
+                            "validBefore": "2716150000",
+                            "nonce": "0x" + ("1" * 64),
+                        },
+                        "signature": "0x" + ("2" * 130),
+                    },
+                },
             ),
-            mock.patch.object(
-                app,
-                "_cdp_post",
-                side_effect=[
-                    {"isValid": True, "payer": "0x" + ("1" * 40)},
-                ],
-            ),
+            mock.patch.object(app, "_verify_payment_locally", return_value=None),
             mock.patch.object(app.s3, "head_bucket", return_value={}),
             mock.patch.object(app, "_ensure_bucket_lifecycle_expiration", return_value=None),
             mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload") as presign_mock,
