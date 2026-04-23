@@ -134,8 +134,13 @@ def _coerce_int(value: Any, field: str) -> int:
         raise BadRequestError(f"{field} must be an integer")
     if isinstance(value, int):
         return value
-    if isinstance(value, str) and value.strip().isdigit():
-        return int(value.strip())
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdecimal():
+            try:
+                return int(stripped)
+            except ValueError:
+                pass
     raise BadRequestError(f"{field} must be an integer")
 
 
@@ -191,24 +196,28 @@ def _verify_payment_locally(*, payment_payload: dict[str, Any], requirement: dic
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("eth-account is required for local payment verification") from exc
 
-    signable = encode_typed_data(
-        domain_data={
-            "name": domain_name,
-            "version": domain_version,
-            "chainId": _chain_id_from_caip2(expected_network),
-            "verifyingContract": expected_asset,
-        },
-        message_types=TRANSFER_WITH_AUTH_TYPES,
-        message_data={
-            "from": from_addr,
-            "to": to_addr,
-            "value": int(value),
-            "validAfter": int(valid_after),
-            "validBefore": int(valid_before),
-            "nonce": nonce,
-        },
-    )
-    recovered = Account.recover_message(signable, signature=signature.strip())
+    chain_id = _chain_id_from_caip2(expected_network)
+    try:
+        signable = encode_typed_data(
+            domain_data={
+                "name": domain_name,
+                "version": domain_version,
+                "chainId": chain_id,
+                "verifyingContract": expected_asset,
+            },
+            message_types=TRANSFER_WITH_AUTH_TYPES,
+            message_data={
+                "from": from_addr,
+                "to": to_addr,
+                "value": int(value),
+                "validAfter": int(valid_after),
+                "validBefore": int(valid_before),
+                "nonce": nonce,
+            },
+        )
+        recovered = Account.recover_message(signable, signature=signature.strip())
+    except Exception as exc:
+        raise PaymentInvalidError("payment signature is invalid") from exc
     recovered_norm = normalize_wallet_address(recovered, "recovered signer")
     if recovered_norm != from_addr:
         raise PaymentInvalidError("payment signature does not recover payer wallet")
