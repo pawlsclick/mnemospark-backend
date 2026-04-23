@@ -235,8 +235,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
                 app,
                 "_cdp_post",
                 side_effect=[
-                    {"isValid": True, "payer": "0x" + ("1" * 40)},
-                    {"success": True, "transaction": "0xabc"},
+                    {"success": True, "transaction": "0xabc", "payer": "0x" + ("1" * 40)},
                 ],
             ),
             mock.patch.object(app.s3, "head_bucket", return_value={}),
@@ -273,8 +272,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
                 app,
                 "_cdp_post",
                 side_effect=[
-                    {"isValid": True, "payer": "0x" + ("1" * 40)},
-                    {"success": True, "transaction": "0xabc"},
+                    {"success": True, "transaction": "0xabc", "payer": "0x" + ("1" * 40)},
                 ],
             ),
             mock.patch.object(app.s3, "head_bucket", return_value={}),

@@ -536,21 +536,15 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         )
     payment_payload = _decode_payment_payload(payment_header)
 
-    # Verify + settle via CDP facilitator.
-    verify_resp = _cdp_post(
-        "/v2/x402/verify",
-        {"x402Version": int(payment_payload.get("x402Version") or 2), "paymentPayload": payment_payload, "paymentRequirements": requirements},
-    )
-    if not bool(verify_resp.get("isValid")):
-        return _response(402, {"error": "payment_invalid", "message": str(verify_resp.get("invalidMessage") or "Payment is invalid.")})
-    payer_wallet = normalize_wallet_address(str(verify_resp.get("payer") or ""), "payer_wallet")
-
+    # Settle via CDP facilitator. This is the critical-path call; skipping a
+    # separate verify reduces latency and helps stay under API Gateway timeouts.
     settle_resp = _cdp_post(
         "/v2/x402/settle",
         {"x402Version": int(payment_payload.get("x402Version") or 2), "paymentPayload": payment_payload, "paymentRequirements": requirements},
     )
     if not bool(settle_resp.get("success")):
         return _response(402, {"error": "payment_settle_failed", "message": str(settle_resp.get("errorMessage") or "Payment settlement failed.")})
+    payer_wallet = normalize_wallet_address(str(settle_resp.get("payer") or ""), "payer_wallet")
     transaction_hash = str(settle_resp.get("transaction") or "").strip() or None
 
     now = datetime.now(timezone.utc)
