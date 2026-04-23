@@ -446,12 +446,9 @@ def _cdp_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     url = f"{base}{path}"
     data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     headers = {"Content-Type": "application/json", **_cdp_facilitator_auth_headers()}
-    req = urllib_request.Request(
-        url,
-        data=data,
-        method="POST",
-        headers=headers,
-    )
+    req = urllib_request.Request(url, data=data, method="POST")
+    # Avoid Request.add_header(), which lowercases custom header names.
+    req.headers.update(headers)
     try:
         with urllib_request.urlopen(req, timeout=10) as resp:
             raw = resp.read().decode("utf-8")
