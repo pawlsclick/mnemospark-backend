@@ -207,7 +207,7 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
                         "authorization": {
                             "from": "0x" + ("1" * 40),
                             "to": "0x" + ("b" * 40),
-                            "value": "²",
+                            "value": "٢٠٠٠٠",
                             "validAfter": "1716150000",
                             "validBefore": "2716150000",
                             "nonce": "0x" + ("1" * 64),

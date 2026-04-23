@@ -117,7 +117,7 @@ def _coerce_int(value: Any, field: str) -> int:
         return value
     if isinstance(value, str):
         stripped = value.strip()
-        if stripped.isdecimal():
+        if stripped.isascii() and stripped.isdecimal():
             try:
                 return int(stripped)
             except ValueError:
