@@ -32,6 +32,7 @@ import boto3
 from botocore.exceptions import ClientError
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
+import socket
 
 try:
     from common.http_response_headers import rest_api_json_headers
@@ -76,6 +77,10 @@ _LIFECYCLE_ENSURED_BUCKETS: set[str] = set()
 
 
 class UnauthorizedError(ValueError):
+    pass
+
+
+class SettlementPendingError(RuntimeError):
     pass
 
 
@@ -397,6 +402,11 @@ def _strip_nulls(value: Any) -> Any:
     return value
 
 
+def _format_usdc_price(amount_micro: int) -> str:
+    # USDC has 6 decimals.
+    return f"${amount_micro / 1_000_000:.2f}"
+
+
 def _encode_json_base64(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     return base64.b64encode(encoded).decode("ascii")
@@ -468,7 +478,7 @@ def _cdp_facilitator_bearer_token(*, request_method: str, request_host: str, req
     return f"Bearer {token}"
 
 
-def _cdp_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _cdp_post(path: str, payload: dict[str, Any], *, timeout_seconds: float = 10.0) -> dict[str, Any]:
     request_host = "api.cdp.coinbase.com"
     request_path = f"/platform{path}"
     url = f"https://{request_host}{request_path}"
@@ -487,7 +497,7 @@ def _cdp_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     # Avoid Request.add_header(), which lowercases custom header names.
     req.headers.update(headers)
     try:
-        with urllib_request.urlopen(req, timeout=10) as resp:
+        with urllib_request.urlopen(req, timeout=timeout_seconds) as resp:
             raw = resp.read().decode("utf-8")
             parsed = json.loads(raw) if raw else {}
             if not isinstance(parsed, dict):
@@ -498,6 +508,8 @@ def _cdp_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
         if 400 <= exc.code < 500:
             raise BadRequestError(f"CDP facilitator error ({exc.code}): {body}") from exc
         raise RuntimeError(f"CDP facilitator error ({exc.code}): {body}") from exc
+    except (socket.timeout, TimeoutError) as exc:
+        raise SettlementPendingError("CDP request timed out") from exc
     except URLError as exc:
         raise RuntimeError("Unable to reach CDP facilitator") from exc
 
@@ -572,33 +584,19 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
             payer_raw = str(permit2_auth.get("from") or "")
     payer_wallet = normalize_wallet_address(payer_raw, "payer_wallet")
 
-    # Settle via CDP facilitator. This is the critical-path call; skipping a
-    # separate verify reduces latency and helps stay under API Gateway timeouts.
-    settle_resp = _cdp_post(
-        "/v2/x402/settle",
+    # Verify via CDP facilitator (fast). Settlement happens later in /complete to
+    # avoid API Gateway timeouts and to mirror the standard presigned upload flow.
+    verify_resp = _cdp_post(
+        "/v2/x402/verify",
         {
             "x402Version": int(payment_payload.get("x402Version") or 2),
-            # CDP's schema rejects nulls (e.g., resource.description=null), so
-            # remove None fields before sending.
             "paymentPayload": _strip_nulls(payment_payload),
-            # CDP expects a single PaymentRequirements object here, not
-            # the {"accepts":[...]} wrapper used by PAYMENT-REQUIRED.
             "paymentRequirements": requirement,
         },
+        timeout_seconds=5.0,
     )
-    if not bool(settle_resp.get("success")):
-        return _response(402, {"error": "payment_settle_failed", "message": str(settle_resp.get("errorMessage") or "Payment settlement failed.")})
-    # Best-effort consistency check; do not fail the request after a successful settle.
-    facilitator_payer = str(settle_resp.get("payer") or "").strip()
-    if facilitator_payer:
-        try:
-            facilitator_payer_norm = normalize_wallet_address(facilitator_payer, "payer_wallet")
-            if facilitator_payer_norm != payer_wallet:
-                logger.warning("Facilitator payer mismatch (payload=%s facilitator=%s)", payer_wallet, facilitator_payer_norm)
-                payer_wallet = facilitator_payer_norm
-        except BadRequestError:
-            logger.warning("Facilitator returned malformed payer; continuing (payload=%s)", payer_wallet)
-    transaction_hash = str(settle_resp.get("transaction") or "").strip() or None
+    if not bool(verify_resp.get("isValid")):
+        return _response(402, {"error": "payment_invalid", "message": str(verify_resp.get("invalidMessage") or "Payment is invalid.")})
 
     now = datetime.now(timezone.utc)
     upload_id = secrets.token_urlsafe(16)
@@ -640,6 +638,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     curl_example = f"curl -X PUT --data-binary @\"{req.filename}\" -H \"Content-Type: {req.content_type}\" \"{upload_url}\""
 
     bearer = _sign_bearer({"w": payer_wallet, "exp": int(time.time()) + 86400})
+    price_micro = int(requirement.get("amount") or X402_PRICE_MICRO_USDC)
 
     item = {
         "upload_id": upload_id,
@@ -658,8 +657,12 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         "expires_at": _expires_at_iso(now),
         "ttl_epoch_seconds": _ttl_epoch_seconds(now),
         "completion_token_hash": completion_token_hash,
-        "transaction_hash": transaction_hash,
-        "price_paid": "$0.02",
+        "transaction_hash": None,
+        "payment_status": "verified",
+        "payment_payload": _strip_nulls(payment_payload),
+        "payment_requirements": requirement,
+        "price_paid": _format_usdc_price(price_micro),
+        "price_micro_usdc": price_micro,
     }
     _uploads_table().put_item(Item=item, ConditionExpression="attribute_not_exists(upload_id)")
 
@@ -681,8 +684,8 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
             "metadata": {
                 "protocol": "x402",
                 "network": _payment_config()["payment_network"],
-                "price": "$0.02",
-                "payment": {"success": True, "transactionHash": transaction_hash},
+                "price": item["price_paid"],
+                "payment": {"success": True, "transactionHash": None, "status": "verified"},
             },
         },
     )
@@ -729,6 +732,44 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
         raise BadRequestError(f"Uploaded object exceeds max upload size ({MAX_UPLOAD_SIZE_BYTES} bytes)")
     if max_size > 0 and content_length > max_size:
         raise BadRequestError(f"Uploaded object exceeds tier max size ({max_size} bytes)")
+
+    # Settle payment here (can be slow); keep this endpoint retry-safe.
+    # Do this only after confirming the object exists and meets size limits to
+    # avoid charging if the upload never happened.
+    if not str(item.get("transaction_hash") or "").strip():
+        payment_payload = item.get("payment_payload")
+        payment_requirements = item.get("payment_requirements")
+        if not isinstance(payment_payload, dict) or not isinstance(payment_requirements, dict):
+            return _error(500, "internal_error", "Upload record missing payment context")
+        try:
+            settle_resp = _cdp_post(
+                "/v2/x402/settle",
+                {
+                    "x402Version": int(payment_payload.get("x402Version") or 2),
+                    "paymentPayload": _strip_nulls(payment_payload),
+                    "paymentRequirements": payment_requirements,
+                },
+                timeout_seconds=8.0,
+            )
+        except SettlementPendingError:
+            return _response(
+                202,
+                {"success": False, "error": "settlement_pending", "message": "Payment settlement pending; retry completion."},
+            )
+        if not bool(settle_resp.get("success")):
+            return _response(
+                402,
+                {"error": "payment_settle_failed", "message": str(settle_resp.get("errorMessage") or "Payment settlement failed.")},
+            )
+        transaction_hash = str(settle_resp.get("transaction") or "").strip() or None
+        try:
+            _uploads_table().update_item(
+                Key={"upload_id": upload_id},
+                UpdateExpression="SET transaction_hash=:t, payment_status=:ps",
+                ExpressionAttributeValues={":t": transaction_hash, ":ps": "settled"},
+            )
+        except ClientError:
+            logger.exception("Failed to persist settlement result (upload_id=%s)", upload_id)
 
     minted = _mint_ls_web_app_url(payer_wallet=payer_wallet, location=DEFAULT_REGION)
     public_url = minted["app"]

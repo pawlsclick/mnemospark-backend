@@ -85,6 +85,7 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
             "filename": "artifact.bin",
             "payer_wallet": "0x" + ("1" * 40),
             "max_size": 1000,
+            "transaction_hash": "0xabc",
         }
         event = {
             "httpMethod": "POST",
@@ -117,6 +118,7 @@ class CompleteUploadOrderingTests(unittest.TestCase):
             "filename": "artifact.bin",
             "payer_wallet": "0x" + ("1" * 40),
             "max_size": 1000,
+            "transaction_hash": "0xabc",
         }
         event = {"body": json.dumps({"uploadId": upload_id, "completion_token": token})}
         conditional_error = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
@@ -147,6 +149,7 @@ class CompleteUploadOrderingTests(unittest.TestCase):
             "filename": "artifact.bin",
             "payer_wallet": "0x" + ("1" * 40),
             "max_size": 1000,
+            "transaction_hash": "0xabc",
         }
         event = {"body": json.dumps({"uploadId": upload_id, "completion_token": token})}
 
@@ -258,7 +261,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
                 app,
                 "_cdp_post",
                 side_effect=[
-                    {"success": True, "transaction": "0xabc", "payer": "0x" + ("1" * 40)},
+                    {"isValid": True, "payer": "0x" + ("1" * 40)},
                 ],
             ),
             mock.patch.object(app.s3, "head_bucket", return_value={}),
@@ -315,7 +318,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
                 app,
                 "_cdp_post",
                 side_effect=[
-                    {"success": True, "transaction": "0xabc", "payer": "0x" + ("1" * 40)},
+                    {"isValid": True, "payer": "0x" + ("1" * 40)},
                 ],
             ),
             mock.patch.object(app.s3, "head_bucket", return_value={}),
