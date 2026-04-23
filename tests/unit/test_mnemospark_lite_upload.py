@@ -291,3 +291,36 @@ class PostUploadReliabilityTests(unittest.TestCase):
         self.assertEqual(presign_mock.call_args.kwargs["Params"]["Key"], "upload123/artifact.bin")
         self.assertEqual(uploads_table.put_item.call_args.kwargs["Item"]["object_key"], "upload123/artifact.bin")
         self.assertEqual(uploads_table.put_item.call_args.kwargs["Item"]["filename"], "artifact.bin")
+
+
+class CdpPostHeaderTests(unittest.TestCase):
+    def test_cdp_post_uses_urllib_content_type_key_to_prevent_duplicate_header(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        def fake_urlopen(req, timeout):
+            self.assertEqual(timeout, 10)
+            content_type_headers = [(k, v) for (k, v) in req.header_items() if k.lower() == "content-type"]
+            self.assertEqual(content_type_headers, [("Content-type", "application/json")])
+            self.assertIn(("CDP-API-KEY-ID", "id"), req.header_items())
+            self.assertIn(("CDP-API-KEY-SECRET", "secret"), req.header_items())
+            return FakeResponse()
+
+        with (
+            mock.patch.object(
+                app,
+                "_cdp_facilitator_auth_headers",
+                return_value={"CDP-API-KEY-ID": "id", "CDP-API-KEY-SECRET": "secret"},
+            ),
+            mock.patch.object(app.urllib_request, "urlopen", side_effect=fake_urlopen),
+        ):
+            response = app._cdp_post("/x402/facilitator/test", {"ok": True})
+
+        self.assertEqual(response, {})
