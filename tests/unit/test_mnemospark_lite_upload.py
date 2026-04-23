@@ -544,6 +544,33 @@ class PostUploadReliabilityTests(unittest.TestCase):
 
 
 class CdpPostHeaderTests(unittest.TestCase):
+    def test_cdp_post_serializes_decimal_payload_fields(self):
+        from decimal import Decimal
+
+        def fake_urlopen(req, timeout):
+            body = req.data.decode("utf-8")
+            parsed = json.loads(body)
+            self.assertEqual(parsed["n"], 2)
+            self.assertEqual(parsed["nested"]["x"], 3.5)
+
+            class FakeResponse:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def read(self):
+                    return b"{}"
+
+            return FakeResponse()
+
+        with (
+            mock.patch.object(app, "_cdp_facilitator_bearer_token", return_value="Bearer jwt"),
+            mock.patch.object(app.urllib_request, "urlopen", side_effect=fake_urlopen),
+        ):
+            app._cdp_post("/x402/facilitator/test", {"n": Decimal("2"), "nested": {"x": Decimal("3.5")}})
+
     def test_cdp_post_uses_urllib_content_type_key_to_prevent_duplicate_header(self):
         class FakeResponse:
             def __enter__(self):
