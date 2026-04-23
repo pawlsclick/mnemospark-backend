@@ -33,9 +33,9 @@ from botocore.exceptions import ClientError
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 import socket
-import re
 
 try:
+    from common.eip3009_verification import TRANSFER_WITH_AUTH_TYPES, normalize_transfer_with_auth_nonce
     from common.http_response_headers import rest_api_json_headers
     from common.storage_wallet_s3 import (
         BadRequestError,
@@ -50,6 +50,7 @@ except ModuleNotFoundError:  # pragma: no cover
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.eip3009_verification import TRANSFER_WITH_AUTH_TYPES, normalize_transfer_with_auth_nonce
     from common.http_response_headers import rest_api_json_headers
     from common.storage_wallet_s3 import (
         BadRequestError,
@@ -89,21 +90,6 @@ class PaymentInvalidError(ValueError):
     pass
 
 
-TRANSFER_WITH_AUTH_TYPES = {
-    "TransferWithAuthorization": [
-        {"name": "from", "type": "address"},
-        {"name": "to", "type": "address"},
-        {"name": "value", "type": "uint256"},
-        {"name": "validAfter", "type": "uint256"},
-        {"name": "validBefore", "type": "uint256"},
-        {"name": "nonce", "type": "bytes32"},
-    ]
-}
-
-
-NONCE_PATTERN = re.compile(r"^0x[0-9a-fA-F]{64}$")
-
-
 def _chain_id_from_caip2(network: str) -> int:
     raw = (network or "").strip().lower()
     if raw.startswith("eip155:"):
@@ -115,12 +101,7 @@ def _chain_id_from_caip2(network: str) -> int:
 
 
 def _normalize_nonce(nonce: Any) -> str:
-    if not isinstance(nonce, str):
-        raise BadRequestError("payment nonce must be a hex string")
-    normalized = nonce.strip()
-    if not NONCE_PATTERN.fullmatch(normalized):
-        raise BadRequestError("payment nonce must be 32 bytes hex (0x-prefixed)")
-    return f"0x{normalized[2:].lower()}"
+    return normalize_transfer_with_auth_nonce(nonce, error_cls=BadRequestError)
 
 
 def _require_int(value: Any, field: str) -> int:
