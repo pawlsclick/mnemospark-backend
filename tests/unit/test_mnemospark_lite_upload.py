@@ -229,7 +229,21 @@ class PostUploadReliabilityTests(unittest.TestCase):
         lifecycle_error = ClientError({"Error": {"Code": "Throttling"}}, "PutBucketLifecycleConfiguration")
 
         with (
-            mock.patch.object(app, "_payment_requirements", return_value={"accepts": []}),
+            mock.patch.object(
+                app,
+                "_payment_requirements",
+                return_value={
+                    "accepts": [
+                        {
+                            "scheme": "exact",
+                            "network": "eip155:8453",
+                            "asset": "0x" + ("a" * 40),
+                            "payTo": "0x" + ("b" * 40),
+                            "amount": "20000",
+                        }
+                    ]
+                },
+            ),
             mock.patch.object(
                 app,
                 "_decode_payment_payload",
@@ -270,7 +284,21 @@ class PostUploadReliabilityTests(unittest.TestCase):
         uploads_table = mock.Mock()
 
         with (
-            mock.patch.object(app, "_payment_requirements", return_value={"accepts": []}),
+            mock.patch.object(
+                app,
+                "_payment_requirements",
+                return_value={
+                    "accepts": [
+                        {
+                            "scheme": "exact",
+                            "network": "eip155:8453",
+                            "asset": "0x" + ("a" * 40),
+                            "payTo": "0x" + ("b" * 40),
+                            "amount": "20000",
+                        }
+                    ]
+                },
+            ),
             mock.patch.object(
                 app,
                 "_decode_payment_payload",

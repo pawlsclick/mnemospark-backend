@@ -528,6 +528,10 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     headers = _normalize_headers(event)
     payment_header = headers.get("payment-signature") or headers.get("x-payment")
     requirements = _payment_requirements()
+    accepts = requirements.get("accepts") if isinstance(requirements, dict) else None
+    requirement = accepts[0] if isinstance(accepts, list) and accepts else None
+    if not isinstance(requirement, dict):
+        raise RuntimeError("Payment requirements are misconfigured (expected accepts[0])")
     if not payment_header:
         return _response(
             402,
@@ -555,7 +559,13 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     # separate verify reduces latency and helps stay under API Gateway timeouts.
     settle_resp = _cdp_post(
         "/v2/x402/settle",
-        {"x402Version": int(payment_payload.get("x402Version") or 2), "paymentPayload": payment_payload, "paymentRequirements": requirements},
+        {
+            "x402Version": int(payment_payload.get("x402Version") or 2),
+            "paymentPayload": payment_payload,
+            # CDP expects a single PaymentRequirements object here, not
+            # the {"accepts":[...]} wrapper used by PAYMENT-REQUIRED.
+            "paymentRequirements": requirement,
+        },
     )
     if not bool(settle_resp.get("success")):
         return _response(402, {"error": "payment_settle_failed", "message": str(settle_resp.get("errorMessage") or "Payment settlement failed.")})
