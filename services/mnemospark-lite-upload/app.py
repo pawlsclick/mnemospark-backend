@@ -557,11 +557,21 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
 
     # Settle via CDP facilitator. This is the critical-path call; skipping a
     # separate verify reduces latency and helps stay under API Gateway timeouts.
+    #
+    # CDP's schema requires `scheme` on the paymentPayload (even for V2-style
+    # payloads), so include top-level scheme/network derived from accepted.
+    cdp_payment_payload = dict(payment_payload) if isinstance(payment_payload, dict) else {}
+    accepted = cdp_payment_payload.get("accepted")
+    if isinstance(accepted, dict):
+        if "scheme" not in cdp_payment_payload and accepted.get("scheme"):
+            cdp_payment_payload["scheme"] = accepted.get("scheme")
+        if "network" not in cdp_payment_payload and accepted.get("network"):
+            cdp_payment_payload["network"] = accepted.get("network")
     settle_resp = _cdp_post(
         "/v2/x402/settle",
         {
             "x402Version": int(payment_payload.get("x402Version") or 2),
-            "paymentPayload": payment_payload,
+            "paymentPayload": cdp_payment_payload,
             # CDP expects a single PaymentRequirements object here, not
             # the {"accepts":[...]} wrapper used by PAYMENT-REQUIRED.
             "paymentRequirements": requirement,
