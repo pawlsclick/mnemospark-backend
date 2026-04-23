@@ -423,20 +423,13 @@ def _cdp_facilitator_auth_headers() -> dict[str, str]:
     # CDP facilitator auth uses API key headers (id + secret). Docs:
     # https://docs.cdp.coinbase.com/x402/quickstart-for-buyers
     key_id = (os.environ.get("CDP_API_KEY_ID") or "").strip()
-    # Back-compat: we historically stored the CDP "Secret API Key" in
-    # CDP_X402_FACILITATOR_BEARER_TOKEN.
-    key_secret = (os.environ.get("CDP_API_KEY_SECRET") or os.environ.get("CDP_X402_FACILITATOR_BEARER_TOKEN") or "").strip()
+    key_secret = (os.environ.get("CDP_API_KEY_SECRET") or "").strip()
 
     if key_id and key_secret:
         return {
             "CDP-API-KEY-ID": key_id,
             "CDP-API-KEY-SECRET": key_secret,
         }
-
-    # Fallback: accept a bearer token if provided (older setup).
-    bearer = (os.environ.get("CDP_X402_FACILITATOR_BEARER_TOKEN") or "").strip()
-    if bearer:
-        return {"Authorization": f"Bearer {bearer}"}
 
     raise RuntimeError("CDP facilitator auth is not configured (set CDP_API_KEY_ID + CDP_API_KEY_SECRET)")
 
