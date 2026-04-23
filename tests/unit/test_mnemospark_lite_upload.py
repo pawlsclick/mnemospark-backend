@@ -230,7 +230,11 @@ class PostUploadReliabilityTests(unittest.TestCase):
 
         with (
             mock.patch.object(app, "_payment_requirements", return_value={"accepts": []}),
-            mock.patch.object(app, "_decode_payment_payload", return_value={"x402Version": 2}),
+            mock.patch.object(
+                app,
+                "_decode_payment_payload",
+                return_value={"x402Version": 2, "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
+            ),
             mock.patch.object(
                 app,
                 "_cdp_post",
@@ -267,7 +271,11 @@ class PostUploadReliabilityTests(unittest.TestCase):
 
         with (
             mock.patch.object(app, "_payment_requirements", return_value={"accepts": []}),
-            mock.patch.object(app, "_decode_payment_payload", return_value={"x402Version": 2}),
+            mock.patch.object(
+                app,
+                "_decode_payment_payload",
+                return_value={"x402Version": 2, "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
+            ),
             mock.patch.object(
                 app,
                 "_cdp_post",
