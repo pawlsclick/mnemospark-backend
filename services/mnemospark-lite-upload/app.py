@@ -431,7 +431,7 @@ def _cdp_facilitator_bearer_token(*, request_method: str, request_host: str, req
     try:
         # Newer SDK import path
         from cdp.auth import JwtOptions, generate_jwt  # type: ignore
-    except Exception:
+    except ImportError:
         try:
             # Older SDK import path
             from cdp.auth.utils.jwt import JwtOptions, generate_jwt  # type: ignore
