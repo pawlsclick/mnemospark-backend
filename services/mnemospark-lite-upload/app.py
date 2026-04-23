@@ -427,8 +427,10 @@ def _cdp_facilitator_auth_headers() -> dict[str, str]:
 
     if key_id and key_secret:
         return {
-            "CDP-API-KEY-ID": key_id,
-            "CDP-API-KEY-SECRET": key_secret,
+            # Note: CDP expects these as literal header names (underscores),
+            # not as hyphenated HTTP header variants.
+            "CDP_API_KEY_ID": key_id,
+            "CDP_API_KEY_SECRET": key_secret,
         }
 
     raise RuntimeError("CDP facilitator auth is not configured (set CDP_API_KEY_ID + CDP_API_KEY_SECRET)")
