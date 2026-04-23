@@ -213,6 +213,9 @@ class BucketLifecycleTests(unittest.TestCase):
 
 
 class PostUploadReliabilityTests(unittest.TestCase):
+    def test_strip_nulls_removes_none_values(self):
+        self.assertEqual(app._strip_nulls({"a": None, "b": {"c": None, "d": 1}}), {"b": {"d": 1}})
+
     def test_post_upload_continues_when_lifecycle_ensure_fails(self):
         event = {
             "body": json.dumps(
@@ -241,7 +244,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
                             "payTo": "0x" + ("b" * 40),
                             "amount": "20000",
                             "maxTimeoutSeconds": 3600,
-                            "extra": {},
+                            "extra": {"name": "USD Coin", "version": "2"},
                         }
                     ]
                 },
@@ -298,7 +301,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
                             "payTo": "0x" + ("b" * 40),
                             "amount": "20000",
                             "maxTimeoutSeconds": 3600,
-                            "extra": {},
+                            "extra": {"name": "USD Coin", "version": "2"},
                         }
                     ]
                 },

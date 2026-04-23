@@ -377,10 +377,24 @@ def _payment_requirements() -> dict[str, Any]:
                 "amount": str(X402_PRICE_MICRO_USDC),
                 # CDP x402 V2 PaymentRequirements expects these fields.
                 "maxTimeoutSeconds": 3600,
-                "extra": {},
+                # For EIP-3009 (USDC), facilitator needs EIP-712 domain info.
+                "extra": {"name": "USD Coin", "version": "2"},
             }
         ]
     }
+
+
+def _strip_nulls(value: Any) -> Any:
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            if v is None:
+                continue
+            out[str(k)] = _strip_nulls(v)
+        return out
+    if isinstance(value, list):
+        return [_strip_nulls(v) for v in value]
+    return value
 
 
 def _encode_json_base64(payload: dict[str, Any]) -> str:
@@ -564,7 +578,9 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         "/v2/x402/settle",
         {
             "x402Version": int(payment_payload.get("x402Version") or 2),
-            "paymentPayload": payment_payload,
+            # CDP's schema rejects nulls (e.g., resource.description=null), so
+            # remove None fields before sending.
+            "paymentPayload": _strip_nulls(payment_payload),
             # CDP expects a single PaymentRequirements object here, not
             # the {"accepts":[...]} wrapper used by PAYMENT-REQUIRED.
             "paymentRequirements": requirement,
