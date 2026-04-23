@@ -64,8 +64,9 @@ jobs:
           require_var() {
             local gh_name="$1"
             local val="${2:-}"
+            local setting_type="${3:-variable}"
             if [ -z "${val}" ]; then
-              echo "::error::Missing required staging environment config: ${gh_name}"
+              echo "::error::Set GitHub ${setting_type} ${gh_name} on the staging environment."
               exit 1
             fi
           }
@@ -73,8 +74,8 @@ jobs:
           require_var MNEMOSPARK_RECIPIENT_WALLET "${MNEMOSPARK_RECIPIENT_WALLET}"
           require_var RELAYER_WALLET_ADDRESS "${RELAYER_WALLET_ADDRESS}"
           require_var PAYMENT_ASSET_ADDRESS "${PAYMENT_ASSET_ADDRESS}"
-          require_var MNEMOSPARK_LITE_BEARER_SECRET "${MNEMOSPARK_LITE_BEARER_SECRET}"
-          require_var CDP_X402_FACILITATOR_BEARER_TOKEN "${CDP_X402_FACILITATOR_BEARER_TOKEN}"
+          require_var MNEMOSPARK_LITE_BEARER_SECRET "${MNEMOSPARK_LITE_BEARER_SECRET}" secret
+          require_var CDP_X402_FACILITATOR_BEARER_TOKEN "${CDP_X402_FACILITATOR_BEARER_TOKEN}" secret
           if [ "${PAYMENT_SETTLEMENT_MODE}" = "onchain" ]; then
             require_var BASE_RPC_URL "${BASE_RPC_URL}"
           fi
