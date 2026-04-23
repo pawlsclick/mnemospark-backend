@@ -309,15 +309,14 @@ class CdpPostHeaderTests(unittest.TestCase):
             self.assertEqual(timeout, 10)
             content_type_headers = [(k, v) for (k, v) in req.header_items() if k.lower() == "content-type"]
             self.assertEqual(content_type_headers, [("Content-type", "application/json")])
-            self.assertIn(("CDP-API-KEY-ID", "id"), req.header_items())
-            self.assertIn(("CDP-API-KEY-SECRET", "secret"), req.header_items())
+            self.assertIn(("Authorization", "Bearer jwt"), req.header_items())
             return FakeResponse()
 
         with (
             mock.patch.object(
                 app,
-                "_cdp_facilitator_auth_headers",
-                return_value={"CDP-API-KEY-ID": "id", "CDP-API-KEY-SECRET": "secret"},
+                "_cdp_facilitator_bearer_token",
+                return_value="Bearer jwt",
             ),
             mock.patch.object(app.urllib_request, "urlopen", side_effect=fake_urlopen),
         ):

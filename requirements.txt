@@ -2,6 +2,7 @@
 boto3
 eth-account
 web3
+cdp-sdk
 pytest
 ruff
 strawberry-graphql[asgi]>=0.252.0

@@ -419,30 +419,53 @@ def _decode_payment_payload(payment_header: str) -> dict[str, Any]:
     raise BadRequestError("payment header must be base64-encoded JSON")
 
 
-def _cdp_facilitator_auth_headers() -> dict[str, str]:
-    # CDP facilitator auth uses API key headers (id + secret). Docs:
-    # https://docs.cdp.coinbase.com/x402/quickstart-for-buyers
+def _cdp_facilitator_bearer_token(*, request_method: str, request_host: str, request_path: str) -> str:
+    # CDP uses short-lived JWT auth derived from (api key id, api key secret)
+    # scoped to request method + host + path. Docs:
+    # https://docs.cdp.coinbase.com/get-started/authentication/jwt-authentication
     key_id = (os.environ.get("CDP_API_KEY_ID") or "").strip()
     key_secret = (os.environ.get("CDP_API_KEY_SECRET") or "").strip()
+    if not key_id or not key_secret:
+        raise RuntimeError("CDP facilitator auth is not configured (set CDP_API_KEY_ID + CDP_API_KEY_SECRET)")
 
-    if key_id and key_secret:
-        return {
-            # Note: CDP expects these as literal header names (underscores),
-            # not as hyphenated HTTP header variants.
-            "CDP_API_KEY_ID": key_id,
-            "CDP_API_KEY_SECRET": key_secret,
-        }
+    try:
+        # Newer SDK import path
+        from cdp.auth import JwtOptions, generate_jwt  # type: ignore
+    except ImportError:
+        try:
+            # Older SDK import path
+            from cdp.auth.utils.jwt import JwtOptions, generate_jwt  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError("cdp-sdk is required for CDP JWT auth (install cdp-sdk)") from exc
 
-    raise RuntimeError("CDP facilitator auth is not configured (set CDP_API_KEY_ID + CDP_API_KEY_SECRET)")
+    token = generate_jwt(
+        JwtOptions(
+            api_key_id=key_id,
+            api_key_secret=key_secret,
+            request_method=request_method,
+            request_host=request_host,
+            request_path=request_path,
+            expires_in=120,
+        )
+    )
+    return f"Bearer {token}"
 
 
 def _cdp_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    base = "https://api.cdp.coinbase.com/platform"
-    url = f"{base}{path}"
+    request_host = "api.cdp.coinbase.com"
+    request_path = f"/platform{path}"
+    url = f"https://{request_host}{request_path}"
     data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     # urllib checks for "Content-type" specifically before auto-inserting its
     # default form-encoded content type, so use that key casing explicitly.
-    headers = {"Content-type": "application/json", **_cdp_facilitator_auth_headers()}
+    headers = {
+        "Content-type": "application/json",
+        "Authorization": _cdp_facilitator_bearer_token(
+            request_method="POST",
+            request_host=request_host,
+            request_path=request_path,
+        ),
+    }
     req = urllib_request.Request(url, data=data, method="POST")
     # Avoid Request.add_header(), which lowercases custom header names.
     req.headers.update(headers)
