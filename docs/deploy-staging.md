@@ -39,6 +39,15 @@ The **Deploy Staging** job fails with a clear error if any of the following are 
 | `RELAYER_WALLET_ADDRESS` | `RelayerWalletAddress` | `0x…` relayer public address (must match the key in `mnemospark/staging/relayer-private-key`). |
 | `PAYMENT_ASSET_ADDRESS` | `PaymentAssetAddress` | Token contract `0x…` (e.g. USDC on Base). |
 
+## Required GitHub Secrets (staging environment)
+
+These are stored as **GitHub Environment secrets** on the **staging** environment and passed to SAM as **NoEcho** CloudFormation parameters.
+
+| GitHub secret | SAM / CloudFormation parameter | Notes |
+|---|---|---|
+| `MNEMOSPARK_LITE_BEARER_SECRET` | `MnemosparkLiteBearerSecret` | HMAC secret for bearer tokens used by `GET /api/mnemospark-lite/uploads` and `GET /api/mnemospark-lite/download/{uploadId}`. |
+| `CDP_X402_FACILITATOR_BEARER_TOKEN` | `CdpX402FacilitatorBearerToken` | CDP x402 facilitator API secret used to call `https://api.cdp.coinbase.com/platform/v2/x402` (`/verify`, `/settle`). |
+
 Optional (defaults shown if unset in the workflow):
 
 | GitHub variable | SAM parameter | Default in workflow |
