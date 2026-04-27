@@ -2143,18 +2143,36 @@ Resources:
             RestApiId: !Ref MnemosparkBackendApi
             Path: /api/mnemospark-lite/share
             Method: POST
+        MnemosparkLiteShareOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /api/mnemospark-lite/share
+            Method: OPTIONS
         MnemosparkLiteSharesExchangePost:
           Type: Api
           Properties:
             RestApiId: !Ref MnemosparkBackendApi
             Path: /api/mnemospark-lite/shares/exchange
             Method: POST
+        MnemosparkLiteSharesExchangeOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /api/mnemospark-lite/shares/exchange
+            Method: OPTIONS
         MnemosparkLiteDeletePost:
           Type: Api
           Properties:
             RestApiId: !Ref MnemosparkBackendApi
             Path: /api/mnemospark-lite/delete
             Method: POST
+        MnemosparkLiteDeleteOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /api/mnemospark-lite/delete
+            Method: OPTIONS
 
   StorageHousekeepingFunction:
     Type: AWS::Serverless::Function
