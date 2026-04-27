@@ -735,6 +735,117 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /api/mnemospark-lite/share:
+    post:
+      tags: [marketplace-lite]
+      summary: Mint a 24-hour share URL for an upload (mnemospark-lite)
+      description: >
+        Owner-scoped share mint endpoint for the mnemospark-lite web shell. Accepts either
+        the lite bearer token (`Authorization: Bearer ...`) or an active `mnemospark_ls_web`
+        session cookie (bucket_mode=lite). Returns an app URL with `?share=...` that can be
+        redeemed for a short-lived presigned GET until the 24-hour share token expires.
+      operationId: postMnemosparkLiteShare
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MnemosparkLiteShareRequest"
+      responses:
+        "200":
+          description: Share URL minted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MnemosparkLiteShareResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          description: Conflict (upload not uploaded yet)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/mnemospark-lite/shares/exchange:
+    post:
+      tags: [marketplace-lite]
+      summary: Exchange a share token for a presigned download URL (mnemospark-lite)
+      description: >
+        Public endpoint: anyone with the `share_token` can redeem it until it expires (24 hours).
+        Returns a short-lived presigned GET URL for the underlying S3 object.
+      operationId: postMnemosparkLiteSharesExchange
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MnemosparkLiteSharesExchangeRequest"
+      responses:
+        "200":
+          description: Presigned download URL issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MnemosparkLiteSharesExchangeResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          description: Invalid or expired share token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/mnemospark-lite/delete:
+    post:
+      tags: [marketplace-lite]
+      summary: Delete one or more uploads (mnemospark-lite)
+      description: >
+        Owner-scoped delete endpoint for the mnemospark-lite web shell. Accepts either the
+        lite bearer token (`Authorization: Bearer ...`) or an active `mnemospark_ls_web`
+        session cookie (bucket_mode=lite). Deletes the underlying S3 object and removes the
+        upload registry row so it no longer appears in listings.
+      operationId: postMnemosparkLiteDelete
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MnemosparkLiteDeleteRequest"
+      responses:
+        "200":
+          description: Delete results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MnemosparkLiteDeleteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
 components:
   securitySchemes:
     walletProof:
@@ -1632,6 +1743,122 @@ components:
                       nullable: true
                       format: uri
                       description: Optional short-lived presigned GET URL when status is uploaded.
+
+    MnemosparkLiteShareRequest:
+      type: object
+      required:
+        - uploadId
+      properties:
+        uploadId:
+          type: string
+
+    MnemosparkLiteShareResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          required:
+            - uploadId
+            - shareUrl
+            - expiresAt
+          properties:
+            uploadId:
+              type: string
+            shareUrl:
+              type: string
+              format: uri
+            expiresAt:
+              type: string
+
+    MnemosparkLiteSharesExchangeRequest:
+      type: object
+      required:
+        - share_token
+      properties:
+        share_token:
+          type: string
+
+    MnemosparkLiteSharesExchangeResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          required:
+            - filename
+            - downloadUrl
+            - shareExpiresAt
+            - downloadExpiresInSeconds
+          properties:
+            filename:
+              type: string
+            downloadUrl:
+              type: string
+              format: uri
+            shareExpiresAt:
+              type: string
+            downloadExpiresInSeconds:
+              type: integer
+
+    MnemosparkLiteDeleteRequest:
+      type: object
+      required:
+        - uploadIds
+      properties:
+        uploadIds:
+          type: array
+          items:
+            type: string
+
+    MnemosparkLiteDeleteResult:
+      type: object
+      required:
+        - uploadId
+        - success
+      properties:
+        uploadId:
+          type: string
+        success:
+          type: boolean
+        error:
+          type: string
+          nullable: true
+        message:
+          type: string
+          nullable: true
+        details:
+          type: object
+          nullable: true
+
+    MnemosparkLiteDeleteResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          required:
+            - deleted
+            - results
+          properties:
+            deleted:
+              type: integer
+            results:
+              type: array
+              items:
+                $ref: "#/components/schemas/MnemosparkLiteDeleteResult"
 
     ErrorResponse:
       type: object

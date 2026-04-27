@@ -35,6 +35,121 @@ class FakeUploadsTable:
         return {}
 
 
+class FakeShareLinksTable:
+    def __init__(self):
+        self.items = {}
+
+    def put_item(self, Item, ConditionExpression=None):
+        key = Item.get("share_token_hash")
+        if key in self.items:
+            raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+        self.items[key] = Item
+        return {}
+
+    def get_item(self, Key):
+        key = Key.get("share_token_hash")
+        if key in self.items:
+            return {"Item": self.items[key]}
+        return {}
+
+
+class ShareLinkTests(unittest.TestCase):
+    def test_share_mints_url_and_persists_share_record(self):
+        upload_id = "up_123"
+        wallet = "0x" + ("1" * 40)
+        item = {
+            "upload_id": upload_id,
+            "payer_wallet": wallet,
+            "status": "uploaded",
+            "bucket": "mnemospark-lite-test",
+            "object_key": f"{upload_id}/artifact.bin",
+            "filename": "artifact.bin",
+        }
+        share_table = FakeShareLinksTable()
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/share",
+            "headers": {"Authorization": "Bearer token"},
+            "body": json.dumps({"uploadId": upload_id}),
+        }
+
+        with (
+            mock.patch.object(app, "_uploads_table", return_value=FakeUploadsTable(item)),
+            mock.patch.object(app, "_share_links_table", return_value=share_table),
+            mock.patch.object(app, "_verify_bearer", return_value={"payer_wallet": wallet}),
+            mock.patch.object(app.secrets, "token_urlsafe", return_value="sharetoken"),
+            mock.patch.object(app, "_hash_token", return_value="hash"),
+            mock.patch.object(app.time, "time", return_value=100),
+            mock.patch.dict(os.environ, {"MNEMOSPARK_LS_WEB_APP_URL": "https://app.example", "MNEMOSPARK_LS_WEB_APP_PATH_LITE": "/mnemospark-lite"}),
+        ):
+            resp = app.lambda_handler(event, None)
+
+        self.assertEqual(resp["statusCode"], 200)
+        body = json.loads(resp["body"])
+        self.assertTrue(body["success"])
+        self.assertIn("shareUrl", body["data"])
+        self.assertTrue(body["data"]["shareUrl"].startswith("https://app.example/mnemospark-lite/?share="))
+        self.assertIn("hash", share_table.items)
+
+    def test_exchange_returns_download_url_for_valid_token(self):
+        share_table = FakeShareLinksTable()
+        share_table.items["hash"] = {
+            "share_token_hash": "hash",
+            "bucket": "mnemospark-lite-test",
+            "object_key": "up_123/artifact.bin",
+            "filename": "artifact.bin",
+            "expires_at": 1000,
+        }
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/shares/exchange",
+            "body": json.dumps({"share_token": "sharetoken"}),
+        }
+        with (
+            mock.patch.object(app, "_share_links_table", return_value=share_table),
+            mock.patch.object(app, "_hash_token", return_value="hash"),
+            mock.patch.object(app.time, "time", return_value=100),
+            mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/download"),
+        ):
+            resp = app.lambda_handler(event, None)
+
+        self.assertEqual(resp["statusCode"], 200)
+        body = json.loads(resp["body"])
+        self.assertEqual(body["data"]["downloadUrl"], "https://example.com/download")
+
+
+class DeleteUploadTests(unittest.TestCase):
+    def test_delete_deletes_s3_object_and_registry_row(self):
+        upload_id = "up_123"
+        wallet = "0x" + ("1" * 40)
+        item = {
+            "upload_id": upload_id,
+            "payer_wallet": wallet,
+            "status": "uploaded",
+            "bucket": "mnemospark-lite-test",
+            "object_key": f"{upload_id}/artifact.bin",
+            "filename": "artifact.bin",
+        }
+        uploads_table = mock.Mock()
+        uploads_table.get_item.return_value = {"Item": item}
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/delete",
+            "headers": {"Authorization": "Bearer token"},
+            "body": json.dumps({"uploadIds": [upload_id]}),
+        }
+        with (
+            mock.patch.object(app, "_uploads_table", return_value=uploads_table),
+            mock.patch.object(app, "_verify_bearer", return_value={"payer_wallet": wallet}),
+            mock.patch.object(app.s3, "delete_object", return_value={}),
+        ):
+            resp = app.lambda_handler(event, None)
+
+        self.assertEqual(resp["statusCode"], 200)
+        body = json.loads(resp["body"])
+        self.assertTrue(body["success"])
+        uploads_table.delete_item.assert_called_once()
+
 class CompleteUploadTokenAndStatusTests(unittest.TestCase):
     def test_complete_retry_returns_409_when_upload_already_completed(self):
         token = "completion-token"

@@ -481,6 +481,30 @@ Resources:
         - Key: Project
           Value: mnemospark
 
+  MnemosparkLiteShareLinksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-mnemospark-lite-share-links"
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt DynamoDbKmsKey.Arn
+      AttributeDefinitions:
+        - AttributeName: share_token_hash
+          AttributeType: S
+      KeySchema:
+        - AttributeName: share_token_hash
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl_epoch_seconds
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
   RenewalTransactionLogTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -723,6 +747,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - dynamodb:PutItem
+                  - dynamodb:GetItem
                 Resource: !GetAtt LsWebSessionTable.Arn
         - PolicyName: upload-s3-storage-write
           PolicyDocument:
@@ -744,6 +769,11 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:s3:::mnemospark-*/*"
                   - !Sub "arn:aws:s3:::mnemospark-lite-*/*"
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub "arn:aws:s3:::mnemospark-lite-*/*"
         - PolicyName: upload-dynamodb-mnemospark-lite-upload-registry
           PolicyDocument:
             Version: "2012-10-17"
@@ -752,11 +782,22 @@ Resources:
                 Action:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
+                  - dynamodb:DeleteItem
                   - dynamodb:UpdateItem
                   - dynamodb:Query
                 Resource:
                   - !GetAtt MnemosparkLiteUploadRegistryTable.Arn
                   - !Sub "${MnemosparkLiteUploadRegistryTable.Arn}/index/*"
+        - PolicyName: upload-dynamodb-mnemospark-lite-share-links
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt MnemosparkLiteShareLinksTable.Arn
         - PolicyName: upload-api-calls-write
           PolicyDocument:
             Version: "2012-10-17"
@@ -2055,6 +2096,7 @@ Resources:
         Variables:
           MNEMOSPARK_CORS_ALLOW_ORIGIN: !Ref RestApiCorsAllowOrigin
           MNEMOSPARK_LITE_UPLOADS_TABLE_NAME: !Ref MnemosparkLiteUploadRegistryTable
+          MNEMOSPARK_LITE_SHARE_LINKS_TABLE_NAME: !Ref MnemosparkLiteShareLinksTable
           MNEMOSPARK_LITE_BEARER_SECRET: !Ref MnemosparkLiteBearerSecret
           MNEMOSPARK_LITE_PUBLIC_BASE_URL: !Ref MnemosparkLitePublicBaseUrl
           PRICE_STORAGE_MARKUP: !Ref PriceStorageMarkup
@@ -2095,6 +2137,24 @@ Resources:
             RestApiId: !Ref MnemosparkBackendApi
             Path: /api/mnemospark-lite/download/{uploadId}
             Method: GET
+        MnemosparkLiteSharePost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /api/mnemospark-lite/share
+            Method: POST
+        MnemosparkLiteSharesExchangePost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /api/mnemospark-lite/shares/exchange
+            Method: POST
+        MnemosparkLiteDeletePost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /api/mnemospark-lite/delete
+            Method: POST
 
   StorageHousekeepingFunction:
     Type: AWS::Serverless::Function
