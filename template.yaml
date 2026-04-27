@@ -765,6 +765,14 @@ Resources:
                 Action:
                   - dynamodb:PutItem
                 Resource: !GetAtt ApiCallsTable.Arn
+        - PolicyName: upload-pricing-query
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - pricing:GetProducts
+                Resource: "*"
         - PolicyName: dynamodb-cmk-kms-use
           PolicyDocument:
             Version: "2012-10-17"
