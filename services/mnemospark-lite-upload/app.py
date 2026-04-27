@@ -80,9 +80,9 @@ dynamodb = boto3.resource("dynamodb", region_name=DEFAULT_REGION)
 LIFECYCLE_EXPIRE_DAYS = 30
 _LIFECYCLE_ENSURED_BUCKETS: set[str] = set()
 
-# Keep in sync with template.yaml REST API CORS AllowHeaders for staging.
+# Keep in sync with template.yaml REST API CORS AllowHeaders for these Lambda OPTIONS routes.
 _REST_API_CORS_ALLOW_HEADERS = (
-    "Content-Type,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,"
+    "Content-Type,Authorization,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,"
     "PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,"
     "X-PAYMENT,x-payment,x-payment-required,x-payment-response,Cookie"
 )
