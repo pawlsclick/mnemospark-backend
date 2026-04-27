@@ -147,6 +147,13 @@ Parameters:
       HMAC secret used to sign bearer tokens for mnemospark-lite read endpoints
       (GET /api/mnemospark-lite/uploads, GET /api/mnemospark-lite/download/{uploadId}).
 
+  MnemosparkLitePublicBaseUrl:
+    Type: String
+    Default: ""
+    Description: >-
+      Public base URL for mnemospark-lite endpoints (no trailing slash), used to populate the x402
+      `resource` field for Bazaar discovery. Example: https://api.mnemospark.ai
+
   CdpX402FacilitatorBearerToken:
     Type: String
     Default: ""
@@ -2041,6 +2048,7 @@ Resources:
           MNEMOSPARK_CORS_ALLOW_ORIGIN: !Ref RestApiCorsAllowOrigin
           MNEMOSPARK_LITE_UPLOADS_TABLE_NAME: !Ref MnemosparkLiteUploadRegistryTable
           MNEMOSPARK_LITE_BEARER_SECRET: !Ref MnemosparkLiteBearerSecret
+          MNEMOSPARK_LITE_PUBLIC_BASE_URL: !Ref MnemosparkLitePublicBaseUrl
           LS_WEB_SESSION_TABLE_NAME: !Ref LsWebSessionTable
           MNEMOSPARK_LS_WEB_APP_URL: "https://app.mnemospark.ai"
           MNEMOSPARK_LS_WEB_APP_PREFIX_QUERY: !If [IsStagingStage, "api=staging", ""]
