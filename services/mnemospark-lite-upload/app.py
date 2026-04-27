@@ -46,6 +46,7 @@ try:
         s3_error_code,
         validate_object_key_single_segment,
     )
+    from common.pricing_storage_quote import calculate_storage_quote_usd
 except ModuleNotFoundError:  # pragma: no cover
     import sys
     from pathlib import Path
@@ -61,6 +62,7 @@ except ModuleNotFoundError:  # pragma: no cover
         s3_error_code,
         validate_object_key_single_segment,
     )
+    from common.pricing_storage_quote import calculate_storage_quote_usd
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -70,7 +72,7 @@ DEFAULT_REGION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REG
 
 MAX_UPLOAD_SIZE_BYTES = 4_800_000_000
 DEFAULT_PRESIGN_TTL_SECONDS = 900
-X402_PRICE_MICRO_USDC = 20_000  # $0.02 in USDC (6 decimals)
+DEFAULT_LITE_TIER_FOR_DISCOVERY = "10mb"
 
 s3 = boto3.client("s3", region_name=DEFAULT_REGION)
 dynamodb = boto3.resource("dynamodb", region_name=DEFAULT_REGION)
@@ -391,6 +393,78 @@ def _tier_max_size_bytes(tier: str) -> int:
     return mapping[t]
 
 
+_TIER_PRICE_CACHE: dict[tuple[str, str, str, str, str, str], tuple[int, int, str]] = {}
+
+
+def _lite_price_cache_ttl_seconds() -> int:
+    raw = str(os.environ.get("MNEMOSPARK_LITE_PRICE_CACHE_TTL_SECONDS") or "").strip()
+    if not raw:
+        return 900
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError("MNEMOSPARK_LITE_PRICE_CACHE_TTL_SECONDS must be an integer") from exc
+    if value < 60:
+        return 60
+    if value > 21600:
+        return 21600
+    return value
+
+
+def _tier_max_gb_decimal(tier: str) -> float:
+    return _tier_max_size_bytes(tier) / 1_000_000_000
+
+
+def _get_lite_price_for_tier(*, tier: str, region: str) -> tuple[int, str]:
+    """
+    Returns (micro_usdc, usd_display) for a tier. Uses price-storage logic under the hood.
+    """
+    usage_gb = _tier_max_gb_decimal(tier)
+    quote = calculate_storage_quote_usd(gb=usage_gb, region=region)
+    micro_usdc = int(round(quote.usd * 1_000_000))
+    return micro_usdc, f"${quote.usd:.2f}"
+
+
+def _get_cached_lite_price_for_tier(*, tier: str, region: str) -> tuple[int, str]:
+    # Cache key includes the env-configured quote behavior so changes roll naturally.
+    transfer_direction = (os.getenv("PRICE_STORAGE_TRANSFER_DIRECTION") or "out").strip().lower()
+    rate_type = (os.getenv("PRICE_STORAGE_RATE_TYPE") or "BEFORE_DISCOUNTS").strip().upper()
+    markup = (os.getenv("PRICE_STORAGE_MARKUP") or "").strip() or "0"
+    floor = (os.getenv("PRICE_STORAGE_FLOOR") or "").strip() or "0.01"
+    key = (region, tier, transfer_direction, rate_type, markup, floor)
+
+    now = int(time.time())
+    cached = _TIER_PRICE_CACHE.get(key)
+    if cached is not None:
+        expires_at, micro_usdc, usd_display = cached
+        if expires_at > now:
+            return micro_usdc, usd_display
+
+    # Cache miss/expired: compute once and store.
+    micro_usdc, usd_display = _get_lite_price_for_tier(tier=tier, region=region)
+    _TIER_PRICE_CACHE[key] = (now + _lite_price_cache_ttl_seconds(), micro_usdc, usd_display)
+    return micro_usdc, usd_display
+
+
+def _try_extract_tier_from_event_body(event: dict[str, Any]) -> str | None:
+    body_raw = event.get("body")
+    if body_raw in (None, ""):
+        return None
+    try:
+        body_text = body_raw
+        if event.get("isBase64Encoded"):
+            body_text = base64.b64decode(body_raw).decode("utf-8")
+        parsed = json.loads(body_text)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    tier = parsed.get("tier")
+    if not isinstance(tier, str) or not tier.strip():
+        return None
+    return tier.strip()
+
+
 def _ensure_bucket_lifecycle_expiration(*, bucket: str) -> None:
     # Bucket-level lifecycle: expire objects after 30 days. This enforces retention without a sweeper.
     if bucket in _LIFECYCLE_ENSURED_BUCKETS:
@@ -625,6 +699,7 @@ def _bazaar_extension_for_upload() -> dict[str, Any]:
 def _payment_requirements() -> dict[str, Any]:
     cfg = _payment_config()
     resource = f"{_public_base_url()}/api/mnemospark-lite/upload"
+    micro_usdc, usd_display = _get_cached_lite_price_for_tier(tier=DEFAULT_LITE_TIER_FOR_DISCOVERY, region=DEFAULT_REGION)
     return {
         "x402Version": 2,
         "resource": resource,
@@ -640,7 +715,7 @@ def _payment_requirements() -> dict[str, Any]:
                 "network": cfg["payment_network"],
                 "asset": cfg["payment_asset"],
                 "payTo": cfg["recipient_wallet"],
-                "amount": str(X402_PRICE_MICRO_USDC),
+                "amount": str(micro_usdc),
                 # CDP x402 V2 PaymentRequirements expects these fields.
                 "maxTimeoutSeconds": 3600,
                 # For EIP-3009 (USDC), facilitator needs EIP-712 domain info.
@@ -842,8 +917,13 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     headers = _normalize_headers(event)
     payment_header = headers.get("payment-signature") or headers.get("x-payment")
+    requested_tier = _try_extract_tier_from_event_body(event) or DEFAULT_LITE_TIER_FOR_DISCOVERY
+    micro_usdc, usd_display = _get_cached_lite_price_for_tier(tier=requested_tier, region=DEFAULT_REGION)
     requirements = _payment_requirements()
+    # Override amount in-place based on requested tier (keeps extensions/resource/metadata intact).
     accepts = requirements.get("accepts") if isinstance(requirements, dict) else None
+    if isinstance(accepts, list) and accepts and isinstance(accepts[0], dict):
+        accepts[0]["amount"] = str(micro_usdc)
     requirement = accepts[0] if isinstance(accepts, list) and accepts else None
     if not isinstance(requirement, dict):
         raise RuntimeError("Payment requirements are misconfigured (expected accepts[0])")
@@ -922,7 +1002,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     curl_example = f"curl -X PUT --data-binary @\"{req.filename}\" -H \"Content-Type: {req.content_type}\" \"{upload_url}\""
 
     bearer = _sign_bearer({"w": payer_wallet, "exp": int(time.time()) + 86400})
-    price_micro = int(requirement.get("amount") or X402_PRICE_MICRO_USDC)
+    price_micro = int(requirement.get("amount") or micro_usdc)
 
     item = {
         "upload_id": upload_id,
@@ -945,7 +1025,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         "payment_status": "verified",
         "payment_payload": _strip_nulls(payment_payload),
         "payment_requirements": requirement,
-        "price_paid": _format_usdc_price(price_micro),
+        "price_paid": usd_display,
         "price_micro_usdc": price_micro,
     }
     _uploads_table().put_item(Item=item, ConditionExpression="attribute_not_exists(upload_id)")

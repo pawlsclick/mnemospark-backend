@@ -123,6 +123,7 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
         }
 
         with (
+            mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
             mock.patch.object(
                 app,
                 "_payment_requirements",
@@ -192,7 +193,8 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
                 "extensions": {"bazaar": {"info": {"description": "ok"}}},
             },
         ):
-            response = app.lambda_handler(event, None)
+            with mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")):
+                response = app.lambda_handler(event, None)
 
         self.assertEqual(response["statusCode"], 402)
         self.assertIn("PAYMENT-REQUIRED", response["headers"])
@@ -215,6 +217,7 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
         }
 
         with (
+            mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
             mock.patch.object(
                 app,
                 "_payment_requirements",
@@ -284,6 +287,7 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
         fake_messages.encode_typed_data = mock.Mock(return_value=object())
 
         with (
+            mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
             mock.patch.object(
                 app,
                 "_payment_requirements",
@@ -461,6 +465,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
         lifecycle_error = ClientError({"Error": {"Code": "Throttling"}}, "PutBucketLifecycleConfiguration")
 
         with (
+            mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
             mock.patch.object(
                 app,
                 "_payment_requirements",
@@ -525,6 +530,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
         uploads_table = mock.Mock()
 
         with (
+            mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
             mock.patch.object(
                 app,
                 "_payment_requirements",
@@ -658,7 +664,8 @@ class PaymentRequiredDiscoveryPayloadTests(unittest.TestCase):
             },
             clear=False,
         ):
-            reqs = app._payment_requirements()
+            with mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")):
+                reqs = app._payment_requirements()
             headers = app._x402_payment_required_headers(reqs)
 
         encoded = headers["PAYMENT-REQUIRED"]

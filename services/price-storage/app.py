@@ -22,6 +22,14 @@ import botocore.exceptions
 try:
     from common.http_response_headers import rest_api_json_headers
     from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
+    from common.pricing_storage_quote import (
+        get_markup_multiplier_from_env as _get_markup_multiplier,
+        get_price_floor_from_env as _get_price_floor,
+        get_rate_type_from_env as _get_rate_type,
+        get_transfer_direction_from_env as _get_transfer_direction,
+        estimate_storage_cost,
+        estimate_transfer_cost,
+    )
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
@@ -29,6 +37,14 @@ except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from common.http_response_headers import rest_api_json_headers
     from common.log_api_call_loader import load_log_api_call, load_log_api_call_result
+    from common.pricing_storage_quote import (
+        get_markup_multiplier_from_env as _get_markup_multiplier,
+        get_price_floor_from_env as _get_price_floor,
+        get_rate_type_from_env as _get_rate_type,
+        get_transfer_direction_from_env as _get_transfer_direction,
+        estimate_storage_cost,
+        estimate_transfer_cost,
+    )
 
 
 log_api_call = load_log_api_call()
