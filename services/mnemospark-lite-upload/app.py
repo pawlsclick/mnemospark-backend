@@ -1222,8 +1222,11 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
                 Key={"upload_id": upload_id},
                 UpdateExpression="SET transaction_hash=:t, payment_status=:ps",
                 ExpressionAttributeValues={":t": transaction_hash, ":ps": "settled"},
+                ConditionExpression="attribute_exists(upload_id)",
             )
-        except ClientError:
+        except ClientError as exc:
+            if s3_error_code(exc) == "ConditionalCheckFailedException":
+                return _error(409, "conflict", "Upload no longer exists.")
             logger.exception("Failed to persist settlement result (upload_id=%s)", upload_id)
 
     minted = _mint_ls_web_app_url(payer_wallet=payer_wallet, location=DEFAULT_REGION)
@@ -1419,8 +1422,22 @@ def _handle_post_shares_exchange(event: dict[str, Any]) -> dict[str, Any]:
     bucket = str(item.get("bucket") or "").strip()
     object_key = str(item.get("object_key") or "").strip()
     filename = str(item.get("filename") or "").strip()
-    if not bucket or not object_key or not filename:
+    upload_id = str(item.get("upload_id") or "").strip()
+    if not bucket or not object_key or not filename or not upload_id:
         return _error(500, "internal_error", "Share link record is invalid")
+    upload_item = _uploads_table().get_item(Key={"upload_id": upload_id}).get("Item")
+    if (
+        not isinstance(upload_item, dict)
+        or str(upload_item.get("status") or "") != "uploaded"
+        or str(upload_item.get("bucket") or "").strip() != bucket
+        or str(upload_item.get("object_key") or "").strip() != object_key
+        or str(upload_item.get("filename") or "").strip() != filename
+    ):
+        try:
+            _share_links_table().delete_item(Key={"share_token_hash": token_hash})
+        except ClientError:
+            logger.warning("Failed to invalidate stale share token for upload_id=%s", upload_id)
+        return _error(401, "unauthorized", "Invalid or expired share token")
 
     download_url = s3.generate_presigned_url(
         "get_object",
@@ -1466,7 +1483,7 @@ def _handle_post_delete(event: dict[str, Any]) -> dict[str, Any]:
                 results.append({"uploadId": upload_id, "success": False, "error": "forbidden"})
                 continue
             bucket = str(item.get("bucket") or "").strip()
-            key = str(item.get("object_key") or item.get("filename") or "").strip()
+            key = str(item.get("object_key") or "").strip()
             if not bucket or not key:
                 results.append({"uploadId": upload_id, "success": False, "error": "invalid_record"})
                 continue

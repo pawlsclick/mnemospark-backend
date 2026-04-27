@@ -53,6 +53,10 @@ class FakeShareLinksTable:
             return {"Item": self.items[key]}
         return {}
 
+    def delete_item(self, Key):
+        self.items.pop(Key.get("share_token_hash"), None)
+        return {}
+
 
 class ShareLinkTests(unittest.TestCase):
     def test_share_mints_url_and_persists_share_record(self):
@@ -96,10 +100,18 @@ class ShareLinkTests(unittest.TestCase):
         share_table = FakeShareLinksTable()
         share_table.items["hash"] = {
             "share_token_hash": "hash",
+            "upload_id": "up_123",
             "bucket": "mnemospark-lite-test",
             "object_key": "up_123/artifact.bin",
             "filename": "artifact.bin",
             "expires_at": 1000,
+        }
+        upload_item = {
+            "upload_id": "up_123",
+            "status": "uploaded",
+            "bucket": "mnemospark-lite-test",
+            "object_key": "up_123/artifact.bin",
+            "filename": "artifact.bin",
         }
         event = {
             "httpMethod": "POST",
@@ -108,6 +120,7 @@ class ShareLinkTests(unittest.TestCase):
         }
         with (
             mock.patch.object(app, "_share_links_table", return_value=share_table),
+            mock.patch.object(app, "_uploads_table", return_value=FakeUploadsTable(upload_item)),
             mock.patch.object(app, "_hash_token", return_value="hash"),
             mock.patch.object(app.time, "time", return_value=100),
             mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/download"),
@@ -122,10 +135,18 @@ class ShareLinkTests(unittest.TestCase):
         share_table = FakeShareLinksTable()
         share_table.items["hash"] = {
             "share_token_hash": "hash",
+            "upload_id": "up_123",
             "bucket": "mnemospark-lite-test",
             "object_key": "up_123/artifact.bin",
             "filename": "artifact.bin",
             "expires_at": Decimal("1000"),
+        }
+        upload_item = {
+            "upload_id": "up_123",
+            "status": "uploaded",
+            "bucket": "mnemospark-lite-test",
+            "object_key": "up_123/artifact.bin",
+            "filename": "artifact.bin",
         }
         event = {
             "httpMethod": "POST",
@@ -134,6 +155,7 @@ class ShareLinkTests(unittest.TestCase):
         }
         with (
             mock.patch.object(app, "_share_links_table", return_value=share_table),
+            mock.patch.object(app, "_uploads_table", return_value=FakeUploadsTable(upload_item)),
             mock.patch.object(app, "_hash_token", return_value="hash"),
             mock.patch.object(app.time, "time", return_value=100),
             mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/download"),
@@ -143,6 +165,34 @@ class ShareLinkTests(unittest.TestCase):
         self.assertEqual(resp["statusCode"], 200)
         body = json.loads(resp["body"])
         self.assertEqual(body["data"]["downloadUrl"], "https://example.com/download")
+
+    def test_exchange_rejects_and_invalidates_stale_token_when_upload_missing(self):
+        share_table = FakeShareLinksTable()
+        share_table.items["hash"] = {
+            "share_token_hash": "hash",
+            "upload_id": "up_123",
+            "bucket": "mnemospark-lite-test",
+            "object_key": "up_123/artifact.bin",
+            "filename": "artifact.bin",
+            "expires_at": 1000,
+        }
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/shares/exchange",
+            "body": json.dumps({"share_token": "sharetoken"}),
+        }
+        with (
+            mock.patch.object(app, "_share_links_table", return_value=share_table),
+            mock.patch.object(app, "_uploads_table", return_value=FakeUploadsTable({"upload_id": "different"})),
+            mock.patch.object(app, "_hash_token", return_value="hash"),
+            mock.patch.object(app.time, "time", return_value=100),
+        ):
+            resp = app.lambda_handler(event, None)
+
+        self.assertEqual(resp["statusCode"], 401)
+        body = json.loads(resp["body"])
+        self.assertEqual(body["error"], "unauthorized")
+        self.assertNotIn("hash", share_table.items)
 
     def test_wallet_from_cookie_session_accepts_decimal_expiry(self):
         wallet = "0x" + ("1" * 40)
@@ -198,6 +248,38 @@ class DeleteUploadTests(unittest.TestCase):
         self.assertTrue(body["success"])
         uploads_table.delete_item.assert_called_once()
 
+    def test_delete_rejects_records_missing_object_key(self):
+        upload_id = "up_123"
+        wallet = "0x" + ("1" * 40)
+        item = {
+            "upload_id": upload_id,
+            "payer_wallet": wallet,
+            "status": "uploaded",
+            "bucket": "mnemospark-lite-test",
+            "filename": "artifact.bin",
+        }
+        uploads_table = mock.Mock()
+        uploads_table.get_item.return_value = {"Item": item}
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/delete",
+            "headers": {"Authorization": "Bearer token"},
+            "body": json.dumps({"uploadIds": [upload_id]}),
+        }
+        with (
+            mock.patch.object(app, "_uploads_table", return_value=uploads_table),
+            mock.patch.object(app, "_verify_bearer", return_value={"payer_wallet": wallet}),
+            mock.patch.object(app.s3, "delete_object", return_value={}) as delete_mock,
+        ):
+            resp = app.lambda_handler(event, None)
+
+        self.assertEqual(resp["statusCode"], 200)
+        body = json.loads(resp["body"])
+        self.assertFalse(body["data"]["results"][0]["success"])
+        self.assertEqual(body["data"]["results"][0]["error"], "invalid_record")
+        delete_mock.assert_not_called()
+        uploads_table.delete_item.assert_not_called()
+
 class CompleteUploadTokenAndStatusTests(unittest.TestCase):
     def test_complete_retry_returns_409_when_upload_already_completed(self):
         token = "completion-token"
@@ -222,6 +304,43 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
         body = json.loads(response["body"])
         self.assertEqual(body["error"], "conflict")
         self.assertEqual(body["message"], "Upload has already been completed.")
+
+    def test_complete_returns_409_when_settlement_persist_finds_deleted_upload(self):
+        token = "completion-token"
+        upload_id = "up_deleted_during_complete"
+        item = {
+            "upload_id": upload_id,
+            "completion_token_hash": app._hash_token(token),
+            "status": "pending",
+            "bucket": "mnemospark-lite-test",
+            "object_key": "up_deleted_during_complete/artifact.bin",
+            "filename": "artifact.bin",
+            "payer_wallet": "0x" + ("1" * 40),
+            "max_size": 1000,
+            "payment_payload": {"x402Version": 2, "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
+            "payment_requirements": {"amount": "1000"},
+        }
+        event = {
+            "body": json.dumps({"uploadId": upload_id, "completion_token": token}),
+        }
+        conditional_error = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+        table = mock.Mock()
+        table.get_item.return_value = {"Item": item}
+        table.update_item.side_effect = conditional_error
+
+        with (
+            mock.patch.object(app, "_uploads_table", return_value=table),
+            mock.patch.object(app.s3, "head_object", return_value={"ContentLength": 100}),
+            mock.patch.object(app, "_cdp_post", return_value=app.CdpResponse(body={"success": True, "transaction": "0xtx"}, headers={})),
+            mock.patch.object(app, "_mint_ls_web_app_url") as mint_mock,
+        ):
+            response = app._handle_post_complete(event)
+
+        self.assertEqual(response["statusCode"], 409)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "conflict")
+        self.assertEqual(body["message"], "Upload no longer exists.")
+        mint_mock.assert_not_called()
 
 
 class LambdaHandlerErrorMappingTests(unittest.TestCase):
