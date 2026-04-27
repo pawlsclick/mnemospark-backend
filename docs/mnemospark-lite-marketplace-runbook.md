@@ -14,6 +14,9 @@ This runbook is for verifying that the mnemospark-lite marketplace storage facad
   - `POST /api/mnemospark-lite/upload/complete`
   - `GET /api/mnemospark-lite/uploads`
   - `GET /api/mnemospark-lite/download/{uploadId}`
+  - `POST /api/mnemospark-lite/share`
+  - `POST /api/mnemospark-lite/shares/exchange`
+  - `POST /api/mnemospark-lite/delete`
 - CDP facilitator auth configured (Lambda env `CDP_API_KEY_SECRET`).
 - Public base URL configured (Lambda env `MNEMOSPARK_LITE_PUBLIC_BASE_URL`) so the x402 `resource` field
   matches the externally reachable API origin used for discovery.
@@ -79,7 +82,49 @@ Expected:
 - Only uploads for the payer wallet are returned
 - `downloadUrl` (presigned GET) is present once `status=uploaded`
 
-## 5) Verify discovery + search surfaces
+## 5) Verify 24-hour share URL + exchange
+
+The `publicUrl` minted by `/upload/complete` is a one-time `?code=` exchange into a short-lived browser session.
+For a 24-hour shareable link, use `/api/mnemospark-lite/share` (owner-scoped), then redeem via `/shares/exchange`.
+
+### 5a) Mint share URL (owner)
+
+```bash
+curl "${MNEMOSPARK_API_BASE_URL}/api/mnemospark-lite/share" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <list_scope_bearer>" \
+  -d '{"uploadId":"<uploadId>"}'
+```
+
+Response includes:
+
+- `data.shareUrl` like `https://app.mnemospark.ai/mnemospark-lite/?share=...`
+- `data.expiresAt` (24 hours)
+
+### 5b) Exchange share token (public)
+
+```bash
+curl "${MNEMOSPARK_API_BASE_URL}/api/mnemospark-lite/shares/exchange" \
+  -H "Content-Type: application/json" \
+  -d '{"share_token":"<token from shareUrl>"}'
+```
+
+Response includes:
+
+- `data.downloadUrl` (short-lived presigned GET)
+
+## 6) Verify delete
+
+```bash
+curl "${MNEMOSPARK_API_BASE_URL}/api/mnemospark-lite/delete" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <list_scope_bearer>" \
+  -d '{"uploadIds":["<uploadId>"]}'
+```
+
+Re-run `GET /api/mnemospark-lite/uploads` to confirm the upload no longer appears.
+
+## 7) Verify discovery + search surfaces
 
 After the first successful settle:
 

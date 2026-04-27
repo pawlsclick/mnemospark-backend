@@ -128,6 +128,20 @@ def _coerce_int(value: Any, field: str) -> int:
     raise BadRequestError(f"{field} must be an integer")
 
 
+def _as_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, Decimal):
+        try:
+            if value == value.to_integral_value():
+                return int(value)
+        except Exception:
+            return None
+    return None
+
+
 def _verify_payment_locally(*, payment_payload: dict[str, Any], requirement: dict[str, Any]) -> None:
     """
     Local EIP-712 verification for EIP-3009 TransferWithAuthorization.
@@ -218,6 +232,75 @@ def _ls_web_session_table() -> Any:
     if not name:
         raise RuntimeError("LS_WEB_SESSION_TABLE_NAME is not configured")
     return dynamodb.Table(name)
+
+
+def _share_links_table() -> Any:
+    name = (os.environ.get("MNEMOSPARK_LITE_SHARE_LINKS_TABLE_NAME") or "").strip()
+    if not name:
+        raise RuntimeError("MNEMOSPARK_LITE_SHARE_LINKS_TABLE_NAME is not configured")
+    return dynamodb.Table(name)
+
+
+def _parse_cookies(event: dict[str, Any]) -> dict[str, str]:
+    headers = event.get("headers") or {}
+    raw = ""
+    if isinstance(headers, dict):
+        for k, v in headers.items():
+            if str(k).lower() == "cookie" and v is not None:
+                raw = str(v)
+                break
+    out: dict[str, str] = {}
+    for part in raw.split(";"):
+        part = part.strip()
+        if "=" in part:
+            ck, cv = part.split("=", 1)
+            out[ck.strip()] = cv.strip()
+    return out
+
+
+def _wallet_from_cookie_session(event: dict[str, Any]) -> str | None:
+    sid = _parse_cookies(event).get("mnemospark_ls_web", "").strip()
+    if not sid:
+        return None
+    row = _ls_web_session_table().get_item(Key={"session_id": sid}).get("Item")
+    if not isinstance(row, dict):
+        return None
+    now = int(time.time())
+    exp = _as_int(row.get("session_expires_at"))
+    if exp is None or exp <= now:
+        return None
+    if not bool(row.get("exchanged")):
+        return None
+    if str(row.get("bucket_mode") or "").strip().lower() != "lite":
+        return None
+    wallet_raw = str(row.get("wallet_address") or "").strip()
+    if not wallet_raw:
+        return None
+    return normalize_wallet_address(wallet_raw, "wallet_address")
+
+
+def _require_owner_wallet(event: dict[str, Any]) -> str:
+    token = _bearer_token(event)
+    if token is not None:
+        return _verify_bearer(token)["payer_wallet"]
+    from_cookie = _wallet_from_cookie_session(event)
+    if from_cookie:
+        return from_cookie
+    raise UnauthorizedError("Authorization bearer token or ls-web session cookie is required")
+
+
+def _lite_app_base_url_with_prefix_query() -> str:
+    app_base = (os.environ.get("MNEMOSPARK_LS_WEB_APP_URL") or "https://app.mnemospark.ai").strip().rstrip("/")
+    lite_path = (os.environ.get("MNEMOSPARK_LS_WEB_APP_PATH_LITE") or "").strip()
+    if lite_path and not lite_path.startswith("/"):
+        lite_path = "/" + lite_path
+    if lite_path.endswith("/"):
+        lite_path = lite_path[:-1]
+    prefix_query = (os.environ.get("MNEMOSPARK_LS_WEB_APP_PREFIX_QUERY") or "").strip()
+    base = f"{app_base}{lite_path}/"
+    if prefix_query:
+        return f"{base}?{prefix_query}&"
+    return f"{base}?"
 
 
 def _bearer_secret() -> bytes:
@@ -531,20 +614,10 @@ def _mint_ls_web_app_url(*, payer_wallet: str, location: str) -> dict[str, str]:
         },
         ConditionExpression="attribute_not_exists(session_id)",
     )
-    app_base = (os.environ.get("MNEMOSPARK_LS_WEB_APP_URL") or "https://app.mnemospark.ai").strip().rstrip("/")
-    lite_path = (os.environ.get("MNEMOSPARK_LS_WEB_APP_PATH_LITE") or "").strip()
-    if lite_path and not lite_path.startswith("/"):
-        lite_path = "/" + lite_path
-    if lite_path.endswith("/"):
-        lite_path = lite_path[:-1]
-    prefix_query = (os.environ.get("MNEMOSPARK_LS_WEB_APP_PREFIX_QUERY") or "").strip()
     from urllib.parse import quote
 
     enc_q = quote(code, safe="")
-    if prefix_query:
-        app = f"{app_base}{lite_path}/?{prefix_query}&code={enc_q}"
-    else:
-        app = f"{app_base}{lite_path}/?code={enc_q}"
+    app = f"{_lite_app_base_url_with_prefix_query()}code={enc_q}"
     return {
         "code": code,
         "app": app,
@@ -900,6 +973,12 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             if not upload_id:
                 raise BadRequestError("uploadId is required")
             return _handle_get_download(event, upload_id=upload_id)
+        if method == "POST" and path == "/api/mnemospark-lite/share":
+            return _handle_post_share(event)
+        if method == "POST" and path == "/api/mnemospark-lite/shares/exchange":
+            return _handle_post_shares_exchange(event)
+        if method == "POST" and path == "/api/mnemospark-lite/delete":
+            return _handle_post_delete(event)
 
         return _error(404, "not_found", "Route not found")
     except PaymentInvalidError as exc:
@@ -1143,8 +1222,11 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
                 Key={"upload_id": upload_id},
                 UpdateExpression="SET transaction_hash=:t, payment_status=:ps",
                 ExpressionAttributeValues={":t": transaction_hash, ":ps": "settled"},
+                ConditionExpression="attribute_exists(upload_id)",
             )
-        except ClientError:
+        except ClientError as exc:
+            if s3_error_code(exc) == "ConditionalCheckFailedException":
+                return _error(409, "conflict", "Upload no longer exists.")
             logger.exception("Failed to persist settlement result (upload_id=%s)", upload_id)
 
     minted = _mint_ls_web_app_url(payer_wallet=payer_wallet, location=DEFAULT_REGION)
@@ -1263,4 +1345,171 @@ def _handle_get_download(event: dict[str, Any], *, upload_id: str) -> dict[str, 
         "downloadUrl": download_url,
     }
     return _response(200, {"success": True, "data": {"upload": record}})
+
+
+def _handle_post_share(event: dict[str, Any]) -> dict[str, Any]:
+    owner_wallet = _require_owner_wallet(event)
+    body = decode_json_event_body(event)
+    upload_id = str(body.get("uploadId") or body.get("upload_id") or "").strip()
+    if not upload_id:
+        raise BadRequestError("uploadId is required")
+
+    resp = _uploads_table().get_item(Key={"upload_id": upload_id})
+    item = resp.get("Item")
+    if not isinstance(item, dict):
+        return _error(404, "not_found", "Upload not found")
+    if str(item.get("payer_wallet") or "") != owner_wallet:
+        raise ForbiddenError("Upload not found for this wallet")
+    if str(item.get("status") or "") != "uploaded":
+        return _error(409, "conflict", "Upload is not yet uploaded")
+
+    bucket = str(item.get("bucket") or "").strip()
+    object_key = str(item.get("object_key") or "").strip()
+    filename = str(item.get("filename") or "").strip()
+    if not bucket or not object_key or not filename:
+        return _error(500, "internal_error", "Upload record is invalid")
+
+    now = int(time.time())
+    share_ttl_seconds = 86400
+    expires_at = now + share_ttl_seconds
+    share_token = secrets.token_urlsafe(32)
+    token_hash = _hash_token(share_token)
+    _share_links_table().put_item(
+        Item={
+            "share_token_hash": token_hash,
+            "upload_id": upload_id,
+            "bucket": bucket,
+            "object_key": object_key,
+            "filename": filename,
+            "expires_at": expires_at,
+            "ttl_epoch_seconds": expires_at,
+            "created_at": now,
+        },
+        ConditionExpression="attribute_not_exists(share_token_hash)",
+    )
+    from urllib.parse import quote
+
+    base = _lite_app_base_url_with_prefix_query()
+    share_url = f"{base}share={quote(share_token, safe='')}"
+    return _response(
+        200,
+        {
+            "success": True,
+            "data": {
+                "uploadId": upload_id,
+                "shareUrl": share_url,
+                "expiresAt": datetime.fromtimestamp(expires_at, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+            },
+        },
+    )
+
+
+def _handle_post_shares_exchange(event: dict[str, Any]) -> dict[str, Any]:
+    body = decode_json_event_body(event)
+    token = str(body.get("share_token") or body.get("shareToken") or "").strip()
+    if not token:
+        raise BadRequestError("share_token is required")
+    token_hash = _hash_token(token)
+    resp = _share_links_table().get_item(Key={"share_token_hash": token_hash})
+    item = resp.get("Item")
+    if not isinstance(item, dict):
+        return _error(401, "unauthorized", "Invalid or expired share token")
+    now = int(time.time())
+    expires_at = _as_int(item.get("expires_at"))
+    if expires_at is None or expires_at <= now:
+        return _error(401, "unauthorized", "Invalid or expired share token")
+
+    bucket = str(item.get("bucket") or "").strip()
+    object_key = str(item.get("object_key") or "").strip()
+    filename = str(item.get("filename") or "").strip()
+    upload_id = str(item.get("upload_id") or "").strip()
+    if not bucket or not object_key or not filename or not upload_id:
+        return _error(500, "internal_error", "Share link record is invalid")
+    upload_item = _uploads_table().get_item(Key={"upload_id": upload_id}).get("Item")
+    if (
+        not isinstance(upload_item, dict)
+        or str(upload_item.get("status") or "") != "uploaded"
+        or str(upload_item.get("bucket") or "").strip() != bucket
+        or str(upload_item.get("object_key") or "").strip() != object_key
+        or str(upload_item.get("filename") or "").strip() != filename
+    ):
+        try:
+            _share_links_table().delete_item(Key={"share_token_hash": token_hash})
+        except ClientError:
+            logger.warning("Failed to invalidate stale share token for upload_id=%s", upload_id)
+        return _error(401, "unauthorized", "Invalid or expired share token")
+
+    download_url = s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": object_key},
+        ExpiresIn=600,
+    )
+    return _response(
+        200,
+        {
+            "success": True,
+            "data": {
+                "filename": filename,
+                "downloadUrl": download_url,
+                "shareExpiresAt": datetime.fromtimestamp(expires_at, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+                + "Z",
+                "downloadExpiresInSeconds": 600,
+            },
+        },
+    )
+
+
+def _handle_post_delete(event: dict[str, Any]) -> dict[str, Any]:
+    owner_wallet = _require_owner_wallet(event)
+    body = decode_json_event_body(event)
+    ids_raw = body.get("uploadIds") or body.get("upload_ids")
+    if not isinstance(ids_raw, list) or not ids_raw:
+        raise BadRequestError("uploadIds must be a non-empty array")
+    upload_ids: list[str] = []
+    for v in ids_raw:
+        if not isinstance(v, str) or not v.strip():
+            raise BadRequestError("uploadIds must contain only strings")
+        upload_ids.append(v.strip())
+
+    results: list[dict[str, Any]] = []
+    for upload_id in upload_ids:
+        try:
+            resp = _uploads_table().get_item(Key={"upload_id": upload_id})
+            item = resp.get("Item")
+            if not isinstance(item, dict):
+                results.append({"uploadId": upload_id, "success": False, "error": "not_found"})
+                continue
+            if str(item.get("payer_wallet") or "") != owner_wallet:
+                results.append({"uploadId": upload_id, "success": False, "error": "forbidden"})
+                continue
+            bucket = str(item.get("bucket") or "").strip()
+            key = str(item.get("object_key") or "").strip()
+            if not bucket or not key:
+                results.append({"uploadId": upload_id, "success": False, "error": "invalid_record"})
+                continue
+            try:
+                s3.delete_object(Bucket=bucket, Key=key)
+            except ClientError as exc:
+                results.append(
+                    {"uploadId": upload_id, "success": False, "error": "s3_error", "details": {"code": s3_error_code(exc)}}
+                )
+                continue
+            try:
+                _uploads_table().delete_item(Key={"upload_id": upload_id})
+            except ClientError as exc:
+                results.append(
+                    {
+                        "uploadId": upload_id,
+                        "success": False,
+                        "error": "dynamodb_error",
+                        "details": {"code": str(exc.response.get("Error", {}).get("Code") or "")},
+                    }
+                )
+                continue
+            results.append({"uploadId": upload_id, "success": True})
+        except Exception as exc:
+            results.append({"uploadId": upload_id, "success": False, "error": "internal_error", "message": str(exc)})
+
+    deleted = sum(1 for r in results if r.get("success") is True)
+    return _response(200, {"success": True, "data": {"deleted": deleted, "results": results}})
 
