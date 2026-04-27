@@ -312,6 +312,13 @@ def _bearer_secret() -> bytes:
 
 def _response(status_code: int, body: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
     merged = rest_api_json_headers()
+    # These endpoints support cookie auth (ls-web session) as well as bearer auth.
+    # For browser usage with `credentials: 'include'`, we must return
+    # Access-Control-Allow-Credentials on non-wildcard origins.
+    origin = merged.get("Access-Control-Allow-Origin")
+    if origin and origin != "*":
+        merged["Access-Control-Allow-Credentials"] = "true"
+        merged["Vary"] = "Origin"
     if headers:
         merged.update(headers)
     return {"statusCode": status_code, "headers": merged, "body": json.dumps(body, default=str)}
