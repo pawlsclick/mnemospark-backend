@@ -255,26 +255,42 @@ def _pick_lowest_tiered_cost(
 
     if not candidate_costs:
         raise RuntimeError(error_message)
+    positive_costs = [cost for cost in candidate_costs if cost > 0]
+    if positive_costs:
+        return min(positive_costs)
     return min(candidate_costs)
 
 
-def _is_s3_storage_product(product: dict[str, Any], *, region: str) -> bool:
+def _is_s3_storage_product(product: dict[str, Any]) -> bool:
     product_data = product.get("product", {})
     if not isinstance(product_data, dict):
         return False
+    if str(product_data.get("productFamily", "")).lower() != "storage":
+        return False
+
     attributes = product_data.get("attributes", {})
     if not isinstance(attributes, dict):
         return False
-    if str(product_data.get("productFamily", "")).lower() != "storage":
-        return False
-    if str(attributes.get("location", "")) != REGION_TO_S3_LOCATION.get(region):
-        return False
-    if str(attributes.get("servicecode", "")).lower() != "amazons3":
-        return False
+
     usage_type = str(attributes.get("usagetype", ""))
     if STORAGE_USAGE_TYPE_TOKEN not in usage_type:
         return False
-    return True
+
+    searchable = " ".join(
+        str(attributes.get(key, "")).lower()
+        for key in ("volumeType", "storageClass", "group", "groupDescription", "operation")
+    )
+    exclusions = (
+        "infrequent",
+        "one zone",
+        "onezone",
+        "glacier",
+        "deep archive",
+        "intelligent-tiering",
+        "outposts",
+        "express",
+    )
+    return not any(excluded in searchable for excluded in exclusions)
 
 
 def _is_data_transfer_product(product: dict[str, Any], *, direction: str) -> bool:
@@ -297,42 +313,59 @@ def _is_data_transfer_product(product: dict[str, Any], *, direction: str) -> boo
         # Accept any outbound-to-internet style transfer, not just an exact match.
         if "outbound" not in transfer_type and "internet" not in to_location_type:
             return False
-    return True
+
+    searchable = " ".join(
+        str(attributes.get(key, "")).lower()
+        for key in ("transferType", "group", "groupDescription", "toLocationType")
+    )
+    return "cloudfront" not in searchable
 
 
 def _build_s3_storage_filters(region: str) -> list[dict[str, str]]:
-    location = REGION_TO_S3_LOCATION.get(region)
-    if not location:
-        raise RuntimeError(f"Unsupported region: {region}")
     return [
-        {"Type": "TERM_MATCH", "Field": "servicecode", "Value": "AmazonS3"},
-        {"Type": "TERM_MATCH", "Field": "location", "Value": location},
+        {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
+        {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
     ]
 
 
 def _build_data_transfer_primary_filters(region: str) -> list[dict[str, str]]:
     location = REGION_TO_S3_LOCATION.get(region)
-    if not location:
-        raise RuntimeError(f"Unsupported region: {region}")
+    if location:
+        return [
+            {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Data Transfer"},
+            {"Type": "TERM_MATCH", "Field": "fromLocation", "Value": location},
+            {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
+        ]
     return [
-        {"Type": "TERM_MATCH", "Field": "location", "Value": location},
+        {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Data Transfer"},
+        {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
+        {"Type": "TERM_MATCH", "Field": "locationType", "Value": "AWS Region"},
         {"Type": "TERM_MATCH", "Field": "transferType", "Value": "AWS Outbound"},
     ]
 
 
-def estimate_storage_cost(*, gb: float, region: str, rate_type: str, client: Any | None = None) -> float:
+def estimate_storage_cost(gb: float, region: str, rate_type: str, client: Any | None = None) -> float:
+    del rate_type
     products = _get_products("AmazonS3", _build_s3_storage_filters(region), client=client)
+    if not products:
+        products = _get_products(
+            "AmazonS3",
+            [{"Type": "TERM_MATCH", "Field": "regionCode", "Value": region}],
+            client=client,
+        )
     return _pick_lowest_tiered_cost(
         products=products,
-        product_matcher=lambda product: _is_s3_storage_product(product, region=region),
+        product_matcher=_is_s3_storage_product,
         usage_gb=gb,
-        error_message=f"No S3 storage SKU found for region {region}",
+        error_message=f"No S3 Standard storage SKU found for region {region}",
     )
 
 
-def estimate_transfer_cost(*, gb: float, region: str, direction: str, rate_type: str, client: Any | None = None) -> float:
+def estimate_transfer_cost(gb: float, region: str, direction: str, rate_type: str, client: Any | None = None) -> float:
     # rate_type is currently unused in this cost selection but kept to match callers.
     del rate_type
+    if direction == "in":
+        return 0.0
     products = _get_products(DATA_TRANSFER_PRICING_SERVICE_CODE, _build_data_transfer_primary_filters(region), client=client)
     return _pick_lowest_tiered_cost(
         products=products,

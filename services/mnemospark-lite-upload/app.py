@@ -462,7 +462,12 @@ def _try_extract_tier_from_event_body(event: dict[str, Any]) -> str | None:
     tier = parsed.get("tier")
     if not isinstance(tier, str) or not tier.strip():
         return None
-    return tier.strip()
+    normalized_tier = tier.strip()
+    try:
+        _tier_max_size_bytes(normalized_tier)
+    except BadRequestError:
+        return None
+    return normalized_tier
 
 
 def _ensure_bucket_lifecycle_expiration(*, bucket: str) -> None:
