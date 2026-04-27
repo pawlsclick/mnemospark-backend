@@ -763,11 +763,6 @@ def _json_sanitize(value: Any) -> Any:
     return value
 
 
-def _format_usdc_price(amount_micro: int) -> str:
-    # USDC has 6 decimals.
-    return f"${amount_micro / 1_000_000:.2f}"
-
-
 def _encode_json_base64(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     return base64.b64encode(encoded).decode("ascii")
