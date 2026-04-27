@@ -15,6 +15,8 @@ This runbook is for verifying that the mnemospark-lite marketplace storage facad
   - `GET /api/mnemospark-lite/uploads`
   - `GET /api/mnemospark-lite/download/{uploadId}`
 - CDP facilitator auth configured (Lambda env `CDP_API_KEY_SECRET`).
+- Public base URL configured (Lambda env `MNEMOSPARK_LITE_PUBLIC_BASE_URL`) so the x402 `resource` field
+  matches the externally reachable API origin used for discovery.
 - Payment recipient configured (stack params / env):
   - `MNEMOSPARK_RECIPIENT_WALLET`
   - `MNEMOSPARK_PAYMENT_NETWORK` (CAIP-2, e.g. `eip155:8453`)
@@ -43,7 +45,7 @@ Expected response:
 - `data.completion_token`
 - `data.list_scope_bearer`
 - `data.publicUrl` / `data.siteUrl` are `null` (two-step flow)
-- `metadata.payment.transactionHash` is present (settled)
+- `metadata.payment.transactionHash` is `null` (settlement happens during `/complete`)
 
 ## 2) Upload bytes (PUT to presigned URL)
 

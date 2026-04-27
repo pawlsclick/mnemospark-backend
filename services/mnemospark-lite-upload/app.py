@@ -484,9 +484,156 @@ def _payment_config() -> dict[str, str]:
     return {"recipient_wallet": recipient_wallet, "payment_network": payment_network_raw, "payment_asset": payment_asset}
 
 
+def _public_base_url() -> str:
+    raw = (os.environ.get("MNEMOSPARK_LITE_PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if not raw:
+        raise RuntimeError("MNEMOSPARK_LITE_PUBLIC_BASE_URL is not configured")
+    return raw
+
+
+def _bazaar_extension_for_upload() -> dict[str, Any]:
+    return {
+        "bazaar": {
+            "info": {
+                "description": (
+                    "Paid file upload endpoint for mnemospark-lite. "
+                    "Creates a presigned S3 upload session, then finalizes the upload "
+                    "into a wallet-scoped 30-day object store."
+                ),
+                "input": {
+                    "type": "http",
+                    "method": "POST",
+                    "bodyType": "json",
+                    "body": {
+                        "filename": "example.pdf",
+                        "contentType": "application/pdf",
+                        "tier": "100mb",
+                        "size_bytes": 24576,
+                    },
+                },
+                "output": {
+                    "type": "json",
+                    "example": {
+                        "success": True,
+                        "data": {
+                            "uploadId": "abc123",
+                            "uploadUrl": "https://s3-presigned.example/...",
+                            "publicUrl": None,
+                            "siteUrl": None,
+                            "expiresAt": "2026-05-23T12:00:00Z",
+                            "maxSize": 100000000,
+                            "curlExample": "curl -X PUT --data-binary @\"example.pdf\" ...",
+                            "completion_token": "opaque-token",
+                            "list_scope_bearer": "opaque-bearer",
+                        },
+                        "metadata": {
+                            "protocol": "x402",
+                            "network": "eip155:8453",
+                            "price": "$0.02",
+                            "payment": {
+                                "success": True,
+                                "transactionHash": None,
+                                "status": "verified",
+                            },
+                        },
+                    },
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "success": {"type": "boolean"},
+                            "data": {
+                                "type": "object",
+                                "properties": {
+                                    "uploadId": {"type": "string"},
+                                    "uploadUrl": {"type": "string"},
+                                    "publicUrl": {"type": ["string", "null"]},
+                                    "siteUrl": {"type": ["string", "null"]},
+                                    "expiresAt": {"type": "string"},
+                                    "maxSize": {"type": "integer"},
+                                    "curlExample": {"type": "string"},
+                                    "completion_token": {"type": "string"},
+                                    "list_scope_bearer": {"type": "string"},
+                                },
+                                "required": [
+                                    "uploadId",
+                                    "uploadUrl",
+                                    "expiresAt",
+                                    "maxSize",
+                                    "completion_token",
+                                    "list_scope_bearer",
+                                ],
+                            },
+                            "metadata": {"type": "object"},
+                        },
+                        "required": ["success", "data"],
+                    },
+                },
+            },
+            "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string"},
+                    "input": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"const": "http"},
+                            "method": {"const": "POST"},
+                            "bodyType": {"const": "json"},
+                            "body": {
+                                "type": "object",
+                                "properties": {
+                                    "filename": {"type": "string", "description": "Single file name"},
+                                    "contentType": {"type": "string", "description": "MIME type"},
+                                    "tier": {
+                                        "type": "string",
+                                        "enum": ["10mb", "100mb", "500mb", "1gb", "2gb", "3gb"],
+                                        "description": "Upload pricing/size tier",
+                                    },
+                                    "size_bytes": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": MAX_UPLOAD_SIZE_BYTES,
+                                        "description": "Declared upload size in bytes",
+                                    },
+                                },
+                                "required": ["filename", "contentType", "tier", "size_bytes"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "required": ["type", "method", "bodyType", "body"],
+                        "additionalProperties": False,
+                    },
+                    "output": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"const": "json"},
+                            "example": {"type": "object"},
+                            "schema": {"type": "object"},
+                        },
+                        "required": ["type", "example"],
+                        "additionalProperties": True,
+                    },
+                },
+                "required": ["description", "input", "output"],
+                "additionalProperties": False,
+            },
+        }
+    }
+
+
 def _payment_requirements() -> dict[str, Any]:
     cfg = _payment_config()
+    resource = f"{_public_base_url()}/api/mnemospark-lite/upload"
     return {
+        "x402Version": 2,
+        "resource": resource,
+        "description": (
+            "mnemospark-lite paid file upload API for wallet-scoped storage. "
+            "Returns a presigned S3 upload URL, completion token, and bearer for listing "
+            "and downloading uploaded files. Files expire automatically after 30 days."
+        ),
+        "mimeType": "application/json",
         "accepts": [
             {
                 "scheme": "exact",
@@ -499,7 +646,8 @@ def _payment_requirements() -> dict[str, Any]:
                 # For EIP-3009 (USDC), facilitator needs EIP-712 domain info.
                 "extra": {"name": "USD Coin", "version": "2"},
             }
-        ]
+        ],
+        "extensions": _bazaar_extension_for_upload(),
     }
 
 
@@ -611,7 +759,13 @@ def _cdp_facilitator_bearer_token(*, request_method: str, request_host: str, req
     return f"Bearer {token}"
 
 
-def _cdp_post(path: str, payload: dict[str, Any], *, timeout_seconds: float = 10.0) -> dict[str, Any]:
+@dataclass(frozen=True)
+class CdpResponse:
+    body: dict[str, Any]
+    headers: dict[str, str]
+
+
+def _cdp_post(path: str, payload: dict[str, Any], *, timeout_seconds: float = 10.0) -> CdpResponse:
     request_host = "api.cdp.coinbase.com"
     request_path = f"/platform{path}"
     url = f"https://{request_host}{request_path}"
@@ -635,7 +789,10 @@ def _cdp_post(path: str, payload: dict[str, Any], *, timeout_seconds: float = 10
             parsed = json.loads(raw) if raw else {}
             if not isinstance(parsed, dict):
                 raise RuntimeError("CDP response must be a JSON object")
-            return parsed
+            return CdpResponse(
+                body=parsed,
+                headers={str(k).strip().lower(): str(v).strip() for k, v in resp.headers.items()},
+            )
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         if 400 <= exc.code < 500:
@@ -683,12 +840,6 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
 
 def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
-    body = decode_json_event_body(event)
-    req = _parse_upload_request(body)
-    max_size = _tier_max_size_bytes(req.tier)
-    if req.size_bytes > max_size:
-        raise BadRequestError(f"size_bytes exceeds tier max size ({max_size} bytes)")
-
     headers = _normalize_headers(event)
     payment_header = headers.get("payment-signature") or headers.get("x-payment")
     requirements = _payment_requirements()
@@ -696,12 +847,20 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     requirement = accepts[0] if isinstance(accepts, list) and accepts else None
     if not isinstance(requirement, dict):
         raise RuntimeError("Payment requirements are misconfigured (expected accepts[0])")
+
+    # Important for Bazaar crawl / empty-body probes: discovery requests may send no body.
     if not payment_header:
         return _response(
             402,
             {"error": "payment_required", "message": "Payment is required."},
             headers=_x402_payment_required_headers(requirements),
         )
+
+    body = decode_json_event_body(event)
+    req = _parse_upload_request(body)
+    max_size = _tier_max_size_bytes(req.tier)
+    if req.size_bytes > max_size:
+        raise BadRequestError(f"size_bytes exceeds tier max size ({max_size} bytes)")
     payment_payload = _decode_payment_payload(payment_header)
 
     # Extract/validate the payer wallet from the payment payload BEFORE settling.
@@ -881,12 +1040,19 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
                 202,
                 {"success": False, "error": "settlement_pending", "message": "Payment settlement pending; retry completion."},
             )
-        if not bool(settle_resp.get("success")):
+        extension_responses = settle_resp.headers.get("extension-responses")
+        if extension_responses:
+            logger.info("CDP EXTENSION-RESPONSES: %s", extension_responses)
+
+        if not bool(settle_resp.body.get("success")):
             return _response(
                 402,
-                {"error": "payment_settle_failed", "message": str(settle_resp.get("errorMessage") or "Payment settlement failed.")},
+                {
+                    "error": "payment_settle_failed",
+                    "message": str(settle_resp.body.get("errorMessage") or "Payment settlement failed."),
+                },
             )
-        transaction_hash = str(settle_resp.get("transaction") or "").strip() or None
+        transaction_hash = str(settle_resp.body.get("transaction") or "").strip() or None
         try:
             _uploads_table().update_item(
                 Key={"upload_id": upload_id},

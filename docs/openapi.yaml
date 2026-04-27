@@ -617,7 +617,7 @@ paths:
         - $ref: "#/components/parameters/PaymentSignatureHeader"
         - $ref: "#/components/parameters/XPaymentHeader"
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
@@ -876,6 +876,18 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
     PaymentRequiredError:
       description: Payment authorization is required or invalid.
+      headers:
+        PAYMENT-REQUIRED:
+          description: >
+            Base64-encoded JSON payment requirements challenge (x402). Includes `accepts` and may include
+            discovery metadata (for Bazaar) under `extensions` along with descriptive fields like `resource`,
+            `mimeType`, and `description`.
+          schema:
+            type: string
+        x-payment-required:
+          description: Alias of `PAYMENT-REQUIRED`.
+          schema:
+            type: string
       content:
         application/json:
           schema:
