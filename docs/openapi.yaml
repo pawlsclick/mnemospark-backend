@@ -611,6 +611,9 @@ paths:
         Paid x402 entrypoint that returns a presigned PUT URL (`uploadUrl`) and upload metadata.
         Default flow is two-step: `publicUrl`/`siteUrl` are null until `/api/mnemospark-lite/upload/complete`.
         Hard max size is 4.8 GB (no multipart uploads in v1).
+        Pricing is **tier-based**: clients should include `tier` in the request body and (when unauthenticated)
+        first call without payment to receive a `402` with a tier-specific `PAYMENT-REQUIRED` challenge, then pay
+        the exact advertised `accepts[0].amount`.
       operationId: postMnemosparkLiteUpload
       security: []
       parameters:
