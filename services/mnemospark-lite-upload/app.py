@@ -759,7 +759,13 @@ def _cdp_facilitator_bearer_token(*, request_method: str, request_host: str, req
     return f"Bearer {token}"
 
 
-def _cdp_post(path: str, payload: dict[str, Any], *, timeout_seconds: float = 10.0) -> dict[str, Any]:
+@dataclass(frozen=True)
+class CdpResponse:
+    body: dict[str, Any]
+    headers: dict[str, str]
+
+
+def _cdp_post(path: str, payload: dict[str, Any], *, timeout_seconds: float = 10.0) -> CdpResponse:
     request_host = "api.cdp.coinbase.com"
     request_path = f"/platform{path}"
     url = f"https://{request_host}{request_path}"
@@ -783,7 +789,10 @@ def _cdp_post(path: str, payload: dict[str, Any], *, timeout_seconds: float = 10
             parsed = json.loads(raw) if raw else {}
             if not isinstance(parsed, dict):
                 raise RuntimeError("CDP response must be a JSON object")
-            return parsed
+            return CdpResponse(
+                body=parsed,
+                headers={str(k).strip().lower(): str(v).strip() for k, v in resp.headers.items()},
+            )
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         if 400 <= exc.code < 500:
@@ -1031,12 +1040,19 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
                 202,
                 {"success": False, "error": "settlement_pending", "message": "Payment settlement pending; retry completion."},
             )
-        if not bool(settle_resp.get("success")):
+        extension_responses = settle_resp.headers.get("extension-responses")
+        if extension_responses:
+            logger.info("CDP EXTENSION-RESPONSES: %s", extension_responses)
+
+        if not bool(settle_resp.body.get("success")):
             return _response(
                 402,
-                {"error": "payment_settle_failed", "message": str(settle_resp.get("errorMessage") or "Payment settlement failed.")},
+                {
+                    "error": "payment_settle_failed",
+                    "message": str(settle_resp.body.get("errorMessage") or "Payment settlement failed."),
+                },
             )
-        transaction_hash = str(settle_resp.get("transaction") or "").strip() or None
+        transaction_hash = str(settle_resp.body.get("transaction") or "").strip() or None
         try:
             _uploads_table().update_item(
                 Key={"upload_id": upload_id},

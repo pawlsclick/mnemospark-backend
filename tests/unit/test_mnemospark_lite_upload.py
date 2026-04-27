@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -164,6 +165,39 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
         body = json.loads(response["body"])
         self.assertEqual(body["error"], "payment_invalid")
         self.assertIn("payment signature does not recover payer wallet", body["message"])
+
+    def test_upload_without_payment_and_without_body_returns_402_for_bazaar_probe(self):
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/upload",
+            # Intentionally no "body" field: Bazaar discovery probes may send no body.
+            "headers": {},
+        }
+
+        with mock.patch.object(
+            app,
+            "_payment_requirements",
+            return_value={
+                "accepts": [
+                    {
+                        "scheme": "exact",
+                        "network": "eip155:8453",
+                        "asset": "0x" + ("a" * 40),
+                        "payTo": "0x" + ("b" * 40),
+                        "amount": "20000",
+                        "maxTimeoutSeconds": 3600,
+                        "extra": {"name": "USD Coin", "version": "2"},
+                    }
+                ],
+                "extensions": {"bazaar": {"info": {"description": "ok"}}},
+            },
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 402)
+        self.assertIn("PAYMENT-REQUIRED", response["headers"])
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "payment_required")
 
     def test_upload_with_unicode_digit_value_returns_400_bad_request(self):
         event = {
@@ -563,13 +597,19 @@ class CdpPostHeaderTests(unittest.TestCase):
                 def read(self):
                     return b"{}"
 
+                @property
+                def headers(self):
+                    return {}
+
             return FakeResponse()
 
         with (
             mock.patch.object(app, "_cdp_facilitator_bearer_token", return_value="Bearer jwt"),
             mock.patch.object(app.urllib_request, "urlopen", side_effect=fake_urlopen),
         ):
-            app._cdp_post("/x402/facilitator/test", {"n": Decimal("2"), "nested": {"x": Decimal("3.5")}})
+            resp = app._cdp_post("/x402/facilitator/test", {"n": Decimal("2"), "nested": {"x": Decimal("3.5")}})
+
+        self.assertEqual(resp.body, {})
 
     def test_cdp_post_uses_urllib_content_type_key_to_prevent_duplicate_header(self):
         class FakeResponse:
@@ -581,6 +621,10 @@ class CdpPostHeaderTests(unittest.TestCase):
 
             def read(self):
                 return b"{}"
+
+            @property
+            def headers(self):
+                return {}
 
         def fake_urlopen(req, timeout):
             self.assertEqual(timeout, 10)
@@ -599,4 +643,31 @@ class CdpPostHeaderTests(unittest.TestCase):
         ):
             response = app._cdp_post("/x402/facilitator/test", {"ok": True})
 
-        self.assertEqual(response, {})
+        self.assertEqual(response.body, {})
+
+
+class PaymentRequiredDiscoveryPayloadTests(unittest.TestCase):
+    def test_payment_required_payload_includes_bazaar_extensions(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "MNEMOSPARK_LITE_PUBLIC_BASE_URL": "https://api.example.com",
+                "MNEMOSPARK_RECIPIENT_WALLET": "0x" + ("b" * 40),
+                "MNEMOSPARK_PAYMENT_NETWORK": "eip155:8453",
+                "MNEMOSPARK_PAYMENT_ASSET": "0x" + ("a" * 40),
+            },
+            clear=False,
+        ):
+            reqs = app._payment_requirements()
+            headers = app._x402_payment_required_headers(reqs)
+
+        encoded = headers["PAYMENT-REQUIRED"]
+        decoded = json.loads(app.base64.b64decode(encoded).decode("utf-8"))
+        self.assertEqual(decoded["x402Version"], 2)
+        self.assertEqual(decoded["resource"], "https://api.example.com/api/mnemospark-lite/upload")
+        self.assertEqual(decoded["mimeType"], "application/json")
+        self.assertIn("description", decoded)
+        self.assertIn("accepts", decoded)
+        self.assertEqual(decoded["accepts"][0]["scheme"], "exact")
+        self.assertIn("extensions", decoded)
+        self.assertIn("bazaar", decoded["extensions"])
