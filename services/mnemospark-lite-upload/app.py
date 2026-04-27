@@ -532,14 +532,19 @@ def _mint_ls_web_app_url(*, payer_wallet: str, location: str) -> dict[str, str]:
         ConditionExpression="attribute_not_exists(session_id)",
     )
     app_base = (os.environ.get("MNEMOSPARK_LS_WEB_APP_URL") or "https://app.mnemospark.ai").strip().rstrip("/")
+    lite_path = (os.environ.get("MNEMOSPARK_LS_WEB_APP_PATH_LITE") or "").strip()
+    if lite_path and not lite_path.startswith("/"):
+        lite_path = "/" + lite_path
+    if lite_path.endswith("/"):
+        lite_path = lite_path[:-1]
     prefix_query = (os.environ.get("MNEMOSPARK_LS_WEB_APP_PREFIX_QUERY") or "").strip()
     from urllib.parse import quote
 
     enc_q = quote(code, safe="")
     if prefix_query:
-        app = f"{app_base}/?{prefix_query}&code={enc_q}"
+        app = f"{app_base}{lite_path}/?{prefix_query}&code={enc_q}"
     else:
-        app = f"{app_base}/?code={enc_q}"
+        app = f"{app_base}{lite_path}/?code={enc_q}"
     return {
         "code": code,
         "app": app,
