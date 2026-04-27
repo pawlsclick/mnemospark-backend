@@ -2064,6 +2064,7 @@ Resources:
           LS_WEB_SESSION_TABLE_NAME: !Ref LsWebSessionTable
           MNEMOSPARK_LS_WEB_APP_URL: "https://app.mnemospark.ai"
           MNEMOSPARK_LS_WEB_APP_PREFIX_QUERY: !If [IsStagingStage, "api=staging", ""]
+          MNEMOSPARK_LS_WEB_APP_PATH_LITE: "/mnemospark-lite"
           MNEMOSPARK_RECIPIENT_WALLET: !Ref MnemosparkRecipientWallet
           MNEMOSPARK_PAYMENT_NETWORK: !Ref PaymentNetwork
           MNEMOSPARK_PAYMENT_ASSET: !Ref PaymentAssetAddress
