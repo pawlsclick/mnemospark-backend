@@ -55,6 +55,7 @@ jobs:
           MNEMOSPARK_RECIPIENT_WALLET: ${{ vars.MNEMOSPARK_RECIPIENT_WALLET }}
           RELAYER_WALLET_ADDRESS: ${{ vars.RELAYER_WALLET_ADDRESS }}
           PAYMENT_ASSET_ADDRESS: ${{ vars.PAYMENT_ASSET_ADDRESS }}
+          MNEMOSPARK_LITE_PUBLIC_BASE_URL: ${{ vars.MnemosparkLitePublicBaseUrl }}
           MNEMOSPARK_LITE_BEARER_SECRET: ${{ secrets.MNEMOSPARK_LITE_BEARER_SECRET }}
           CDP_API_KEY_SECRET: ${{ secrets.CDP_API_KEY_SECRET }}
           CDP_API_KEY_ID: ${{ secrets.CDP_API_KEY_ID }}
@@ -75,6 +76,7 @@ jobs:
           require_var MNEMOSPARK_RECIPIENT_WALLET "${MNEMOSPARK_RECIPIENT_WALLET}"
           require_var RELAYER_WALLET_ADDRESS "${RELAYER_WALLET_ADDRESS}"
           require_var PAYMENT_ASSET_ADDRESS "${PAYMENT_ASSET_ADDRESS}"
+          require_var MnemosparkLitePublicBaseUrl "${MNEMOSPARK_LITE_PUBLIC_BASE_URL}"
           require_var MNEMOSPARK_LITE_BEARER_SECRET "${MNEMOSPARK_LITE_BEARER_SECRET}" secret
           require_var CDP_API_KEY_SECRET "${CDP_API_KEY_SECRET}" secret
           require_var CDP_API_KEY_ID "${CDP_API_KEY_ID}" secret
@@ -99,6 +101,7 @@ jobs:
               "CdpApiKeyId=${CDP_API_KEY_ID}" \
               "PriceStorageFloor=${PRICE_STORAGE_FLOOR}" \
               "PriceStorageMarkup=${PRICE_STORAGE_MARKUP}" \
+              "MnemosparkLitePublicBaseUrl=${MNEMOSPARK_LITE_PUBLIC_BASE_URL}" \
               "RestApiCorsAllowOrigin=https://app.mnemospark.ai"
 
       - name: Smoke tests

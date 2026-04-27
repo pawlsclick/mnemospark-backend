@@ -57,6 +57,7 @@ jobs:
           MNEMOSPARK_RECIPIENT_WALLET: ${{ vars.MNEMOSPARK_RECIPIENT_WALLET }}
           RELAYER_WALLET_ADDRESS: ${{ vars.RELAYER_WALLET_ADDRESS }}
           PAYMENT_ASSET_ADDRESS: ${{ vars.PAYMENT_ASSET_ADDRESS }}
+          MNEMOSPARK_LITE_PUBLIC_BASE_URL: ${{ vars.MnemosparkLitePublicBaseUrl }}
           PRICE_STORAGE_FLOOR: ${{ vars.PRICE_STORAGE_FLOOR || '0' }}
           PRICE_STORAGE_MARKUP: ${{ vars.PRICE_STORAGE_MARKUP || '0' }}
         run: |
@@ -73,6 +74,7 @@ jobs:
           require_var MNEMOSPARK_RECIPIENT_WALLET "${MNEMOSPARK_RECIPIENT_WALLET}"
           require_var RELAYER_WALLET_ADDRESS "${RELAYER_WALLET_ADDRESS}"
           require_var PAYMENT_ASSET_ADDRESS "${PAYMENT_ASSET_ADDRESS}"
+          require_var MnemosparkLitePublicBaseUrl "${MNEMOSPARK_LITE_PUBLIC_BASE_URL}"
           if [ "${PAYMENT_SETTLEMENT_MODE}" = "onchain" ]; then
             require_var BASE_RPC_URL "${BASE_RPC_URL}"
           fi
@@ -87,7 +89,8 @@ jobs:
               "RelayerWalletAddress=${RELAYER_WALLET_ADDRESS}" \
               "PaymentAssetAddress=${PAYMENT_ASSET_ADDRESS}" \
               "PriceStorageFloor=${PRICE_STORAGE_FLOOR}" \
-              "PriceStorageMarkup=${PRICE_STORAGE_MARKUP}"
+              "PriceStorageMarkup=${PRICE_STORAGE_MARKUP}" \
+              "MnemosparkLitePublicBaseUrl=${MNEMOSPARK_LITE_PUBLIC_BASE_URL}"
 
       - name: Smoke tests (prod)
         if: ${{ vars.PROD_BASE_URL != '' && !contains(vars.PROD_BASE_URL, 'example.com') }}
