@@ -2049,6 +2049,10 @@ Resources:
           MNEMOSPARK_LITE_UPLOADS_TABLE_NAME: !Ref MnemosparkLiteUploadRegistryTable
           MNEMOSPARK_LITE_BEARER_SECRET: !Ref MnemosparkLiteBearerSecret
           MNEMOSPARK_LITE_PUBLIC_BASE_URL: !Ref MnemosparkLitePublicBaseUrl
+          PRICE_STORAGE_MARKUP: !Ref PriceStorageMarkup
+          PRICE_STORAGE_FLOOR: !Ref PriceStorageFloor
+          PRICE_STORAGE_TRANSFER_DIRECTION: out
+          PRICE_STORAGE_RATE_TYPE: BEFORE_DISCOUNTS
           LS_WEB_SESSION_TABLE_NAME: !Ref LsWebSessionTable
           MNEMOSPARK_LS_WEB_APP_URL: "https://app.mnemospark.ai"
           MNEMOSPARK_LS_WEB_APP_PREFIX_QUERY: !If [IsStagingStage, "api=staging", ""]
