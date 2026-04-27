@@ -80,6 +80,13 @@ dynamodb = boto3.resource("dynamodb", region_name=DEFAULT_REGION)
 LIFECYCLE_EXPIRE_DAYS = 30
 _LIFECYCLE_ENSURED_BUCKETS: set[str] = set()
 
+# Keep in sync with template.yaml REST API CORS AllowHeaders for these Lambda OPTIONS routes.
+_REST_API_CORS_ALLOW_HEADERS = (
+    "Content-Type,Authorization,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,"
+    "PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,"
+    "X-PAYMENT,x-payment,x-payment-required,x-payment-response,Cookie"
+)
+
 
 class UnauthorizedError(ValueError):
     pass
@@ -308,6 +315,23 @@ def _bearer_secret() -> bytes:
     if not raw:
         raise RuntimeError("MNEMOSPARK_LITE_BEARER_SECRET is not configured")
     return raw.encode("utf-8")
+
+
+def _handle_options(event: dict[str, Any]) -> dict[str, Any]:
+    # SAM API Gateway CORS mock omits Access-Control-Allow-Credentials on preflight,
+    # which breaks `fetch(..., { credentials: 'include' })` in browsers.
+    headers = rest_api_json_headers()
+    origin = headers.get("Access-Control-Allow-Origin")
+    if origin and origin != "*":
+        headers["Access-Control-Allow-Credentials"] = "true"
+        headers["Vary"] = "Origin"
+    headers.update(
+        {
+            "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
+            "Access-Control-Allow-Headers": _REST_API_CORS_ALLOW_HEADERS,
+        }
+    )
+    return {"statusCode": 200, "headers": headers, "body": "{}"}
 
 
 def _response(status_code: int, body: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -969,6 +993,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     method = _method(event)
 
     try:
+        if method == "OPTIONS" and path.startswith("/api/mnemospark-lite/"):
+            return _handle_options(event)
         if method == "POST" and path == "/api/mnemospark-lite/upload":
             return _handle_post_upload(event)
         if method == "POST" and path == "/api/mnemospark-lite/upload/complete":
