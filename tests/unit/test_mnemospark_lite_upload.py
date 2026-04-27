@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import types
+from decimal import Decimal
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -116,6 +117,53 @@ class ShareLinkTests(unittest.TestCase):
         self.assertEqual(resp["statusCode"], 200)
         body = json.loads(resp["body"])
         self.assertEqual(body["data"]["downloadUrl"], "https://example.com/download")
+
+    def test_exchange_accepts_decimal_expiry_from_dynamodb(self):
+        share_table = FakeShareLinksTable()
+        share_table.items["hash"] = {
+            "share_token_hash": "hash",
+            "bucket": "mnemospark-lite-test",
+            "object_key": "up_123/artifact.bin",
+            "filename": "artifact.bin",
+            "expires_at": Decimal("1000"),
+        }
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/shares/exchange",
+            "body": json.dumps({"share_token": "sharetoken"}),
+        }
+        with (
+            mock.patch.object(app, "_share_links_table", return_value=share_table),
+            mock.patch.object(app, "_hash_token", return_value="hash"),
+            mock.patch.object(app.time, "time", return_value=100),
+            mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/download"),
+        ):
+            resp = app.lambda_handler(event, None)
+
+        self.assertEqual(resp["statusCode"], 200)
+        body = json.loads(resp["body"])
+        self.assertEqual(body["data"]["downloadUrl"], "https://example.com/download")
+
+    def test_wallet_from_cookie_session_accepts_decimal_expiry(self):
+        wallet = "0x" + ("1" * 40)
+        session_table = mock.Mock()
+        session_table.get_item.return_value = {
+            "Item": {
+                "session_id": "session123",
+                "session_expires_at": Decimal("1000"),
+                "exchanged": True,
+                "bucket_mode": "lite",
+                "wallet_address": wallet,
+            }
+        }
+        event = {"headers": {"Cookie": "mnemospark_ls_web=session123"}}
+        with (
+            mock.patch.object(app, "_ls_web_session_table", return_value=session_table),
+            mock.patch.object(app.time, "time", return_value=100),
+        ):
+            resolved = app._wallet_from_cookie_session(event)
+
+        self.assertEqual(resolved, wallet)
 
 
 class DeleteUploadTests(unittest.TestCase):

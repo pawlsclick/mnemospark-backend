@@ -128,6 +128,20 @@ def _coerce_int(value: Any, field: str) -> int:
     raise BadRequestError(f"{field} must be an integer")
 
 
+def _as_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, Decimal):
+        try:
+            if value == value.to_integral_value():
+                return int(value)
+        except Exception:
+            return None
+    return None
+
+
 def _verify_payment_locally(*, payment_payload: dict[str, Any], requirement: dict[str, Any]) -> None:
     """
     Local EIP-712 verification for EIP-3009 TransferWithAuthorization.
@@ -252,8 +266,8 @@ def _wallet_from_cookie_session(event: dict[str, Any]) -> str | None:
     if not isinstance(row, dict):
         return None
     now = int(time.time())
-    exp = row.get("session_expires_at")
-    if not isinstance(exp, int) or exp <= now:
+    exp = _as_int(row.get("session_expires_at"))
+    if exp is None or exp <= now:
         return None
     if not bool(row.get("exchanged")):
         return None
@@ -600,20 +614,10 @@ def _mint_ls_web_app_url(*, payer_wallet: str, location: str) -> dict[str, str]:
         },
         ConditionExpression="attribute_not_exists(session_id)",
     )
-    app_base = (os.environ.get("MNEMOSPARK_LS_WEB_APP_URL") or "https://app.mnemospark.ai").strip().rstrip("/")
-    lite_path = (os.environ.get("MNEMOSPARK_LS_WEB_APP_PATH_LITE") or "").strip()
-    if lite_path and not lite_path.startswith("/"):
-        lite_path = "/" + lite_path
-    if lite_path.endswith("/"):
-        lite_path = lite_path[:-1]
-    prefix_query = (os.environ.get("MNEMOSPARK_LS_WEB_APP_PREFIX_QUERY") or "").strip()
     from urllib.parse import quote
 
     enc_q = quote(code, safe="")
-    if prefix_query:
-        app = f"{app_base}{lite_path}/?{prefix_query}&code={enc_q}"
-    else:
-        app = f"{app_base}{lite_path}/?code={enc_q}"
+    app = f"{_lite_app_base_url_with_prefix_query()}code={enc_q}"
     return {
         "code": code,
         "app": app,
@@ -1408,8 +1412,8 @@ def _handle_post_shares_exchange(event: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(item, dict):
         return _error(401, "unauthorized", "Invalid or expired share token")
     now = int(time.time())
-    expires_at = item.get("expires_at")
-    if not isinstance(expires_at, int) or expires_at <= now:
+    expires_at = _as_int(item.get("expires_at"))
+    if expires_at is None or expires_at <= now:
         return _error(401, "unauthorized", "Invalid or expired share token")
 
     bucket = str(item.get("bucket") or "").strip()
