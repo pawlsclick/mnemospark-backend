@@ -819,6 +819,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
                 },
             ),
             mock.patch.object(app, "_verify_payment_locally", return_value=None),
+            mock.patch.object(app, "_cdp_post", return_value=app.CdpResponse(body={"success": True, "transaction": "0xtx"}, headers={})),
             mock.patch.object(app.s3, "head_bucket", return_value={}),
             mock.patch.object(app, "_ensure_bucket_lifecycle_expiration", side_effect=lifecycle_error),
             mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload"),
@@ -884,6 +885,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
                 },
             ),
             mock.patch.object(app, "_verify_payment_locally", return_value=None),
+            mock.patch.object(app, "_cdp_post", return_value=app.CdpResponse(body={"success": True, "transaction": "0xtx"}, headers={})),
             mock.patch.object(app.s3, "head_bucket", return_value={}),
             mock.patch.object(app, "_ensure_bucket_lifecycle_expiration", return_value=None),
             mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload") as presign_mock,
@@ -898,6 +900,79 @@ class PostUploadReliabilityTests(unittest.TestCase):
         self.assertEqual(presign_mock.call_args.kwargs["Params"]["Key"], "upload123/artifact.bin")
         self.assertEqual(uploads_table.put_item.call_args.kwargs["Item"]["object_key"], "upload123/artifact.bin")
         self.assertEqual(uploads_table.put_item.call_args.kwargs["Item"]["filename"], "artifact.bin")
+
+    def test_post_upload_settles_via_cdp_for_bazaar_indexing(self):
+        event = {
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+        uploads_table = mock.Mock()
+        cdp_mock = mock.Mock(return_value=app.CdpResponse(body={"success": True, "transaction": "0xsettled"}, headers={}))
+
+        with (
+            mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
+            mock.patch.object(
+                app,
+                "_payment_requirements",
+                return_value={
+                    "accepts": [
+                        {
+                            "scheme": "exact",
+                            "network": "eip155:8453",
+                            "asset": "0x" + ("a" * 40),
+                            "payTo": "0x" + ("b" * 40),
+                            "amount": "20000",
+                            "maxTimeoutSeconds": 3600,
+                            "extra": {"name": "USD Coin", "version": "2"},
+                        }
+                    ]
+                },
+            ),
+            mock.patch.object(
+                app,
+                "_decode_payment_payload",
+                return_value={
+                    "x402Version": 2,
+                    "payload": {
+                        "authorization": {
+                            "from": "0x" + ("1" * 40),
+                            "to": "0x" + ("b" * 40),
+                            "value": "20000",
+                            "validAfter": "1716150000",
+                            "validBefore": "2716150000",
+                            "nonce": "0x" + ("1" * 64),
+                        },
+                        "signature": "0x" + ("2" * 130),
+                    },
+                },
+            ),
+            mock.patch.object(app, "_verify_payment_locally", return_value=None),
+            mock.patch.object(app, "_cdp_post", cdp_mock),
+            mock.patch.object(app.s3, "head_bucket", return_value={}),
+            mock.patch.object(app, "_ensure_bucket_lifecycle_expiration", return_value=None),
+            mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload"),
+            mock.patch.object(app, "_uploads_table", return_value=uploads_table),
+            mock.patch.object(app, "_payment_config", return_value={"payment_network": "base-sepolia"}),
+            mock.patch.object(app, "_sign_bearer", return_value="bearer"),
+            mock.patch.object(app.secrets, "token_urlsafe", side_effect=["upload123", "completion123"]),
+        ):
+            response = app._handle_post_upload(event)
+
+        self.assertEqual(response["statusCode"], 200)
+        self.assertEqual(cdp_mock.call_args.args[0], "/v2/x402/settle")
+        item = uploads_table.put_item.call_args.kwargs["Item"]
+        self.assertEqual(item["transaction_hash"], "0xsettled")
+        self.assertEqual(item["payment_status"], "settled")
+        body = json.loads(response["body"])
+        self.assertEqual(body["metadata"]["payment"]["transactionHash"], "0xsettled")
+        self.assertEqual(body["metadata"]["payment"]["status"], "settled")
 
 
 class CdpPostHeaderTests(unittest.TestCase):
