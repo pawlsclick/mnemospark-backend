@@ -1222,6 +1222,11 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
         payment_requirements = item.get("payment_requirements")
         if not isinstance(payment_payload, dict) or not isinstance(payment_requirements, dict):
             return _error(500, "internal_error", "Upload record missing payment context")
+        # Some clients omit `scheme` in the payment payload; CDP settlement expects it.
+        if not str(payment_payload.get("scheme") or "").strip():
+            scheme = str(payment_requirements.get("scheme") or "").strip()
+            if scheme:
+                payment_payload = {**payment_payload, "scheme": scheme}
         try:
             settle_resp = _cdp_post(
                 "/v2/x402/settle",
