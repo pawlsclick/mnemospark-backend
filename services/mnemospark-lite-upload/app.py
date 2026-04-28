@@ -988,6 +988,30 @@ def _cdp_post(path: str, payload: dict[str, Any], *, timeout_seconds: float = 10
         raise RuntimeError("Unable to reach CDP facilitator") from exc
 
 
+def _settle_payment_via_cdp(*, payment_payload: dict[str, Any], payment_requirements: dict[str, Any], timeout_seconds: float = 8.0) -> str | None:
+    normalized_payment_payload = dict(payment_payload)
+    # Some clients omit `scheme` in the payment payload; CDP settlement expects it.
+    if not str(normalized_payment_payload.get("scheme") or "").strip():
+        scheme = str(payment_requirements.get("scheme") or "").strip()
+        if scheme:
+            normalized_payment_payload["scheme"] = scheme
+    settle_resp = _cdp_post(
+        "/v2/x402/settle",
+        {
+            "x402Version": int(normalized_payment_payload.get("x402Version") or 2),
+            "paymentPayload": _strip_nulls(normalized_payment_payload),
+            "paymentRequirements": payment_requirements,
+        },
+        timeout_seconds=timeout_seconds,
+    )
+    extension_responses = settle_resp.headers.get("extension-responses")
+    if extension_responses:
+        logger.info("CDP EXTENSION-RESPONSES: %s", extension_responses)
+    if not bool(settle_resp.body.get("success")):
+        raise PaymentInvalidError(str(settle_resp.body.get("errorMessage") or "Payment settlement failed."))
+    return str(settle_resp.body.get("transaction") or "").strip() or None
+
+
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     path = _path(event)
     method = _method(event)
@@ -1075,9 +1099,22 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
             payer_raw = str(permit2_auth.get("from") or "")
     payer_wallet = normalize_wallet_address(payer_raw, "payer_wallet")
 
-    # Verify locally (fast, no external dependency). Settlement happens later in
-    # /complete to avoid API Gateway timeouts.
+    # Verify locally first, then settle through the CDP facilitator so Bazaar sees
+    # a real settled x402 payment on the paid /upload call.
     _verify_payment_locally(payment_payload=payment_payload, requirement=requirement)
+    try:
+        transaction_hash = _settle_payment_via_cdp(
+            payment_payload=payment_payload,
+            payment_requirements=requirement,
+            timeout_seconds=8.0,
+        )
+    except SettlementPendingError:
+        return _response(
+            202,
+            {"success": False, "error": "settlement_pending", "message": "Payment settlement pending; retry upload."},
+        )
+    except PaymentInvalidError as exc:
+        return _response(402, {"error": "payment_settle_failed", "message": str(exc)})
 
     now = datetime.now(timezone.utc)
     upload_id = secrets.token_urlsafe(16)
@@ -1138,8 +1175,8 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         "expires_at": _expires_at_iso(now),
         "ttl_epoch_seconds": _ttl_epoch_seconds(now),
         "completion_token_hash": completion_token_hash,
-        "transaction_hash": None,
-        "payment_status": "verified",
+        "transaction_hash": transaction_hash,
+        "payment_status": "settled",
         "payment_payload": _strip_nulls(payment_payload),
         "payment_requirements": requirement,
         "price_paid": usd_display,
@@ -1166,7 +1203,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
                 "protocol": "x402",
                 "network": _payment_config()["payment_network"],
                 "price": item["price_paid"],
-                "payment": {"success": True, "transactionHash": None, "status": "verified"},
+                "payment": {"success": True, "transactionHash": transaction_hash, "status": "settled"},
             },
         },
     )
@@ -1214,27 +1251,19 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
     if max_size > 0 and content_length > max_size:
         raise BadRequestError(f"Uploaded object exceeds tier max size ({max_size} bytes)")
 
-    # Settle payment here (can be slow); keep this endpoint retry-safe.
-    # Do this only after confirming the object exists and meets size limits to
-    # avoid charging if the upload never happened.
-    if not str(item.get("transaction_hash") or "").strip():
+    # Older pending rows may still need facilitator settlement here. New rows settle
+    # during /upload so Bazaar indexing sees the paid call.
+    transaction_hash = str(item.get("transaction_hash") or "").strip()
+    payment_status = str(item.get("payment_status") or "").strip().lower()
+    if not transaction_hash and payment_status != "settled":
         payment_payload = item.get("payment_payload")
         payment_requirements = item.get("payment_requirements")
         if not isinstance(payment_payload, dict) or not isinstance(payment_requirements, dict):
             return _error(500, "internal_error", "Upload record missing payment context")
-        # Some clients omit `scheme` in the payment payload; CDP settlement expects it.
-        if not str(payment_payload.get("scheme") or "").strip():
-            scheme = str(payment_requirements.get("scheme") or "").strip()
-            if scheme:
-                payment_payload = {**payment_payload, "scheme": scheme}
         try:
-            settle_resp = _cdp_post(
-                "/v2/x402/settle",
-                {
-                    "x402Version": int(payment_payload.get("x402Version") or 2),
-                    "paymentPayload": _strip_nulls(payment_payload),
-                    "paymentRequirements": payment_requirements,
-                },
+            transaction_hash = _settle_payment_via_cdp(
+                payment_payload=payment_payload,
+                payment_requirements=payment_requirements,
                 timeout_seconds=8.0,
             )
         except SettlementPendingError:
@@ -1242,19 +1271,8 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
                 202,
                 {"success": False, "error": "settlement_pending", "message": "Payment settlement pending; retry completion."},
             )
-        extension_responses = settle_resp.headers.get("extension-responses")
-        if extension_responses:
-            logger.info("CDP EXTENSION-RESPONSES: %s", extension_responses)
-
-        if not bool(settle_resp.body.get("success")):
-            return _response(
-                402,
-                {
-                    "error": "payment_settle_failed",
-                    "message": str(settle_resp.body.get("errorMessage") or "Payment settlement failed."),
-                },
-            )
-        transaction_hash = str(settle_resp.body.get("transaction") or "").strip() or None
+        except PaymentInvalidError as exc:
+            return _response(402, {"error": "payment_settle_failed", "message": str(exc)})
         try:
             _uploads_table().update_item(
                 Key={"upload_id": upload_id},
