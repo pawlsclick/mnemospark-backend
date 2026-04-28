@@ -107,7 +107,8 @@ jobs:
               "MnemosparkLitePublicBaseUrl=${MNEMOSPARK_LITE_PUBLIC_BASE_URL}" \
               "MnemosparkLiteBearerSecret=${MNEMOSPARK_LITE_BEARER_SECRET}" \
               "CdpX402FacilitatorBearerToken=${CDP_API_KEY_SECRET}" \
-              "CdpApiKeyId=${CDP_API_KEY_ID}"
+              "CdpApiKeyId=${CDP_API_KEY_ID}" \
+              "RestApiCorsAllowOrigin=https://app.mnemospark.ai"
 
       - name: Smoke tests (prod)
         if: ${{ vars.PROD_BASE_URL != '' && !contains(vars.PROD_BASE_URL, 'example.com') }}
