@@ -997,12 +997,15 @@ def _cdp_post_with_deadline(path: str, payload: dict[str, Any], *, timeout_secon
     in a separate thread so we can return 202 quickly instead of letting API
     Gateway time out with 504.
     """
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        fut = ex.submit(_cdp_post, path, payload, timeout_seconds=timeout_seconds)
-        try:
-            return fut.result(timeout=timeout_seconds + 0.25)
-        except concurrent.futures.TimeoutError as exc:
-            raise SettlementPendingError("CDP request exceeded deadline") from exc
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(_cdp_post, path, payload, timeout_seconds=timeout_seconds)
+    try:
+        return fut.result(timeout=timeout_seconds + 0.25)
+    except concurrent.futures.TimeoutError as exc:
+        fut.cancel()
+        raise SettlementPendingError("CDP request exceeded deadline") from exc
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
 
 
 def _settle_payment_via_cdp(*, payment_payload: dict[str, Any], payment_requirements: dict[str, Any], timeout_seconds: float = 8.0) -> str | None:
