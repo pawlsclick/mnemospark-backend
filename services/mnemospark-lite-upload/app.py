@@ -1113,6 +1113,8 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
             202,
             {"success": False, "error": "settlement_pending", "message": "Payment settlement pending; retry upload."},
         )
+    except PaymentInvalidError as exc:
+        return _response(402, {"error": "payment_settle_failed", "message": str(exc)})
 
     now = datetime.now(timezone.utc)
     upload_id = secrets.token_urlsafe(16)

@@ -974,6 +974,70 @@ class PostUploadReliabilityTests(unittest.TestCase):
         self.assertEqual(body["metadata"]["payment"]["transactionHash"], "0xsettled")
         self.assertEqual(body["metadata"]["payment"]["status"], "settled")
 
+    def test_post_upload_returns_payment_settle_failed_when_cdp_settlement_rejects(self):
+        event = {
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+
+        with (
+            mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
+            mock.patch.object(
+                app,
+                "_payment_requirements",
+                return_value={
+                    "accepts": [
+                        {
+                            "scheme": "exact",
+                            "network": "eip155:8453",
+                            "asset": "0x" + ("a" * 40),
+                            "payTo": "0x" + ("b" * 40),
+                            "amount": "20000",
+                            "maxTimeoutSeconds": 3600,
+                            "extra": {"name": "USD Coin", "version": "2"},
+                        }
+                    ]
+                },
+            ),
+            mock.patch.object(
+                app,
+                "_decode_payment_payload",
+                return_value={
+                    "x402Version": 2,
+                    "payload": {
+                        "authorization": {
+                            "from": "0x" + ("1" * 40),
+                            "to": "0x" + ("b" * 40),
+                            "value": "20000",
+                            "validAfter": "1716150000",
+                            "validBefore": "2716150000",
+                            "nonce": "0x" + ("1" * 64),
+                        },
+                        "signature": "0x" + ("2" * 130),
+                    },
+                },
+            ),
+            mock.patch.object(app, "_verify_payment_locally", return_value=None),
+            mock.patch.object(
+                app,
+                "_cdp_post",
+                return_value=app.CdpResponse(body={"success": False, "errorMessage": "facilitator rejected payment"}, headers={}),
+            ),
+        ):
+            response = app._handle_post_upload(event)
+
+        self.assertEqual(response["statusCode"], 402)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "payment_settle_failed")
+        self.assertIn("facilitator rejected payment", body["message"])
+
 
 class CdpPostHeaderTests(unittest.TestCase):
     def test_cdp_post_serializes_decimal_payload_fields(self):
