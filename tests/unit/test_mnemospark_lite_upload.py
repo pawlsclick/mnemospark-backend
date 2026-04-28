@@ -484,6 +484,57 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
         self.assertEqual(body["error"], "payment_invalid")
         self.assertIn("payment signature does not recover payer wallet", body["message"])
 
+    def test_paid_upload_returns_202_when_settlement_pending(self):
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/upload",
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+
+        with (
+            mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
+            mock.patch.object(
+                app,
+                "_payment_requirements",
+                return_value={
+                    "accepts": [
+                        {
+                            "scheme": "exact",
+                            "network": "eip155:8453",
+                            "asset": "0x" + ("a" * 40),
+                            "payTo": "0x" + ("b" * 40),
+                            "amount": "20000",
+                            "maxTimeoutSeconds": 3600,
+                            "extra": {"name": "USD Coin", "version": "2"},
+                        }
+                    ]
+                },
+            ),
+            mock.patch.object(
+                app,
+                "_decode_payment_payload",
+                return_value={
+                    "x402Version": 2,
+                    "payload": {"authorization": {"from": "0x" + ("1" * 40)}, "signature": "0x" + ("2" * 130)},
+                },
+            ),
+            mock.patch.object(app, "_verify_payment_locally", return_value=None),
+            mock.patch.object(app, "_settle_payment_via_cdp", side_effect=app.SettlementPendingError("timeout")),
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 202)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "settlement_pending")
+
     def test_upload_without_payment_and_without_body_returns_402_for_bazaar_probe(self):
         event = {
             "httpMethod": "POST",
