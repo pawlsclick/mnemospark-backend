@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import base64
 import time
+import concurrent.futures
 from decimal import Decimal
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -988,6 +989,22 @@ def _cdp_post(path: str, payload: dict[str, Any], *, timeout_seconds: float = 10
         raise RuntimeError("Unable to reach CDP facilitator") from exc
 
 
+def _cdp_post_with_deadline(path: str, payload: dict[str, Any], *, timeout_seconds: float) -> CdpResponse:
+    """
+    Enforce a hard upper-bound on CDP calls.
+
+    In some environments, DNS/connect can exceed urllib's timeout. Run the request
+    in a separate thread so we can return 202 quickly instead of letting API
+    Gateway time out with 504.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        fut = ex.submit(_cdp_post, path, payload, timeout_seconds=timeout_seconds)
+        try:
+            return fut.result(timeout=timeout_seconds + 0.25)
+        except concurrent.futures.TimeoutError as exc:
+            raise SettlementPendingError("CDP request exceeded deadline") from exc
+
+
 def _settle_payment_via_cdp(*, payment_payload: dict[str, Any], payment_requirements: dict[str, Any], timeout_seconds: float = 8.0) -> str | None:
     normalized_payment_payload = dict(payment_payload)
     # Some clients omit `scheme` in the payment payload; CDP settlement expects it.
@@ -995,7 +1012,7 @@ def _settle_payment_via_cdp(*, payment_payload: dict[str, Any], payment_requirem
         scheme = str(payment_requirements.get("scheme") or "").strip()
         if scheme:
             normalized_payment_payload["scheme"] = scheme
-    settle_resp = _cdp_post(
+    settle_resp = _cdp_post_with_deadline(
         "/v2/x402/settle",
         {
             "x402Version": int(normalized_payment_payload.get("x402Version") or 2),
@@ -1106,7 +1123,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         transaction_hash = _settle_payment_via_cdp(
             payment_payload=payment_payload,
             payment_requirements=requirement,
-            timeout_seconds=8.0,
+            timeout_seconds=2.5,
         )
     except SettlementPendingError:
         return _response(
@@ -1264,7 +1281,7 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
             transaction_hash = _settle_payment_via_cdp(
                 payment_payload=payment_payload,
                 payment_requirements=payment_requirements,
-                timeout_seconds=8.0,
+                timeout_seconds=2.5,
             )
         except SettlementPendingError:
             return _response(
