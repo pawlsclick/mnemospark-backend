@@ -58,6 +58,9 @@ jobs:
           RELAYER_WALLET_ADDRESS: ${{ vars.RELAYER_WALLET_ADDRESS }}
           PAYMENT_ASSET_ADDRESS: ${{ vars.PAYMENT_ASSET_ADDRESS }}
           MNEMOSPARK_LITE_PUBLIC_BASE_URL: ${{ vars.MnemosparkLitePublicBaseUrl }}
+          MNEMOSPARK_LITE_BEARER_SECRET: ${{ secrets.MNEMOSPARK_LITE_BEARER_SECRET }}
+          CDP_API_KEY_SECRET: ${{ secrets.CDP_API_KEY_SECRET }}
+          CDP_API_KEY_ID: ${{ secrets.CDP_API_KEY_ID }}
           PRICE_STORAGE_FLOOR: ${{ vars.PRICE_STORAGE_FLOOR || '0' }}
           PRICE_STORAGE_MARKUP: ${{ vars.PRICE_STORAGE_MARKUP || '0' }}
         run: |
@@ -70,11 +73,22 @@ jobs:
               exit 1
             fi
           }
+          require_secret() {
+            local gh_name="$1"
+            local val="${2:-}"
+            if [ -z "${val}" ]; then
+              echo "::error::Set GitHub secret ${gh_name} on the prod GitHub environment."
+              exit 1
+            fi
+          }
           require_var PAYMENT_SETTLEMENT_MODE "${PAYMENT_SETTLEMENT_MODE}"
           require_var MNEMOSPARK_RECIPIENT_WALLET "${MNEMOSPARK_RECIPIENT_WALLET}"
           require_var RELAYER_WALLET_ADDRESS "${RELAYER_WALLET_ADDRESS}"
           require_var PAYMENT_ASSET_ADDRESS "${PAYMENT_ASSET_ADDRESS}"
           require_var MnemosparkLitePublicBaseUrl "${MNEMOSPARK_LITE_PUBLIC_BASE_URL}"
+          require_secret MNEMOSPARK_LITE_BEARER_SECRET "${MNEMOSPARK_LITE_BEARER_SECRET}"
+          require_secret CDP_API_KEY_SECRET "${CDP_API_KEY_SECRET}"
+          require_secret CDP_API_KEY_ID "${CDP_API_KEY_ID}"
           if [ "${PAYMENT_SETTLEMENT_MODE}" = "onchain" ]; then
             require_var BASE_RPC_URL "${BASE_RPC_URL}"
           fi
@@ -90,7 +104,11 @@ jobs:
               "PaymentAssetAddress=${PAYMENT_ASSET_ADDRESS}" \
               "PriceStorageFloor=${PRICE_STORAGE_FLOOR}" \
               "PriceStorageMarkup=${PRICE_STORAGE_MARKUP}" \
-              "MnemosparkLitePublicBaseUrl=${MNEMOSPARK_LITE_PUBLIC_BASE_URL}"
+              "MnemosparkLitePublicBaseUrl=${MNEMOSPARK_LITE_PUBLIC_BASE_URL}" \
+              "MnemosparkLiteBearerSecret=${MNEMOSPARK_LITE_BEARER_SECRET}" \
+              "CdpX402FacilitatorBearerToken=${CDP_API_KEY_SECRET}" \
+              "CdpApiKeyId=${CDP_API_KEY_ID}" \
+              "RestApiCorsAllowOrigin=https://app.mnemospark.ai"
 
       - name: Smoke tests (prod)
         if: ${{ vars.PROD_BASE_URL != '' && !contains(vars.PROD_BASE_URL, 'example.com') }}
