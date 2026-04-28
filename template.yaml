@@ -175,6 +175,9 @@ Conditions:
   # Staging: API Gateway CORS for ls-web uses fixed AllowOrigin/AllowHeaders below (SAM --parameter-overrides
   # cannot pass comma-separated RestApiCorsAllowHeaders reliably). AllowCredentials true for this stage only.
   IsStagingStage: !Equals [!Ref StageName, staging]
+  IsBrowserAppStage: !Or
+    - !Equals [!Ref StageName, staging]
+    - !Equals [!Ref StageName, prod]
 
 Globals:
   Function:
@@ -1060,14 +1063,14 @@ Resources:
       Cors:
         AllowMethods: "'GET,POST,DELETE,OPTIONS'"
         AllowHeaders: !If
-          - IsStagingStage
-          - "'Content-Type,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,X-PAYMENT,x-payment,x-payment-required,x-payment-response,Cookie'"
+          - IsBrowserAppStage
+          - "'Content-Type,Authorization,Idempotency-Key,X-Wallet-Signature,x-wallet-signature,PAYMENT-SIGNATURE,PAYMENT-RESPONSE,PAYMENT-REQUIRED,X-PAYMENT,x-payment,x-payment-required,x-payment-response,Cookie'"
           - !Sub "'${RestApiCorsAllowHeaders}'"
         AllowOrigin: !If
-          - IsStagingStage
+          - IsBrowserAppStage
           - "'https://app.mnemospark.ai'"
           - !Sub "'${RestApiCorsAllowOrigin}'"
-        AllowCredentials: !If [IsStagingStage, true, false]
+        AllowCredentials: !If [IsBrowserAppStage, true, false]
       GatewayResponses:
         MISSING_AUTHENTICATION_TOKEN:
           StatusCode: "403"
@@ -1076,7 +1079,7 @@ Resources:
               X-Content-Type-Options: "'nosniff'"
               Cache-Control: "'no-store'"
               Access-Control-Allow-Origin: !If
-                - IsStagingStage
+                - IsBrowserAppStage
                 - "'https://app.mnemospark.ai'"
                 - !Sub "'${RestApiCorsAllowOrigin}'"
           ResponseTemplates:
@@ -1088,7 +1091,7 @@ Resources:
               X-Content-Type-Options: "'nosniff'"
               Cache-Control: "'no-store'"
               Access-Control-Allow-Origin: !If
-                - IsStagingStage
+                - IsBrowserAppStage
                 - "'https://app.mnemospark.ai'"
                 - !Sub "'${RestApiCorsAllowOrigin}'"
           ResponseTemplates:
