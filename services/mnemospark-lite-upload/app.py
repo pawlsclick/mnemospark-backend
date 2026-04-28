@@ -1253,7 +1253,9 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
 
     # Older pending rows may still need facilitator settlement here. New rows settle
     # during /upload so Bazaar indexing sees the paid call.
-    if not str(item.get("transaction_hash") or "").strip():
+    transaction_hash = str(item.get("transaction_hash") or "").strip()
+    payment_status = str(item.get("payment_status") or "").strip().lower()
+    if not transaction_hash and payment_status != "settled":
         payment_payload = item.get("payment_payload")
         payment_requirements = item.get("payment_requirements")
         if not isinstance(payment_payload, dict) or not isinstance(payment_requirements, dict):
