@@ -972,6 +972,29 @@ class CdpResponse:
     headers: dict[str, str]
 
 
+@dataclass(frozen=True)
+class SettlementResult:
+    transaction_hash: str | None
+    extension_responses_raw: str | None
+    extension_responses: dict[str, Any] | None
+
+
+def _decode_extension_responses_header(value: str) -> dict[str, Any] | None:
+    """
+    Decode CDP's EXTENSION-RESPONSES header value (base64 JSON).
+    Spec: https://raw.githubusercontent.com/x402-foundation/x402/refs/heads/main/specs/extensions/bazaar.md
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        decoded = base64.b64decode(raw).decode("utf-8")
+        parsed = json.loads(decoded)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _cdp_post(path: str, payload: dict[str, Any], *, timeout_seconds: float = 10.0) -> CdpResponse:
     request_host = "api.cdp.coinbase.com"
     request_path = f"/platform{path}"
@@ -1030,7 +1053,9 @@ def _cdp_post_with_deadline(path: str, payload: dict[str, Any], *, timeout_secon
         ex.shutdown(wait=False, cancel_futures=True)
 
 
-def _settle_payment_via_cdp(*, payment_payload: dict[str, Any], payment_requirements: dict[str, Any], timeout_seconds: float = 8.0) -> str | None:
+def _settle_payment_via_cdp(
+    *, payment_payload: dict[str, Any], payment_requirements: dict[str, Any], timeout_seconds: float = 8.0
+) -> SettlementResult:
     normalized_payment_payload = dict(payment_payload)
     # Some clients omit `scheme` in the payment payload; CDP settlement expects it.
     if not str(normalized_payment_payload.get("scheme") or "").strip():
@@ -1047,11 +1072,29 @@ def _settle_payment_via_cdp(*, payment_payload: dict[str, Any], payment_requirem
         timeout_seconds=timeout_seconds,
     )
     extension_responses = settle_resp.headers.get("extension-responses")
-    if extension_responses:
-        logger.info("CDP EXTENSION-RESPONSES: %s", extension_responses)
+    decoded_extension_responses = _decode_extension_responses_header(extension_responses) if extension_responses else None
+    # Always log whether CDP returned extension responses; this is the primary signal
+    # for bazaar cataloging status (success/processing/rejected).
+    logger.info(
+        "CDP extension_responses_present=%s bazaar_status=%s extension_responses=%s",
+        bool(extension_responses),
+        (
+            (decoded_extension_responses or {})
+            .get("bazaar", {})
+            .get("status")
+            if isinstance(decoded_extension_responses, dict)
+            else None
+        ),
+        extension_responses or "",
+    )
     if not bool(settle_resp.body.get("success")):
         raise PaymentInvalidError(str(settle_resp.body.get("errorMessage") or "Payment settlement failed."))
-    return str(settle_resp.body.get("transaction") or "").strip() or None
+    transaction_hash = str(settle_resp.body.get("transaction") or "").strip() or None
+    return SettlementResult(
+        transaction_hash=transaction_hash,
+        extension_responses_raw=extension_responses,
+        extension_responses=decoded_extension_responses,
+    )
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -1152,7 +1195,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     # a real settled x402 payment on the paid /upload call.
     _verify_payment_locally(payment_payload=payment_payload, requirement=requirement)
     try:
-        transaction_hash = _settle_payment_via_cdp(
+        settlement = _settle_payment_via_cdp(
             payment_payload=payment_payload,
             payment_requirements=requirement,
             timeout_seconds=2.5,
@@ -1164,6 +1207,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         )
     except PaymentInvalidError as exc:
         return _response(402, {"error": "payment_settle_failed", "message": str(exc)})
+    transaction_hash = settlement.transaction_hash
 
     now = datetime.now(timezone.utc)
     upload_id = secrets.token_urlsafe(16)
@@ -1206,6 +1250,21 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
 
     bearer = _sign_bearer({"w": payer_wallet, "exp": int(time.time()) + 86400})
     price_micro = int(requirement.get("amount") or micro_usdc)
+
+    bazaar_status: str | None = None
+    if isinstance(settlement.extension_responses, dict):
+        bazaar = settlement.extension_responses.get("bazaar")
+        if isinstance(bazaar, dict):
+            bazaar_status = str(bazaar.get("status") or "").strip() or None
+    logger.info(
+        "lite_upload upload_id=%s payer_wallet=%s tier=%s amount_micro_usdc=%s tx_hash=%s bazaar_status=%s",
+        upload_id,
+        payer_wallet,
+        req.tier,
+        price_micro,
+        transaction_hash or "",
+        bazaar_status or "",
+    )
 
     item = {
         "upload_id": upload_id,
@@ -1310,7 +1369,7 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payment_payload, dict) or not isinstance(payment_requirements, dict):
             return _error(500, "internal_error", "Upload record missing payment context")
         try:
-            transaction_hash = _settle_payment_via_cdp(
+            settlement = _settle_payment_via_cdp(
                 payment_payload=payment_payload,
                 payment_requirements=payment_requirements,
                 timeout_seconds=2.5,
@@ -1322,6 +1381,13 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
             )
         except PaymentInvalidError as exc:
             return _response(402, {"error": "payment_settle_failed", "message": str(exc)})
+        transaction_hash = settlement.transaction_hash
+        logger.info(
+            "lite_upload_complete_settlement upload_id=%s payer_wallet=%s tx_hash=%s",
+            upload_id,
+            payer_wallet,
+            transaction_hash or "",
+        )
         try:
             _uploads_table().update_item(
                 Key={"upload_id": upload_id},
