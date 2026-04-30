@@ -841,6 +841,28 @@ def _payment_requirements() -> dict[str, Any]:
     }
 
 
+def _bazaar_payment_required_body(requirements: dict[str, Any]) -> dict[str, Any]:
+    """
+    Bazaar discovery expects a 402 JSON body that includes:
+    - resource.url (not just a string resource)
+    - extensions.bazaar (for cataloging)
+    See: https://raw.githubusercontent.com/coinbase/x402/refs/heads/main/specs/extensions/bazaar.md
+    """
+    resource_url = str(requirements.get("resource") or "").strip()
+    description = str(requirements.get("description") or "").strip()
+    mime_type = str(requirements.get("mimeType") or "").strip() or "application/json"
+    body: dict[str, Any] = {
+        "x402Version": int(requirements.get("x402Version") or 2),
+        "error": "Payment required",
+        "resource": {"url": resource_url, "description": description, "mimeType": mime_type},
+        "accepts": requirements.get("accepts") or [],
+    }
+    extensions = requirements.get("extensions")
+    if isinstance(extensions, dict) and extensions:
+        body["extensions"] = extensions
+    return body
+
+
 def _strip_nulls(value: Any) -> Any:
     if isinstance(value, dict):
         out: dict[str, Any] = {}
@@ -1093,7 +1115,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     if not payment_header:
         return _response(
             402,
-            {"error": "payment_required", "message": "Payment is required."},
+            _bazaar_payment_required_body(requirements),
             headers=_x402_payment_required_headers(requirements),
         )
 
@@ -1103,6 +1125,13 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     if req.size_bytes > max_size:
         raise BadRequestError(f"size_bytes exceeds tier max size ({max_size} bytes)")
     payment_payload = _decode_payment_payload(payment_header)
+    # Bazaar discovery relies on the client echoing `extensions.bazaar` into the payment payload.
+    # Some clients omit it; if so, inject the server-advertised extensions so the facilitator can
+    # still catalog the endpoint on settlement.
+    if isinstance(payment_payload, dict) and "extensions" not in payment_payload:
+        ext = requirements.get("extensions")
+        if isinstance(ext, dict) and ext:
+            payment_payload["extensions"] = ext
 
     # Extract/validate the payer wallet from the payment payload BEFORE settling.
     # This prevents "paid but got 400" scenarios if the facilitator settles but
