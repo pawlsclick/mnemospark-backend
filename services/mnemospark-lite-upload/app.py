@@ -684,11 +684,6 @@ def _bazaar_extension_for_upload() -> dict[str, Any]:
     return {
         "bazaar": {
             "info": {
-                "description": (
-                    "Paid file upload endpoint for mnemospark-lite. "
-                    "Creates a presigned S3 upload session, then finalizes the upload "
-                    "into a wallet-scoped 30-day object store."
-                ),
                 "input": {
                     "type": "http",
                     "method": "POST",
@@ -726,43 +721,12 @@ def _bazaar_extension_for_upload() -> dict[str, Any]:
                             },
                         },
                     },
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "success": {"type": "boolean"},
-                            "data": {
-                                "type": "object",
-                                "properties": {
-                                    "uploadId": {"type": "string"},
-                                    "uploadUrl": {"type": "string"},
-                                    "publicUrl": {"type": ["string", "null"]},
-                                    "siteUrl": {"type": ["string", "null"]},
-                                    "expiresAt": {"type": "string"},
-                                    "maxSize": {"type": "integer"},
-                                    "curlExample": {"type": "string"},
-                                    "completion_token": {"type": "string"},
-                                    "list_scope_bearer": {"type": "string"},
-                                },
-                                "required": [
-                                    "uploadId",
-                                    "uploadUrl",
-                                    "expiresAt",
-                                    "maxSize",
-                                    "completion_token",
-                                    "list_scope_bearer",
-                                ],
-                            },
-                            "metadata": {"type": "object"},
-                        },
-                        "required": ["success", "data"],
-                    },
                 },
             },
             "schema": {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
                 "properties": {
-                    "description": {"type": "string"},
                     "input": {
                         "type": "object",
                         "properties": {
@@ -798,13 +762,12 @@ def _bazaar_extension_for_upload() -> dict[str, Any]:
                         "properties": {
                             "type": {"const": "json"},
                             "example": {"type": "object"},
-                            "schema": {"type": "object"},
                         },
                         "required": ["type", "example"],
                         "additionalProperties": True,
                     },
                 },
-                "required": ["description", "input", "output"],
+                "required": ["input"],
                 "additionalProperties": False,
             },
         }
@@ -846,14 +809,14 @@ def _bazaar_payment_required_body(requirements: dict[str, Any]) -> dict[str, Any
     Bazaar discovery expects a 402 JSON body that includes:
     - resource.url (not just a string resource)
     - extensions.bazaar (for cataloging)
-    See: https://raw.githubusercontent.com/coinbase/x402/refs/heads/main/specs/extensions/bazaar.md
+    See: https://raw.githubusercontent.com/x402-foundation/x402/refs/heads/main/specs/extensions/bazaar.md
     """
     resource_url = str(requirements.get("resource") or "").strip()
     description = str(requirements.get("description") or "").strip()
     mime_type = str(requirements.get("mimeType") or "").strip() or "application/json"
     body: dict[str, Any] = {
         "x402Version": int(requirements.get("x402Version") or 2),
-        "error": "payment_required",
+        "error": "Payment required",
         "resource": {"url": resource_url, "description": description, "mimeType": mime_type},
         "accepts": requirements.get("accepts") or [],
     }

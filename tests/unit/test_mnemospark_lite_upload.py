@@ -567,7 +567,7 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
         self.assertEqual(response["statusCode"], 402)
         self.assertIn("PAYMENT-REQUIRED", response["headers"])
         body = json.loads(response["body"])
-        self.assertEqual(body["error"], "payment_required")
+        self.assertEqual(body["error"], "Payment required")
 
     def test_upload_with_unicode_digit_value_returns_400_bad_request(self):
         event = {
