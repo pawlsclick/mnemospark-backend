@@ -853,7 +853,7 @@ def _bazaar_payment_required_body(requirements: dict[str, Any]) -> dict[str, Any
     mime_type = str(requirements.get("mimeType") or "").strip() or "application/json"
     body: dict[str, Any] = {
         "x402Version": int(requirements.get("x402Version") or 2),
-        "error": "Payment required",
+        "error": "payment_required",
         "resource": {"url": resource_url, "description": description, "mimeType": mime_type},
         "accepts": requirements.get("accepts") or [],
     }
