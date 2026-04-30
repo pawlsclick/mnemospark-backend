@@ -1171,9 +1171,10 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     # Bazaar discovery relies on the client echoing `extensions.bazaar` into the payment payload.
     # Some clients omit it; if so, inject the server-advertised extensions so the facilitator can
     # still catalog the endpoint on settlement.
-    if isinstance(payment_payload, dict) and "extensions" not in payment_payload:
+    if isinstance(payment_payload, dict):
         ext = requirements.get("extensions")
-        if isinstance(ext, dict) and ext:
+        existing_ext = payment_payload.get("extensions")
+        if isinstance(ext, dict) and ext and (not isinstance(existing_ext, dict) or not existing_ext):
             payment_payload["extensions"] = ext
 
     # Extract/validate the payer wallet from the payment payload BEFORE settling.
