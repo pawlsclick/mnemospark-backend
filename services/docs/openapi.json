@@ -1,0 +1,448 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "mnemospark-lite upload API",
+    "version": "1.0.0",
+    "description": "Discovery contract for mnemospark-lite marketplace upload facade.",
+    "x-guidance": "Use POST /api/mnemospark-lite/upload to create a paid upload slot. First, call it without payment headers to receive a 402 Payment Required challenge in the PAYMENT-REQUIRED header. Pay the exact accepts[0].amount from that challenge using x402, then retry POST /api/mnemospark-lite/upload with the payment payload in PAYMENT-SIGNATURE or x-payment. Upload the file bytes with an HTTP PUT to the returned uploadUrl. Finally, call POST /api/mnemospark-lite/upload/complete with uploadId and completion_token to mint a share URL. Use GET /api/mnemospark-lite/uploads and GET /api/mnemospark-lite/download/{uploadId} with the returned bearer token to list and fetch download details. Use POST /api/mnemospark-lite/share to mint a 24-hour share URL and POST /api/mnemospark-lite/shares/exchange to redeem a share token for a presigned download URL."
+  },
+  "servers": [
+    {
+      "url": "https://api.mnemospark.ai",
+      "description": "Production origin"
+    }
+  ],
+  "paths": {
+    "/api/mnemospark-lite/upload": {
+      "post": {
+        "operationId": "postMnemosparkLiteUpload",
+        "summary": "Create a paid upload slot (mnemospark-lite)",
+        "description": "Paid x402 entrypoint that returns a presigned PUT URL (uploadUrl) and upload metadata. Clients should probe without payment first to receive a 402 challenge, then pay and retry.",
+        "security": [],
+        "x-payment-info": {
+          "price": {
+            "mode": "dynamic",
+            "currency": "USD",
+            "min": "0.01",
+            "max": "10.00"
+          },
+          "protocols": [
+            { "x402": {} },
+            { "mpp": { "method": "", "intent": "", "currency": "USD" } }
+          ]
+        },
+        "parameters": [
+          {
+            "name": "PAYMENT-SIGNATURE",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "x402 payment payload (preferred header name)."
+          },
+          {
+            "name": "x-payment",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "x402 payment payload (alias header)."
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MnemosparkLiteUploadRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Upload slot created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MnemosparkLiteUploadResponse" }
+              }
+            }
+          },
+          "400": { "description": "Bad Request" },
+          "402": { "description": "Payment Required" },
+          "500": { "description": "Internal Server Error" }
+        }
+      }
+    },
+    "/api/mnemospark-lite/upload/complete": {
+      "post": {
+        "operationId": "postMnemosparkLiteUploadComplete",
+        "summary": "Complete upload and mint share URL (mnemospark-lite)",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MnemosparkLiteUploadCompleteRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Upload completed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MnemosparkLiteUploadCompleteResponse" }
+              }
+            }
+          },
+          "400": { "description": "Bad Request" },
+          "401": { "description": "Unauthorized" },
+          "500": { "description": "Internal Server Error" }
+        }
+      }
+    },
+    "/api/mnemospark-lite/uploads": {
+      "get": {
+        "operationId": "getMnemosparkLiteUploads",
+        "summary": "List uploads for the payer wallet (mnemospark-lite)",
+        "security": [
+          { "bearerAuth": [] }
+        ],
+        "responses": {
+          "200": {
+            "description": "Uploads listed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MnemosparkLiteUploadsResponse" }
+              }
+            }
+          },
+          "403": { "description": "Forbidden" },
+          "500": { "description": "Internal Server Error" }
+        }
+      }
+    },
+    "/api/mnemospark-lite/download/{uploadId}": {
+      "get": {
+        "operationId": "getMnemosparkLiteDownload",
+        "summary": "Get upload detail and optional presigned download (mnemospark-lite)",
+        "security": [
+          { "bearerAuth": [] }
+        ],
+        "parameters": [
+          {
+            "name": "uploadId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Upload detail returned",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MnemosparkLiteDownloadResponse" }
+              }
+            }
+          },
+          "403": { "description": "Forbidden" },
+          "404": { "description": "Not Found" },
+          "500": { "description": "Internal Server Error" }
+        }
+      }
+    },
+    "/api/mnemospark-lite/share": {
+      "post": {
+        "operationId": "postMnemosparkLiteShare",
+        "summary": "Mint a 24-hour share URL for an upload (mnemospark-lite)",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MnemosparkLiteShareRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Share URL minted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MnemosparkLiteShareResponse" }
+              }
+            }
+          },
+          "400": { "description": "Bad Request" },
+          "403": { "description": "Forbidden" },
+          "404": { "description": "Not Found" },
+          "409": { "description": "Conflict" },
+          "500": { "description": "Internal Server Error" }
+        }
+      }
+    },
+    "/api/mnemospark-lite/shares/exchange": {
+      "post": {
+        "operationId": "postMnemosparkLiteSharesExchange",
+        "summary": "Exchange a share token for a presigned download URL (mnemospark-lite)",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MnemosparkLiteSharesExchangeRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Presigned download URL issued",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MnemosparkLiteSharesExchangeResponse" }
+              }
+            }
+          },
+          "400": { "description": "Bad Request" },
+          "401": { "description": "Unauthorized" },
+          "500": { "description": "Internal Server Error" }
+        }
+      }
+    },
+    "/api/mnemospark-lite/delete": {
+      "post": {
+        "operationId": "postMnemosparkLiteDelete",
+        "summary": "Delete one or more uploads (mnemospark-lite)",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MnemosparkLiteDeleteRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Delete results",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MnemosparkLiteDeleteResponse" }
+              }
+            }
+          },
+          "400": { "description": "Bad Request" },
+          "403": { "description": "Forbidden" },
+          "500": { "description": "Internal Server Error" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Bearer token issued by the paid upload flow; scoped to the payer wallet."
+      }
+    },
+    "schemas": {
+      "MnemosparkLiteUploadRequest": {
+        "type": "object",
+        "required": ["filename", "contentType", "tier", "size_bytes"],
+        "properties": {
+          "filename": { "type": "string", "description": "Object key (single path segment)." },
+          "contentType": { "type": "string", "description": "MIME type for the upload." },
+          "tier": { "type": "string", "description": "Tier identifier (e.g. 10mb, 100mb, 500mb, 1gb, 2gb, 3gb)." },
+          "size_bytes": { "type": "integer", "minimum": 0, "description": "Intended upload size in bytes. Must be <= 4_800_000_000." }
+        }
+      },
+      "MnemosparkLiteUploadResponse": {
+        "type": "object",
+        "required": ["success", "data"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "data": {
+            "type": "object",
+            "required": ["uploadId", "uploadUrl", "publicUrl", "siteUrl", "expiresAt", "maxSize", "curlExample", "completion_token", "list_scope_bearer"],
+            "properties": {
+              "uploadId": { "type": "string" },
+              "uploadUrl": { "type": "string", "format": "uri" },
+              "publicUrl": { "type": "string", "nullable": true },
+              "siteUrl": { "type": "string", "nullable": true },
+              "expiresAt": { "type": "string" },
+              "maxSize": { "type": "integer" },
+              "curlExample": { "type": "string" },
+              "completion_token": { "type": "string" },
+              "list_scope_bearer": { "type": "string" }
+            }
+          },
+          "metadata": { "type": "object", "nullable": true, "additionalProperties": true }
+        }
+      },
+      "MnemosparkLiteUploadCompleteRequest": {
+        "type": "object",
+        "required": ["uploadId", "completion_token"],
+        "properties": {
+          "uploadId": { "type": "string" },
+          "completion_token": { "type": "string" }
+        }
+      },
+      "MnemosparkLiteUploadRecord": {
+        "type": "object",
+        "required": ["id", "filename", "contentType", "tier", "maxSize", "actualSize", "publicUrl", "status", "pricePaid", "expiresAt", "createdAt"],
+        "properties": {
+          "id": { "type": "string" },
+          "filename": { "type": "string" },
+          "contentType": { "type": "string" },
+          "tier": { "type": "string" },
+          "maxSize": { "type": "integer" },
+          "actualSize": { "type": "integer", "nullable": true },
+          "publicUrl": { "type": "string", "nullable": true },
+          "status": { "type": "string" },
+          "pricePaid": { "type": "string", "nullable": true },
+          "expiresAt": { "type": "string" },
+          "createdAt": { "type": "string" }
+        }
+      },
+      "MnemosparkLiteUploadCompleteResponse": {
+        "type": "object",
+        "required": ["success", "data"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "data": {
+            "type": "object",
+            "required": ["upload"],
+            "properties": {
+              "upload": { "$ref": "#/components/schemas/MnemosparkLiteUploadRecord" }
+            }
+          }
+        }
+      },
+      "MnemosparkLiteUploadsResponse": {
+        "type": "object",
+        "required": ["success", "data"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "data": {
+            "type": "object",
+            "required": ["uploads"],
+            "properties": {
+              "uploads": {
+                "type": "array",
+                "items": { "$ref": "#/components/schemas/MnemosparkLiteUploadRecord" }
+              }
+            }
+          }
+        }
+      },
+      "MnemosparkLiteDownloadResponse": {
+        "type": "object",
+        "required": ["success", "data"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "data": {
+            "type": "object",
+            "required": ["upload"],
+            "properties": {
+              "upload": {
+                "allOf": [
+                  { "$ref": "#/components/schemas/MnemosparkLiteUploadRecord" },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "downloadUrl": { "type": "string", "nullable": true, "format": "uri" }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "MnemosparkLiteShareRequest": {
+        "type": "object",
+        "required": ["uploadId"],
+        "properties": {
+          "uploadId": { "type": "string" }
+        }
+      },
+      "MnemosparkLiteShareResponse": {
+        "type": "object",
+        "required": ["success", "data"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "data": {
+            "type": "object",
+            "required": ["uploadId", "shareUrl", "expiresAt"],
+            "properties": {
+              "uploadId": { "type": "string" },
+              "shareUrl": { "type": "string", "format": "uri" },
+              "expiresAt": { "type": "string" }
+            }
+          }
+        }
+      },
+      "MnemosparkLiteSharesExchangeRequest": {
+        "type": "object",
+        "required": ["share_token"],
+        "properties": {
+          "share_token": { "type": "string" }
+        }
+      },
+      "MnemosparkLiteSharesExchangeResponse": {
+        "type": "object",
+        "required": ["success", "data"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "data": {
+            "type": "object",
+            "required": ["filename", "downloadUrl", "shareExpiresAt", "downloadExpiresInSeconds"],
+            "properties": {
+              "filename": { "type": "string" },
+              "downloadUrl": { "type": "string", "format": "uri" },
+              "shareExpiresAt": { "type": "string" },
+              "downloadExpiresInSeconds": { "type": "integer" }
+            }
+          }
+        }
+      },
+      "MnemosparkLiteDeleteRequest": {
+        "type": "object",
+        "required": ["uploadIds"],
+        "properties": {
+          "uploadIds": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "MnemosparkLiteDeleteResult": {
+        "type": "object",
+        "required": ["uploadId", "success"],
+        "properties": {
+          "uploadId": { "type": "string" },
+          "success": { "type": "boolean" },
+          "error": { "type": "string", "nullable": true },
+          "message": { "type": "string", "nullable": true },
+          "details": { "type": "object", "nullable": true }
+        }
+      },
+      "MnemosparkLiteDeleteResponse": {
+        "type": "object",
+        "required": ["success", "data"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "data": {
+            "type": "object",
+            "required": ["deleted", "results"],
+            "properties": {
+              "deleted": { "type": "integer" },
+              "results": {
+                "type": "array",
+                "items": { "$ref": "#/components/schemas/MnemosparkLiteDeleteResult" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
