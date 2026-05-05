@@ -2177,6 +2177,28 @@ Resources:
             Path: /api/mnemospark-lite/delete
             Method: OPTIONS
 
+  DiscoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: discovery_entry.lambda_handler
+      CodeUri: services
+      Description: Serves OpenAPI and x402 well-known discovery documents.
+      MemorySize: 128
+      Timeout: 10
+      Events:
+        OpenApiGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /openapi.json
+            Method: GET
+        WellKnownX402Get:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MnemosparkBackendApi
+            Path: /.well-known/x402
+            Method: GET
+
   StorageHousekeepingFunction:
     Type: AWS::Serverless::Function
     Properties:
