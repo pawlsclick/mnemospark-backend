@@ -47,7 +47,9 @@ def _response(status_code: int, body_obj: dict[str, Any]) -> dict[str, Any]:
 def _read_repo_file_text(rel_path: str) -> str:
     base = Path(__file__).resolve().parents[1]  # .../discovery/app.py -> Lambda package root
     target = (base / rel_path).resolve()
-    if not str(target).startswith(str(base)):
+    try:
+        target.relative_to(base)
+    except ValueError:
         raise RuntimeError("Invalid path traversal")
     return target.read_text(encoding="utf-8")
 
