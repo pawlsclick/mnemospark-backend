@@ -788,8 +788,7 @@ paths:
         Public endpoint: anyone with the `share_token` can redeem it until it expires (24 hours).
         Returns a short-lived presigned GET URL for the underlying S3 object.
       operationId: postMnemosparkLiteSharesExchange
-      security:
-        - siwx: []
+      security: []
       requestBody:
         required: true
         content:

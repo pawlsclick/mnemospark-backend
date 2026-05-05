@@ -187,9 +187,7 @@
       "post": {
         "operationId": "postMnemosparkLiteSharesExchange",
         "summary": "Exchange a share token for a presigned download URL (mnemospark-lite)",
-        "security": [
-          { "siwx": [] }
-        ],
+        "security": [],
         "requestBody": {
           "required": true,
           "content": {
