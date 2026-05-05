@@ -74,6 +74,7 @@ DEFAULT_REGION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REG
 MAX_UPLOAD_SIZE_BYTES = 4_800_000_000
 DEFAULT_PRESIGN_TTL_SECONDS = 900
 DEFAULT_LITE_TIER_FOR_DISCOVERY = "10mb"
+DEFAULT_CDP_SETTLE_TIMEOUT_SECONDS = 8.0
 
 s3 = boto3.client("s3", region_name=DEFAULT_REGION)
 dynamodb = boto3.resource("dynamodb", region_name=DEFAULT_REGION)
@@ -523,6 +524,22 @@ def _lite_price_cache_ttl_seconds() -> int:
         return 60
     if value > 21600:
         return 21600
+    return value
+
+
+def _cdp_settle_timeout_seconds() -> float:
+    raw = str(os.environ.get("MNEMOSPARK_LITE_CDP_SETTLE_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return DEFAULT_CDP_SETTLE_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError("MNEMOSPARK_LITE_CDP_SETTLE_TIMEOUT_SECONDS must be a number") from exc
+    if value < 2.0:
+        return 2.0
+    if value > 25.0:
+        # API Gateway/Lambda integration timeouts vary by deployment; keep a safe cap.
+        return 25.0
     return value
 
 
@@ -1162,7 +1179,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         settlement = _settle_payment_via_cdp(
             payment_payload=payment_payload,
             payment_requirements=requirement,
-            timeout_seconds=2.5,
+            timeout_seconds=_cdp_settle_timeout_seconds(),
         )
     except SettlementPendingError:
         return _response(
@@ -1336,7 +1353,7 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
             settlement = _settle_payment_via_cdp(
                 payment_payload=payment_payload,
                 payment_requirements=payment_requirements,
-                timeout_seconds=2.5,
+                timeout_seconds=_cdp_settle_timeout_seconds(),
             )
         except SettlementPendingError:
             return _response(
