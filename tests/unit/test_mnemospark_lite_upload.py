@@ -1185,3 +1185,12 @@ class PaymentRequiredDiscoveryPayloadTests(unittest.TestCase):
         self.assertEqual(decoded["accepts"][0]["scheme"], "exact")
         self.assertIn("extensions", decoded)
         self.assertIn("bazaar", decoded["extensions"])
+
+
+class CdpSettleTimeoutConfigTests(unittest.TestCase):
+    def test_cdp_settle_timeout_rejects_nan(self):
+        with mock.patch.dict(os.environ, {"MNEMOSPARK_LITE_CDP_SETTLE_TIMEOUT_SECONDS": "nan"}, clear=False):
+            with self.assertRaisesRegex(
+                RuntimeError, "MNEMOSPARK_LITE_CDP_SETTLE_TIMEOUT_SECONDS must be a finite number"
+            ):
+                app._cdp_settle_timeout_seconds()

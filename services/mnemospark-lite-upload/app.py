@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import secrets
 import hashlib
@@ -535,6 +536,8 @@ def _cdp_settle_timeout_seconds() -> float:
         value = float(raw)
     except ValueError as exc:
         raise RuntimeError("MNEMOSPARK_LITE_CDP_SETTLE_TIMEOUT_SECONDS must be a number") from exc
+    if not math.isfinite(value):
+        raise RuntimeError("MNEMOSPARK_LITE_CDP_SETTLE_TIMEOUT_SECONDS must be a finite number")
     if value < 2.0:
         return 2.0
     if value > 25.0:
