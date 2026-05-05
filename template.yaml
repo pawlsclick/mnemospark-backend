@@ -2185,6 +2185,9 @@ Resources:
       Description: Serves OpenAPI and x402 well-known discovery documents.
       MemorySize: 128
       Timeout: 10
+      Environment:
+        Variables:
+          MNEMOSPARK_CORS_ALLOW_ORIGIN: !Ref RestApiCorsAllowOrigin
       Events:
         OpenApiGet:
           Type: Api
