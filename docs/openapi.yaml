@@ -647,7 +647,8 @@ paths:
         Free completion step after PUT: performs S3 HEAD reconciliation, enforces size limits,
         and mints the ls-web app-entry share URL (`publicUrl`/`siteUrl`).
       operationId: postMnemosparkLiteUploadComplete
-      security: []
+      security:
+        - siwx: []
       requestBody:
         required: true
         content:
@@ -680,7 +681,7 @@ paths:
         Wallet-scoped listing endpoint for agents. Requires a bearer/JWT issued from the paid upload flow.
       operationId: getMnemosparkLiteUploads
       security:
-        - bearerAuth: []
+        - siwx: []
       responses:
         "200":
           description: Uploads listed
@@ -708,7 +709,7 @@ paths:
         may include a short-lived presigned GET URL when status is uploaded.
       operationId: getMnemosparkLiteDownload
       security:
-        - bearerAuth: []
+        - siwx: []
       parameters:
         - name: uploadId
           in: path
@@ -745,7 +746,8 @@ paths:
         session cookie (bucket_mode=lite). Returns an app URL with `?share=...` that can be
         redeemed for a short-lived presigned GET until the 24-hour share token expires.
       operationId: postMnemosparkLiteShare
-      security: []
+      security:
+        - siwx: []
       requestBody:
         required: true
         content:
@@ -786,7 +788,8 @@ paths:
         Public endpoint: anyone with the `share_token` can redeem it until it expires (24 hours).
         Returns a short-lived presigned GET URL for the underlying S3 object.
       operationId: postMnemosparkLiteSharesExchange
-      security: []
+      security:
+        - siwx: []
       requestBody:
         required: true
         content:
@@ -821,7 +824,8 @@ paths:
         session cookie (bucket_mode=lite). Deletes the underlying S3 object and removes the
         upload registry row so it no longer appears in listings.
       operationId: postMnemosparkLiteDelete
-      security: []
+      security:
+        - siwx: []
       requestBody:
         required: true
         content:
@@ -867,6 +871,14 @@ components:
       description: >
         Bearer token used by mnemospark-lite marketplace facade read endpoints.
         Issued by the backend after a successful paid upload call and scoped to the payer wallet.
+
+    siwx:
+      type: http
+      scheme: bearer
+      bearerFormat: SIWX
+      description: >
+        Sign-in with X (SIWX) wallet authentication. Operations protected by this scheme are identity-gated
+        (free) and must NOT be classified as paid x402 operations.
 
     dashboardApiKey:
       type: apiKey

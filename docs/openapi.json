@@ -74,7 +74,9 @@
       "post": {
         "operationId": "postMnemosparkLiteUploadComplete",
         "summary": "Complete upload and mint share URL (mnemospark-lite)",
-        "security": [],
+        "security": [
+          { "siwx": [] }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -103,7 +105,7 @@
         "operationId": "getMnemosparkLiteUploads",
         "summary": "List uploads for the payer wallet (mnemospark-lite)",
         "security": [
-          { "bearerAuth": [] }
+          { "siwx": [] }
         ],
         "responses": {
           "200": {
@@ -124,7 +126,7 @@
         "operationId": "getMnemosparkLiteDownload",
         "summary": "Get upload detail and optional presigned download (mnemospark-lite)",
         "security": [
-          { "bearerAuth": [] }
+          { "siwx": [] }
         ],
         "parameters": [
           {
@@ -153,7 +155,9 @@
       "post": {
         "operationId": "postMnemosparkLiteShare",
         "summary": "Mint a 24-hour share URL for an upload (mnemospark-lite)",
-        "security": [],
+        "security": [
+          { "siwx": [] }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -183,7 +187,9 @@
       "post": {
         "operationId": "postMnemosparkLiteSharesExchange",
         "summary": "Exchange a share token for a presigned download URL (mnemospark-lite)",
-        "security": [],
+        "security": [
+          { "siwx": [] }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -211,7 +217,9 @@
       "post": {
         "operationId": "postMnemosparkLiteDelete",
         "summary": "Delete one or more uploads (mnemospark-lite)",
-        "security": [],
+        "security": [
+          { "siwx": [] }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -243,6 +251,12 @@
         "scheme": "bearer",
         "bearerFormat": "JWT",
         "description": "Bearer token issued by the paid upload flow; scoped to the payer wallet."
+      },
+      "siwx": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "SIWX",
+        "description": "Sign-in with X (SIWX) wallet authentication. Operations protected by this scheme are identity-gated (free) and must not be classified as paid x402 operations."
       }
     },
     "schemas": {
