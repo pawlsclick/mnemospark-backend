@@ -474,6 +474,46 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
         self.assertEqual(payload["paymentPayload"]["payTo"], "0x" + ("b" * 40))
         self.assertEqual(payload["paymentPayload"]["amount"], "1300000")
 
+    def test_complete_coerces_string_resource_to_object_before_settle(self):
+        token = "completion-token"
+        upload_id = "up_string_resource"
+        item = {
+            "upload_id": upload_id,
+            "completion_token_hash": app._hash_token(token),
+            "status": "pending",
+            "bucket": "mnemospark-lite-test",
+            "object_key": "up_string_resource/artifact.bin",
+            "filename": "artifact.bin",
+            "payer_wallet": "0x" + ("1" * 40),
+            "max_size": 1000,
+            "payment_payload": {
+                "x402Version": 2,
+                "scheme": "exact",
+                "network": "eip155:8453",
+                "resource": "https://api.mnemospark.ai/api/mnemospark-lite/upload",
+                "payload": {"authorization": {"from": "0x" + ("1" * 40)}},
+            },
+            "payment_requirements": {"scheme": "exact", "network": "eip155:8453", "amount": "1000"},
+        }
+        event = {"body": json.dumps({"uploadId": upload_id, "completion_token": token})}
+        table = mock.Mock()
+        table.get_item.return_value = {"Item": item}
+        table.update_item.return_value = {}
+
+        cdp_mock = mock.Mock(return_value=app.CdpResponse(body={"success": True, "transaction": "0xtx"}, headers={}))
+        with (
+            mock.patch.object(app, "_uploads_table", return_value=table),
+            mock.patch.object(app.s3, "head_object", return_value={"ContentLength": 100}),
+            mock.patch.object(app, "_cdp_post", cdp_mock),
+            mock.patch.object(app, "_mint_ls_web_app_url", return_value={"app": "https://app.mnemospark.ai/mnemospark-lite/?code=abc"}),
+        ):
+            response = app._handle_post_complete(event)
+
+        self.assertEqual(response["statusCode"], 200)
+        args, _ = cdp_mock.call_args
+        payload = args[1]
+        self.assertEqual(payload["paymentPayload"]["resource"], {"url": "https://api.mnemospark.ai/api/mnemospark-lite/upload"})
+
 
 class LambdaHandlerErrorMappingTests(unittest.TestCase):
     def test_bearer_auth_failures_return_403(self):

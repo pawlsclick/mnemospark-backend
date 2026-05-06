@@ -1291,6 +1291,17 @@ def _settle_payment_via_cdp(
             value = str(normalized_payment_requirements.get(field) or "").strip()
             if value:
                 normalized_payment_payload[field] = value
+    # CDP expects ResourceInfo objects for `resource`, but some clients send a URL string.
+    payload_resource = normalized_payment_payload.get("resource")
+    if isinstance(payload_resource, str):
+        url = payload_resource.strip()
+        if url:
+            normalized_payment_payload["resource"] = {"url": url}
+    requirements_resource = normalized_payment_requirements.get("resource")
+    if isinstance(requirements_resource, str):
+        url = requirements_resource.strip()
+        if url:
+            normalized_payment_requirements["resource"] = {"url": url}
     # CDP facilitator expects a network enum (e.g. "base"), not CAIP-2 ("eip155:8453").
     payload_network = _cdp_network_name(normalized_payment_payload.get("network"))
     if payload_network:
