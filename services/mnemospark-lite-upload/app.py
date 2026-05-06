@@ -1275,29 +1275,12 @@ def _settle_payment_via_cdp(
     *, payment_payload: dict[str, Any], payment_requirements: dict[str, Any], timeout_seconds: float = 8.0
 ) -> SettlementResult:
     normalized_payment_payload = dict(payment_payload)
-    # Some clients omit `scheme` in the payment payload; CDP settlement expects it.
-    if not str(normalized_payment_payload.get("scheme") or "").strip():
-        scheme = str(payment_requirements.get("scheme") or "").strip()
-        if scheme:
-            normalized_payment_payload["scheme"] = scheme
-    # Some clients omit `network` in the payment payload; CDP settlement expects it.
-    if not str(normalized_payment_payload.get("network") or "").strip():
-        network = str(payment_requirements.get("network") or "").strip()
-        if network:
-            normalized_payment_payload["network"] = network
-    # Some clients omit additional top-level payment fields; CDP settlement expects them.
-    if not str(normalized_payment_payload.get("asset") or "").strip():
-        asset = str(payment_requirements.get("asset") or "").strip()
-        if asset:
-            normalized_payment_payload["asset"] = asset
-    if not str(normalized_payment_payload.get("payTo") or "").strip():
-        pay_to = str(payment_requirements.get("payTo") or "").strip()
-        if pay_to:
-            normalized_payment_payload["payTo"] = pay_to
-    if not str(normalized_payment_payload.get("amount") or "").strip():
-        amount = str(payment_requirements.get("amount") or "").strip()
-        if amount:
-            normalized_payment_payload["amount"] = amount
+    # Some clients omit top-level payment fields; CDP settlement expects them.
+    for field in ("scheme", "network", "asset", "payTo", "amount"):
+        if not str(normalized_payment_payload.get(field) or "").strip():
+            value = str(payment_requirements.get(field) or "").strip()
+            if value:
+                normalized_payment_payload[field] = value
     settle_resp = _cdp_post_with_deadline(
         "/v2/x402/settle",
         {
