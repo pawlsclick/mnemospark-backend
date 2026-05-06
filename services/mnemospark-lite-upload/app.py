@@ -1202,6 +1202,7 @@ def _normalize_payment_payload_from_client(payment_payload: dict[str, Any]) -> d
     payload_obj = out.get("payload")
     if isinstance(payload_obj, dict):
         payload_obj = dict(payload_obj)
+        move_alias(payload_obj, "permit2Authorization", "permit2_authorization")
         auth = payload_obj.get("authorization")
         if isinstance(auth, dict):
             auth = dict(auth)

@@ -293,7 +293,7 @@ class PaymentPayloadNormalizationTests(unittest.TestCase):
                     "valid_after": "0",
                     "valid_before": "9999999999",
                 },
-                "permit2Authorization": {
+                "permit2_authorization": {
                     "from": "0x" + ("1" * 40),
                     "valid_after": "0",
                     "valid_before": "9999999999",
@@ -315,6 +315,7 @@ class PaymentPayloadNormalizationTests(unittest.TestCase):
         self.assertNotIn("mime_type", normalized["resource"])
         self.assertNotIn("valid_after", normalized["payload"]["authorization"])
         self.assertNotIn("valid_before", normalized["payload"]["authorization"])
+        self.assertNotIn("permit2_authorization", normalized["payload"])
         self.assertNotIn("valid_after", normalized["payload"]["permit2Authorization"])
         self.assertNotIn("valid_before", normalized["payload"]["permit2Authorization"])
 
