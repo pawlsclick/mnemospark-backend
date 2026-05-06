@@ -79,6 +79,10 @@ DEFAULT_CDP_SETTLE_TIMEOUT_SECONDS = 8.0
 LITE_SETTLE_IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
 LITE_SETTLE_LEASE_SECONDS = 15
 LITE_SETTLE_TIMEOUT_COOLDOWN_SECONDS = 60
+CDP_NETWORK_BY_CAIP2 = {
+    "eip155:8453": "base",
+    "eip155:84532": "base-sepolia",
+}
 
 s3 = boto3.client("s3", region_name=DEFAULT_REGION)
 dynamodb = boto3.resource("dynamodb", region_name=DEFAULT_REGION)
@@ -108,6 +112,11 @@ class PaymentInvalidError(ValueError):
 
 class ConflictError(ValueError):
     pass
+
+
+def _cdp_network_name(network: Any) -> str:
+    raw = str(network or "").strip()
+    return CDP_NETWORK_BY_CAIP2.get(raw.lower(), raw)
 
 
 def _chain_id_from_caip2(network: str) -> int:
@@ -1275,18 +1284,26 @@ def _settle_payment_via_cdp(
     *, payment_payload: dict[str, Any], payment_requirements: dict[str, Any], timeout_seconds: float = 8.0
 ) -> SettlementResult:
     normalized_payment_payload = dict(payment_payload)
+    normalized_payment_requirements = dict(payment_requirements)
     # Some clients omit top-level payment fields; CDP settlement expects them.
     for field in ("scheme", "network", "asset", "payTo", "amount"):
         if not str(normalized_payment_payload.get(field) or "").strip():
-            value = str(payment_requirements.get(field) or "").strip()
+            value = str(normalized_payment_requirements.get(field) or "").strip()
             if value:
                 normalized_payment_payload[field] = value
+    # CDP facilitator expects a network enum (e.g. "base"), not CAIP-2 ("eip155:8453").
+    payload_network = _cdp_network_name(normalized_payment_payload.get("network"))
+    if payload_network:
+        normalized_payment_payload["network"] = payload_network
+    requirements_network = _cdp_network_name(normalized_payment_requirements.get("network"))
+    if requirements_network:
+        normalized_payment_requirements["network"] = requirements_network
     settle_resp = _cdp_post_with_deadline(
         "/v2/x402/settle",
         {
             "x402Version": int(normalized_payment_payload.get("x402Version") or 2),
             "paymentPayload": _strip_nulls(normalized_payment_payload),
-            "paymentRequirements": payment_requirements,
+            "paymentRequirements": normalized_payment_requirements,
         },
         timeout_seconds=timeout_seconds,
     )

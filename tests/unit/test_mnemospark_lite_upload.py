@@ -410,7 +410,25 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
         args, _ = cdp_mock.call_args
         self.assertEqual(args[0], "/v2/x402/settle")
         payload = args[1]
-        self.assertEqual(payload["paymentPayload"]["network"], "eip155:8453")
+        self.assertEqual(payload["paymentPayload"]["network"], "base")
+        self.assertEqual(payload["paymentRequirements"]["network"], "base")
+
+    def test_settle_maps_base_sepolia_caip2_network_for_cdp(self):
+        cdp_mock = mock.Mock(return_value=app.CdpResponse(body={"success": True, "transaction": "0xtx"}, headers={}))
+
+        with mock.patch.object(app, "_cdp_post_with_deadline", cdp_mock):
+            app._settle_payment_via_cdp(
+                payment_payload={"x402Version": 2, "scheme": "exact", "network": "eip155:84532"},
+                payment_requirements={"scheme": "exact", "network": "eip155:84532", "amount": "1000"},
+                timeout_seconds=1.5,
+            )
+
+        args, kwargs = cdp_mock.call_args
+        self.assertEqual(args[0], "/v2/x402/settle")
+        payload = args[1]
+        self.assertEqual(payload["paymentPayload"]["network"], "base-sepolia")
+        self.assertEqual(payload["paymentRequirements"]["network"], "base-sepolia")
+        self.assertEqual(kwargs["timeout_seconds"], 1.5)
 
     def test_complete_injects_asset_payto_amount_into_payment_payload_before_settle(self):
         token = "completion-token"
