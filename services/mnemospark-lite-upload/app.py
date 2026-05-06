@@ -773,11 +773,20 @@ def _idempotency_try_acquire_lease(table: Any, *, idempotency_key: str, now: int
         return False
 
 
-def _idempotency_mark_settled(table: Any, *, idempotency_key: str, now: int, response_body: dict[str, Any], tx_hash: str | None):
+def _idempotency_mark_settled(
+    table: Any,
+    *,
+    idempotency_key: str,
+    now: int,
+    response_body: dict[str, Any],
+    tx_hash: str | None,
+    request_hash: str,
+):
     table.put_item(
         Item={
             "idempotency_key": idempotency_key,
             "status": "settled",
+            "request_hash": request_hash,
             "response_body": json.dumps(response_body, sort_keys=True),
             "tx_hash": tx_hash or None,
             "updated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
@@ -786,11 +795,21 @@ def _idempotency_mark_settled(table: Any, *, idempotency_key: str, now: int, res
     )
 
 
-def _idempotency_mark_failed(table: Any, *, idempotency_key: str, now: int, error_reason: str, error_message: str, tx_hash: str | None):
+def _idempotency_mark_failed(
+    table: Any,
+    *,
+    idempotency_key: str,
+    now: int,
+    error_reason: str,
+    error_message: str,
+    tx_hash: str | None,
+    request_hash: str,
+):
     table.put_item(
         Item={
             "idempotency_key": idempotency_key,
             "status": "failed",
+            "request_hash": request_hash,
             "error_reason": error_reason,
             "error_message": (error_message or "")[:2000],
             "tx_hash": tx_hash or None,
@@ -1409,7 +1428,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
             {"success": False, "error": "settlement_pending", "message": "Payment settlement pending; retry upload."},
         )
     except PaymentInvalidError as exc:
-        if idempotency_table is not None and idempotency_key is not None:
+        if idempotency_table is not None and idempotency_key is not None and request_hash is not None:
             _idempotency_mark_failed(
                 idempotency_table,
                 idempotency_key=idempotency_key,
@@ -1417,6 +1436,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
                 error_reason="payment_settle_failed",
                 error_message=str(exc),
                 tx_hash=None,
+                request_hash=request_hash,
             )
         return _response(402, {"error": "payment_settle_failed", "message": str(exc)})
     transaction_hash = settlement.transaction_hash
@@ -1524,13 +1544,14 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
             "payment": {"success": True, "transactionHash": transaction_hash, "status": "settled"},
         },
     }
-    if idempotency_table is not None and idempotency_key is not None:
+    if idempotency_table is not None and idempotency_key is not None and request_hash is not None:
         _idempotency_mark_settled(
             idempotency_table,
             idempotency_key=idempotency_key,
             now=now_epoch,
             response_body=response_body,
             tx_hash=transaction_hash,
+            request_hash=request_hash,
         )
     return _response(200, response_body)
 
