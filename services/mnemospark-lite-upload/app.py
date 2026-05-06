@@ -1174,6 +1174,74 @@ def _decode_payment_payload(payment_header: str) -> dict[str, Any]:
     raise BadRequestError("payment header must be base64-encoded JSON")
 
 
+def _normalize_payment_payload_from_client(payment_payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    Normalize client payment payloads into the shape CDP expects.
+
+    Some clients use snake_case keys (e.g. pay_to, x402_version, valid_after).
+    CDP expects the canonical x402 JSON shape (camelCase).
+    """
+    def move_alias(obj: dict[str, Any], canonical_key: str, alias_key: str) -> None:
+        if alias_key not in obj:
+            return
+        value = obj.pop(alias_key)
+        if canonical_key not in obj:
+            obj[canonical_key] = value
+
+    out = dict(payment_payload)
+    move_alias(out, "x402Version", "x402_version")
+    move_alias(out, "payTo", "pay_to")
+
+    resource = out.get("resource")
+    if isinstance(resource, dict):
+        resource = dict(resource)
+        # Common alias.
+        move_alias(resource, "mimeType", "mime_type")
+        out["resource"] = resource
+
+    payload_obj = out.get("payload")
+    if isinstance(payload_obj, dict):
+        payload_obj = dict(payload_obj)
+        move_alias(payload_obj, "permit2Authorization", "permit2_authorization")
+        auth = payload_obj.get("authorization")
+        if isinstance(auth, dict):
+            auth = dict(auth)
+            move_alias(auth, "validAfter", "valid_after")
+            move_alias(auth, "validBefore", "valid_before")
+            payload_obj["authorization"] = auth
+        p2 = payload_obj.get("permit2Authorization")
+        if isinstance(p2, dict):
+            p2 = dict(p2)
+            move_alias(p2, "validAfter", "valid_after")
+            move_alias(p2, "validBefore", "valid_before")
+            payload_obj["permit2Authorization"] = p2
+        out["payload"] = payload_obj
+    return out
+
+
+def _redact_payment_payload_for_logs(payload: dict[str, Any]) -> dict[str, Any]:
+    out = dict(payload)
+    p = out.get("payload")
+    if isinstance(p, dict):
+        p2 = dict(p)
+        if "signature" in p2:
+            p2["signature"] = "<redacted>"
+        auth = p2.get("authorization")
+        if isinstance(auth, dict):
+            auth2 = dict(auth)
+            if "signature" in auth2:
+                auth2["signature"] = "<redacted>"
+            p2["authorization"] = auth2
+        permit2 = p2.get("permit2Authorization")
+        if isinstance(permit2, dict):
+            permit22 = dict(permit2)
+            if "signature" in permit22:
+                permit22["signature"] = "<redacted>"
+            p2["permit2Authorization"] = permit22
+        out["payload"] = p2
+    return out
+
+
 def _cdp_facilitator_bearer_token(*, request_method: str, request_host: str, request_path: str) -> str:
     # CDP uses short-lived JWT auth derived from (api key id, api key secret)
     # scoped to request method + host + path. Docs:
@@ -1322,6 +1390,17 @@ def _settle_payment_via_cdp(
     requirements_network = _cdp_network_name(normalized_payment_requirements.get("network"))
     if requirements_network:
         normalized_payment_requirements["network"] = requirements_network
+    logger.info(
+        "CDP settle request_shape paymentPayload_keys=%s resource_type=%s payload_keys=%s",
+        sorted(list(normalized_payment_payload.keys())),
+        type(normalized_payment_payload.get("resource")).__name__,
+        (
+            sorted(list((normalized_payment_payload.get("payload") or {}).keys()))
+            if isinstance(normalized_payment_payload.get("payload"), dict)
+            else None
+        ),
+    )
+    logger.debug("CDP settle paymentPayload_redacted=%s", _redact_payment_payload_for_logs(normalized_payment_payload))
     settle_resp = _cdp_post_with_deadline(
         "/v2/x402/settle",
         {
@@ -1429,7 +1508,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     max_size = _tier_max_size_bytes(req.tier)
     if req.size_bytes > max_size:
         raise BadRequestError(f"size_bytes exceeds tier max size ({max_size} bytes)")
-    payment_payload = _decode_payment_payload(payment_header)
+    payment_payload = _normalize_payment_payload_from_client(_decode_payment_payload(payment_header))
     # Bazaar discovery relies on the client echoing `extensions.bazaar` into the payment payload.
     # Some clients omit it; if so, inject the server-advertised extensions so the facilitator can
     # still catalog the endpoint on settlement.
