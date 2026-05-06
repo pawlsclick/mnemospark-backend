@@ -1281,6 +1281,10 @@ def _settle_payment_via_cdp(
             value = str(payment_requirements.get(field) or "").strip()
             if value:
                 normalized_payment_payload[field] = value
+    # CDP facilitator expects a network enum (e.g. "base"), not CAIP-2 ("eip155:8453").
+    raw_network = str(normalized_payment_payload.get("network") or "").strip().lower()
+    if raw_network == "eip155:8453":
+        normalized_payment_payload["network"] = "base"
     settle_resp = _cdp_post_with_deadline(
         "/v2/x402/settle",
         {

@@ -410,7 +410,7 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
         args, _ = cdp_mock.call_args
         self.assertEqual(args[0], "/v2/x402/settle")
         payload = args[1]
-        self.assertEqual(payload["paymentPayload"]["network"], "eip155:8453")
+        self.assertEqual(payload["paymentPayload"]["network"], "base")
 
     def test_complete_injects_asset_payto_amount_into_payment_payload_before_settle(self):
         token = "completion-token"
