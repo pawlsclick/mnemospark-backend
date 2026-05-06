@@ -1392,6 +1392,14 @@ def _settle_payment_via_cdp(
     requirements_network = _cdp_network_name(normalized_payment_requirements.get("network"))
     if requirements_network:
         normalized_payment_requirements["network"] = requirements_network
+    if not str(normalized_payment_payload.get("network") or "").strip():
+        # Defensive: some client payloads carry an empty network; CDP rejects this.
+        normalized_payment_payload["network"] = str(normalized_payment_requirements.get("network") or "").strip()
+    logger.info(
+        "CDP settle network payload=%s requirements=%s",
+        str(normalized_payment_payload.get("network") or ""),
+        str(normalized_payment_requirements.get("network") or ""),
+    )
     logger.info(
         "CDP settle request_shape paymentPayload_keys=%s resource_type=%s payload_keys=%s",
         sorted(list(normalized_payment_payload.keys())),
