@@ -1216,6 +1216,20 @@ def _normalize_payment_payload_from_client(payment_payload: dict[str, Any]) -> d
         if k in src:
             out[k] = src[k]
 
+    # x402 v2 payloads include `accepted` (payment requirements) nested inside the payment payload.
+    # Preserve it (normalized) when present, but ignore non-object values.
+    accepted = src.get("accepted")
+    if isinstance(accepted, dict):
+        accepted = dict(accepted)
+        move_alias(accepted, "payTo", "pay_to")
+        move_alias(accepted, "maxTimeoutSeconds", "max_timeout_seconds")
+        allowed_accepted: dict[str, Any] = {}
+        for ak in ("scheme", "network", "asset", "amount", "payTo", "maxTimeoutSeconds", "extra"):
+            if ak in accepted:
+                allowed_accepted[ak] = accepted[ak]
+        if allowed_accepted:
+            out["accepted"] = allowed_accepted
+
     # Resource can be a string URL or a ResourceInfo object.
     resource = src.get("resource")
     if isinstance(resource, str):

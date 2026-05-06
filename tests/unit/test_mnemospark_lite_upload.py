@@ -330,7 +330,7 @@ class PaymentPayloadNormalizationTests(unittest.TestCase):
         self.assertNotIn("valid_after", normalized["payload"]["permit2Authorization"])
         self.assertNotIn("valid_before", normalized["payload"]["permit2Authorization"])
 
-    def test_accepted_key_is_removed_after_normalization(self):
+    def test_accepted_key_is_removed_after_normalization_when_not_an_object(self):
         payload = {
             "x402Version": 2,
             "accepted": True,
@@ -340,6 +340,28 @@ class PaymentPayloadNormalizationTests(unittest.TestCase):
         }
         normalized = app._normalize_payment_payload_from_client(payload)
         self.assertNotIn("accepted", normalized)
+
+    def test_accepted_object_is_preserved_after_normalization(self):
+        payload = {
+            "x402Version": 2,
+            "accepted": {
+                "scheme": "exact",
+                "network": "eip155:8453",
+                "asset": "0x" + ("a" * 40),
+                "amount": "1000",
+                "pay_to": "0x" + ("b" * 40),
+                "max_timeout_seconds": 60,
+                "extra": {"name": "USDC", "version": "2"},
+                "ignored": "nope",
+            },
+            "payload": {"authorization": {"from": "0x" + ("1" * 40), "nonce": "n"}, "signature": "0x" + ("1" * 130)},
+        }
+        normalized = app._normalize_payment_payload_from_client(payload)
+        self.assertIn("accepted", normalized)
+        self.assertEqual(normalized["accepted"]["network"], "eip155:8453")
+        self.assertEqual(normalized["accepted"]["payTo"], "0x" + ("b" * 40))
+        self.assertEqual(normalized["accepted"]["maxTimeoutSeconds"], 60)
+        self.assertNotIn("ignored", normalized["accepted"])
 
 
 class CompleteUploadTokenAndStatusTests(unittest.TestCase):
