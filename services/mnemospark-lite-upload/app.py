@@ -107,7 +107,18 @@ class SettlementPendingError(RuntimeError):
 
 
 class PaymentInvalidError(ValueError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        cdp_correlation_id: str | None = None,
+        cdp_error_reason: str | None = None,
+        cdp_error_type: str | None = None,
+    ):
+        super().__init__(message)
+        self.cdp_correlation_id = cdp_correlation_id
+        self.cdp_error_reason = cdp_error_reason
+        self.cdp_error_type = cdp_error_type
 
 
 class ConflictError(ValueError):
@@ -874,6 +885,9 @@ def _idempotency_mark_failed(
     error_message: str,
     tx_hash: str | None,
     request_hash: str,
+    cdp_correlation_id: str | None = None,
+    cdp_error_reason: str | None = None,
+    cdp_error_type: str | None = None,
 ):
     table.put_item(
         Item={
@@ -883,6 +897,9 @@ def _idempotency_mark_failed(
             "error_reason": error_reason,
             "error_message": (error_message or "")[:2000],
             "tx_hash": tx_hash or None,
+            "cdp_correlation_id": cdp_correlation_id or None,
+            "cdp_error_reason": cdp_error_reason or None,
+            "cdp_error_type": cdp_error_type or None,
             "updated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
             "expires_at": now + LITE_SETTLE_IDEMPOTENCY_TTL_SECONDS,
         }
@@ -1188,36 +1205,69 @@ def _normalize_payment_payload_from_client(payment_payload: dict[str, Any]) -> d
         if canonical_key not in obj:
             obj[canonical_key] = value
 
-    out = dict(payment_payload)
-    # Some clients include extra keys (e.g. `accepted`) that CDP's schema rejects.
-    out.pop("accepted", None)
-    move_alias(out, "x402Version", "x402_version")
-    move_alias(out, "payTo", "pay_to")
+    src = dict(payment_payload)
+    # Normalize known aliases first.
+    move_alias(src, "x402Version", "x402_version")
+    move_alias(src, "payTo", "pay_to")
 
-    resource = out.get("resource")
-    if isinstance(resource, dict):
+    # Canonicalize by whitelist: only emit keys CDP expects.
+    out: dict[str, Any] = {}
+    for k in ("x402Version", "scheme", "network", "asset", "amount", "payTo", "extensions"):
+        if k in src:
+            out[k] = src[k]
+
+    # Resource can be a string URL or a ResourceInfo object.
+    resource = src.get("resource")
+    if isinstance(resource, str):
+        url = resource.strip()
+        if url:
+            out["resource"] = {"url": url}
+    elif isinstance(resource, dict):
         resource = dict(resource)
-        # Common alias.
         move_alias(resource, "mimeType", "mime_type")
-        out["resource"] = resource
+        # Only keep ResourceInfo-like keys.
+        allowed_resource: dict[str, Any] = {}
+        for rk in ("url", "mimeType", "description"):
+            if rk in resource:
+                allowed_resource[rk] = resource[rk]
+        if allowed_resource:
+            out["resource"] = allowed_resource
 
-    payload_obj = out.get("payload")
+    payload_obj = src.get("payload")
     if isinstance(payload_obj, dict):
         payload_obj = dict(payload_obj)
         move_alias(payload_obj, "permit2Authorization", "permit2_authorization")
+        allowed_payload: dict[str, Any] = {}
+        if "signature" in payload_obj:
+            allowed_payload["signature"] = payload_obj.get("signature")
+
         auth = payload_obj.get("authorization")
         if isinstance(auth, dict):
             auth = dict(auth)
             move_alias(auth, "validAfter", "valid_after")
             move_alias(auth, "validBefore", "valid_before")
-            payload_obj["authorization"] = auth
+            allowed_auth: dict[str, Any] = {}
+            for ak in ("from", "to", "value", "validAfter", "validBefore", "nonce", "signature"):
+                if ak in auth:
+                    allowed_auth[ak] = auth[ak]
+            if allowed_auth:
+                allowed_payload["authorization"] = allowed_auth
+
         p2 = payload_obj.get("permit2Authorization")
         if isinstance(p2, dict):
             p2 = dict(p2)
             move_alias(p2, "validAfter", "valid_after")
             move_alias(p2, "validBefore", "valid_before")
-            payload_obj["permit2Authorization"] = p2
-        out["payload"] = payload_obj
+            allowed_p2: dict[str, Any] = {}
+            for pk in ("from", "to", "value", "validAfter", "validBefore", "nonce", "signature"):
+                if pk in p2:
+                    allowed_p2[pk] = p2[pk]
+            if allowed_p2:
+                allowed_payload["permit2Authorization"] = allowed_p2
+
+        if allowed_payload:
+            out["payload"] = allowed_payload
+
     return out
 
 
@@ -1392,6 +1442,37 @@ def _settle_payment_via_cdp(
     requirements_network = _cdp_network_name(normalized_payment_requirements.get("network"))
     if requirements_network:
         normalized_payment_requirements["network"] = requirements_network
+    # Single source of truth for CDP network: always use the server requirements.
+    normalized_payment_payload["network"] = str(normalized_payment_requirements.get("network") or "").strip()
+    if not normalized_payment_payload["network"]:
+        raise BadRequestError("payment network is required")
+    logger.info(
+        "CDP settle network payload=%s requirements=%s",
+        str(normalized_payment_payload.get("network") or ""),
+        str(normalized_payment_requirements.get("network") or ""),
+    )
+    # Fail fast if the payload is obviously invalid, rather than learning via CDP 4xx.
+    required_fields = ("x402Version", "scheme", "network", "asset", "payTo", "amount", "resource", "payload")
+    missing = [f for f in required_fields if not (str(normalized_payment_payload.get(f) or "").strip() if f != "payload" else True)]
+    # payload and resource are structured: validate separately.
+    if missing:
+        raise BadRequestError(f"paymentPayload is missing required fields: {', '.join(missing)}")
+    resource = normalized_payment_payload.get("resource")
+    if not (isinstance(resource, dict) and str(resource.get("url") or "").strip()):
+        raise BadRequestError("paymentPayload.resource.url is required")
+    payload_obj = normalized_payment_payload.get("payload")
+    if not isinstance(payload_obj, dict):
+        raise BadRequestError("paymentPayload.payload must be an object")
+    if "signature" not in payload_obj:
+        raise BadRequestError("paymentPayload.payload.signature is required")
+    auth_obj = payload_obj.get("authorization") or payload_obj.get("permit2Authorization")
+    if not isinstance(auth_obj, dict):
+        raise BadRequestError("paymentPayload.payload.authorization is required")
+    if not str(auth_obj.get("from") or "").strip():
+        raise BadRequestError("paymentPayload.payload.authorization.from is required")
+    if not str(auth_obj.get("nonce") or "").strip():
+        raise BadRequestError("paymentPayload.payload.authorization.nonce is required")
+
     logger.info(
         "CDP settle request_shape paymentPayload_keys=%s resource_type=%s payload_keys=%s",
         sorted(list(normalized_payment_payload.keys())),
@@ -1403,15 +1484,41 @@ def _settle_payment_via_cdp(
         ),
     )
     logger.debug("CDP settle paymentPayload_redacted=%s", _redact_payment_payload_for_logs(normalized_payment_payload))
-    settle_resp = _cdp_post_with_deadline(
-        "/v2/x402/settle",
-        {
-            "x402Version": int(normalized_payment_payload.get("x402Version") or 2),
-            "paymentPayload": _strip_nulls(normalized_payment_payload),
-            "paymentRequirements": normalized_payment_requirements,
-        },
-        timeout_seconds=timeout_seconds,
-    )
+    try:
+        settle_resp = _cdp_post_with_deadline(
+            "/v2/x402/settle",
+            {
+                "x402Version": int(normalized_payment_payload.get("x402Version") or 2),
+                "paymentPayload": _strip_nulls(normalized_payment_payload),
+                "paymentRequirements": normalized_payment_requirements,
+            },
+            timeout_seconds=timeout_seconds,
+        )
+    except BadRequestError as exc:
+        # CDP returns JSON-encoded error bodies for invalid requests; surface them deterministically.
+        msg = str(exc)
+        correlation_id = None
+        error_reason = None
+        error_type = None
+        error_message = msg
+        try:
+            start = msg.find("{")
+            end = msg.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                parsed = json.loads(msg[start : end + 1])
+                if isinstance(parsed, dict):
+                    correlation_id = str(parsed.get("correlationId") or "").strip() or None
+                    error_reason = str(parsed.get("errorReason") or "").strip() or None
+                    error_type = str(parsed.get("errorType") or "").strip() or None
+                    error_message = str(parsed.get("errorMessage") or parsed.get("errorMessage") or msg).strip() or msg
+        except Exception:
+            pass
+        raise PaymentInvalidError(
+            error_message,
+            cdp_correlation_id=correlation_id,
+            cdp_error_reason=error_reason,
+            cdp_error_type=error_type,
+        ) from exc
     extension_responses = settle_resp.headers.get("extension-responses")
     decoded_extension_responses = _decode_extension_responses_header(extension_responses) if extension_responses else None
     # Always log whether CDP returned extension responses; this is the primary signal
@@ -1584,12 +1691,14 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
                 return _response(
                     202,
                     {"success": False, "error": "settlement_pending", "message": "Payment settlement pending; retry upload."},
+                    headers={"Retry-After": "5"},
                 )
             # Lease expired: attempt to acquire and become the single settler.
             if not _idempotency_try_acquire_lease(idempotency_table, idempotency_key=idempotency_key, now=now_epoch):
                 return _response(
                     202,
                     {"success": False, "error": "settlement_pending", "message": "Payment settlement pending; retry upload."},
+                    headers={"Retry-After": "5"},
                 )
 
     # Verify locally first, then settle through the CDP facilitator so Bazaar sees
@@ -1627,6 +1736,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         return _response(
             202,
             {"success": False, "error": "settlement_pending", "message": "Payment settlement pending; retry upload."},
+            headers={"Retry-After": "5"},
         )
     except PaymentInvalidError as exc:
         if idempotency_table is not None and idempotency_key is not None and request_hash is not None:
@@ -1638,6 +1748,9 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
                 error_message=str(exc),
                 tx_hash=None,
                 request_hash=request_hash,
+                cdp_correlation_id=getattr(exc, "cdp_correlation_id", None),
+                cdp_error_reason=getattr(exc, "cdp_error_reason", None),
+                cdp_error_type=getattr(exc, "cdp_error_type", None),
             )
         return _response(402, {"error": "payment_settle_failed", "message": str(exc)})
     transaction_hash = settlement.transaction_hash
@@ -1818,9 +1931,21 @@ def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
             return _response(
                 202,
                 {"success": False, "error": "settlement_pending", "message": "Payment settlement pending; retry completion."},
+                headers={"Retry-After": "5"},
             )
         except PaymentInvalidError as exc:
-            return _response(402, {"error": "payment_settle_failed", "message": str(exc)})
+            return _response(
+                402,
+                {
+                    "error": "payment_settle_failed",
+                    "message": str(exc),
+                    "cdp": {
+                        "correlationId": getattr(exc, "cdp_correlation_id", None),
+                        "errorReason": getattr(exc, "cdp_error_reason", None),
+                        "errorType": getattr(exc, "cdp_error_type", None),
+                    },
+                },
+            )
         transaction_hash = settlement.transaction_hash
         logger.info(
             "lite_upload_complete_settlement upload_id=%s payer_wallet=%s tx_hash=%s",

@@ -286,18 +286,25 @@ class PaymentPayloadNormalizationTests(unittest.TestCase):
         payload = {
             "x402_version": 2,
             "pay_to": "0x" + ("b" * 40),
+            "accepted": True,
+            "unknownTopLevel": "nope",
             "resource": {"url": "https://example.com/upload", "mime_type": "application/json"},
             "payload": {
                 "authorization": {
                     "from": "0x" + ("1" * 40),
+                    "nonce": "n",
                     "valid_after": "0",
                     "valid_before": "9999999999",
+                    "unknownAuth": "nope",
                 },
                 "permit2_authorization": {
                     "from": "0x" + ("1" * 40),
+                    "nonce": "n2",
                     "valid_after": "0",
                     "valid_before": "9999999999",
                 },
+                "signature": "0x" + ("1" * 130),
+                "unknownPayloadKey": "nope",
             },
         }
 
@@ -313,9 +320,13 @@ class PaymentPayloadNormalizationTests(unittest.TestCase):
         self.assertNotIn("x402_version", normalized)
         self.assertNotIn("pay_to", normalized)
         self.assertNotIn("mime_type", normalized["resource"])
+        self.assertNotIn("accepted", normalized)
+        self.assertNotIn("unknownTopLevel", normalized)
         self.assertNotIn("valid_after", normalized["payload"]["authorization"])
         self.assertNotIn("valid_before", normalized["payload"]["authorization"])
+        self.assertNotIn("unknownAuth", normalized["payload"]["authorization"])
         self.assertNotIn("permit2_authorization", normalized["payload"])
+        self.assertNotIn("unknownPayloadKey", normalized["payload"])
         self.assertNotIn("valid_after", normalized["payload"]["permit2Authorization"])
         self.assertNotIn("valid_before", normalized["payload"]["permit2Authorization"])
 
@@ -368,8 +379,14 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
             "filename": "artifact.bin",
             "payer_wallet": "0x" + ("1" * 40),
             "max_size": 1000,
-            "payment_payload": {"x402Version": 2, "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
-            "payment_requirements": {"amount": "1000"},
+            "payment_payload": {
+                "x402Version": 2,
+                "scheme": "exact",
+                "network": "eip155:8453",
+                "resource": "https://api.mnemospark.ai/api/mnemospark-lite/upload",
+                "payload": {"authorization": {"from": "0x" + ("1" * 40), "nonce": "n"}, "signature": "0x" + ("1" * 130)},
+            },
+            "payment_requirements": {"scheme": "exact", "network": "eip155:8453", "asset": "0x" + ("a" * 40), "payTo": "0x" + ("b" * 40), "amount": "1000"},
         }
         event = {
             "body": json.dumps({"uploadId": upload_id, "completion_token": token}),
@@ -405,8 +422,12 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
             "filename": "artifact.bin",
             "payer_wallet": "0x" + ("1" * 40),
             "max_size": 1000,
-            "payment_payload": {"x402Version": 2, "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
-            "payment_requirements": {"scheme": "exact", "amount": "1000"},
+            "payment_payload": {
+                "x402Version": 2,
+                "resource": "https://api.mnemospark.ai/api/mnemospark-lite/upload",
+                "payload": {"authorization": {"from": "0x" + ("1" * 40), "nonce": "n"}, "signature": "0x" + ("1" * 130)},
+            },
+            "payment_requirements": {"scheme": "exact", "network": "eip155:8453", "asset": "0x" + ("a" * 40), "payTo": "0x" + ("b" * 40), "amount": "1000"},
         }
         event = {"body": json.dumps({"uploadId": upload_id, "completion_token": token})}
         table = mock.Mock()
@@ -440,8 +461,13 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
             "filename": "artifact.bin",
             "payer_wallet": "0x" + ("1" * 40),
             "max_size": 1000,
-            "payment_payload": {"x402Version": 2, "scheme": "exact", "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
-            "payment_requirements": {"scheme": "exact", "network": "eip155:8453", "amount": "1000"},
+            "payment_payload": {
+                "x402Version": 2,
+                "scheme": "exact",
+                "resource": "https://api.mnemospark.ai/api/mnemospark-lite/upload",
+                "payload": {"authorization": {"from": "0x" + ("1" * 40), "nonce": "n"}, "signature": "0x" + ("1" * 130)},
+            },
+            "payment_requirements": {"scheme": "exact", "network": "eip155:8453", "asset": "0x" + ("a" * 40), "payTo": "0x" + ("b" * 40), "amount": "1000"},
         }
         event = {"body": json.dumps({"uploadId": upload_id, "completion_token": token})}
         table = mock.Mock()
@@ -469,8 +495,23 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
 
         with mock.patch.object(app, "_cdp_post_with_deadline", cdp_mock):
             app._settle_payment_via_cdp(
-                payment_payload={"x402Version": 2, "scheme": "exact", "network": "eip155:84532"},
-                payment_requirements={"scheme": "exact", "network": "eip155:84532", "amount": "1000"},
+                payment_payload={
+                    "x402Version": 2,
+                    "scheme": "exact",
+                    "network": "eip155:84532",
+                    "asset": "0x" + ("a" * 40),
+                    "payTo": "0x" + ("b" * 40),
+                    "amount": "1000",
+                    "resource": "https://api.example.com/api/mnemospark-lite/upload",
+                    "payload": {"authorization": {"from": "0x" + ("1" * 40), "nonce": "n"}, "signature": "0x" + ("1" * 130)},
+                },
+                payment_requirements={
+                    "scheme": "exact",
+                    "network": "eip155:84532",
+                    "asset": "0x" + ("a" * 40),
+                    "payTo": "0x" + ("b" * 40),
+                    "amount": "1000",
+                },
                 timeout_seconds=1.5,
             )
 
@@ -494,7 +535,13 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
             "payer_wallet": "0x" + ("1" * 40),
             "max_size": 1000,
             # Missing asset/payTo/amount fields in payment_payload; server should backfill from requirements.
-            "payment_payload": {"x402Version": 2, "scheme": "exact", "network": "eip155:8453", "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
+            "payment_payload": {
+                "x402Version": 2,
+                "scheme": "exact",
+                "network": "eip155:8453",
+                "resource": "https://api.mnemospark.ai/api/mnemospark-lite/upload",
+                "payload": {"authorization": {"from": "0x" + ("1" * 40), "nonce": "n"}, "signature": "0x" + ("1" * 130)},
+            },
             "payment_requirements": {
                 "scheme": "exact",
                 "network": "eip155:8453",
@@ -542,9 +589,9 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
                 "scheme": "exact",
                 "network": "eip155:8453",
                 "resource": "https://api.mnemospark.ai/api/mnemospark-lite/upload",
-                "payload": {"authorization": {"from": "0x" + ("1" * 40)}},
+                "payload": {"authorization": {"from": "0x" + ("1" * 40), "nonce": "n"}, "signature": "0x" + ("1" * 130)},
             },
-            "payment_requirements": {"scheme": "exact", "network": "eip155:8453", "amount": "1000"},
+            "payment_requirements": {"scheme": "exact", "network": "eip155:8453", "asset": "0x" + ("a" * 40), "payTo": "0x" + ("b" * 40), "amount": "1000"},
         }
         event = {"body": json.dumps({"uploadId": upload_id, "completion_token": token})}
         table = mock.Mock()
@@ -861,6 +908,7 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
                 "_decode_payment_payload",
                 return_value={
                     "x402Version": 2,
+                    "resource": "https://api.example.com/api/mnemospark-lite/upload",
                     "payload": {
                         "authorization": {
                             "from": "0x" + ("1" * 40),
@@ -931,6 +979,7 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
                 "_decode_payment_payload",
                 return_value={
                     "x402Version": 2,
+                    "resource": "https://api.example.com/api/mnemospark-lite/upload",
                     "payload": {
                         "authorization": {
                             "from": "0x" + ("1" * 40),
@@ -1137,6 +1186,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
         }
         payment_payload = {
             "x402Version": 2,
+            "resource": "https://api.example.com/api/mnemospark-lite/upload",
             "payload": {
                 "authorization": {
                     "from": "0x" + ("1" * 40),
@@ -1204,6 +1254,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
                 "_decode_payment_payload",
                 return_value={
                     "x402Version": 2,
+                    "resource": "https://api.example.com/api/mnemospark-lite/upload",
                     "payload": {
                         "authorization": {
                             "from": "0x" + ("1" * 40),
@@ -1270,6 +1321,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
                 "_decode_payment_payload",
                 return_value={
                     "x402Version": 2,
+                    "resource": "https://api.example.com/api/mnemospark-lite/upload",
                     "payload": {
                         "authorization": {
                             "from": "0x" + ("1" * 40),
@@ -1339,6 +1391,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
                 "_decode_payment_payload",
                 return_value={
                     "x402Version": 2,
+                    "resource": "https://api.example.com/api/mnemospark-lite/upload",
                     "payload": {
                         "authorization": {
                             "from": "0x" + ("1" * 40),
@@ -1710,6 +1763,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
                 "_decode_payment_payload",
                 return_value={
                     "x402Version": 2,
+                    "resource": "https://api.example.com/api/mnemospark-lite/upload",
                     "payload": {
                         "authorization": {
                             "from": "0x" + ("1" * 40),
