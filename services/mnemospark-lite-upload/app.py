@@ -1435,17 +1435,13 @@ def _settle_payment_via_cdp(
         url = requirements_resource.strip()
         if url:
             normalized_payment_requirements["resource"] = {"url": url}
-    # CDP facilitator expects a network enum (e.g. "base"), not CAIP-2 ("eip155:8453").
-    payload_network = _cdp_network_name(normalized_payment_payload.get("network"))
-    if payload_network:
-        normalized_payment_payload["network"] = payload_network
-    requirements_network = _cdp_network_name(normalized_payment_requirements.get("network"))
-    if requirements_network:
-        normalized_payment_requirements["network"] = requirements_network
-    # Single source of truth for CDP network: always use the server requirements.
-    normalized_payment_payload["network"] = str(normalized_payment_requirements.get("network") or "").strip()
-    if not normalized_payment_payload["network"]:
+    # CDP facilitator expects `paymentPayload.network` as an enum (e.g. "base"),
+    # but `paymentRequirements.network` is CAIP-2 (e.g. "eip155:8453") and is
+    # used for signature/domain validation.
+    requirements_network_caip2 = str(normalized_payment_requirements.get("network") or "").strip()
+    if not requirements_network_caip2:
         raise BadRequestError("payment network is required")
+    normalized_payment_payload["network"] = _cdp_network_name(requirements_network_caip2)
     logger.info(
         "CDP settle network payload=%s requirements=%s",
         str(normalized_payment_payload.get("network") or ""),
@@ -1752,7 +1748,18 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
                 cdp_error_reason=getattr(exc, "cdp_error_reason", None),
                 cdp_error_type=getattr(exc, "cdp_error_type", None),
             )
-        return _response(402, {"error": "payment_settle_failed", "message": str(exc)})
+        return _response(
+            402,
+            {
+                "error": "payment_settle_failed",
+                "message": str(exc),
+                "cdp": {
+                    "correlationId": getattr(exc, "cdp_correlation_id", None),
+                    "errorReason": getattr(exc, "cdp_error_reason", None),
+                    "errorType": getattr(exc, "cdp_error_type", None),
+                },
+            },
+        )
     transaction_hash = settlement.transaction_hash
 
     now = datetime.now(timezone.utc)

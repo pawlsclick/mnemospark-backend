@@ -488,7 +488,7 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
         self.assertEqual(args[0], "/v2/x402/settle")
         payload = args[1]
         self.assertEqual(payload["paymentPayload"]["network"], "base")
-        self.assertEqual(payload["paymentRequirements"]["network"], "base")
+        self.assertEqual(payload["paymentRequirements"]["network"], "eip155:8453")
 
     def test_settle_maps_base_sepolia_caip2_network_for_cdp(self):
         cdp_mock = mock.Mock(return_value=app.CdpResponse(body={"success": True, "transaction": "0xtx"}, headers={}))
@@ -519,7 +519,7 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
         self.assertEqual(args[0], "/v2/x402/settle")
         payload = args[1]
         self.assertEqual(payload["paymentPayload"]["network"], "base-sepolia")
-        self.assertEqual(payload["paymentRequirements"]["network"], "base-sepolia")
+        self.assertEqual(payload["paymentRequirements"]["network"], "eip155:84532")
         self.assertEqual(kwargs["timeout_seconds"], 1.5)
 
     def test_complete_injects_asset_payto_amount_into_payment_payload_before_settle(self):
