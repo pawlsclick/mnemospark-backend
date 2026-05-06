@@ -76,6 +76,9 @@ MAX_UPLOAD_SIZE_BYTES = 4_800_000_000
 DEFAULT_PRESIGN_TTL_SECONDS = 900
 DEFAULT_LITE_TIER_FOR_DISCOVERY = "10mb"
 DEFAULT_CDP_SETTLE_TIMEOUT_SECONDS = 8.0
+LITE_SETTLE_IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
+LITE_SETTLE_LEASE_SECONDS = 15
+LITE_SETTLE_TIMEOUT_COOLDOWN_SECONDS = 60
 
 s3 = boto3.client("s3", region_name=DEFAULT_REGION)
 dynamodb = boto3.resource("dynamodb", region_name=DEFAULT_REGION)
@@ -100,6 +103,10 @@ class SettlementPendingError(RuntimeError):
 
 
 class PaymentInvalidError(ValueError):
+    pass
+
+
+class ConflictError(ValueError):
     pass
 
 
@@ -234,6 +241,13 @@ def _uploads_table() -> Any:
     name = (os.environ.get("MNEMOSPARK_LITE_UPLOADS_TABLE_NAME") or "").strip()
     if not name:
         raise RuntimeError("MNEMOSPARK_LITE_UPLOADS_TABLE_NAME is not configured")
+    return dynamodb.Table(name)
+
+
+def _upload_idempotency_table() -> Any | None:
+    name = (os.environ.get("UPLOAD_IDEMPOTENCY_TABLE_NAME") or "").strip()
+    if not name:
+        return None
     return dynamodb.Table(name)
 
 
@@ -643,6 +657,147 @@ def _ensure_bucket_lifecycle_expiration(*, bucket: str) -> None:
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _lite_settle_idempotency_key(
+    *,
+    requirement: dict[str, Any],
+    payer_wallet: str,
+    nonce: str,
+) -> str:
+    network = str(requirement.get("network") or "").strip().lower()
+    asset = normalize_wallet_address(str(requirement.get("asset") or ""), "payment asset").lower()
+    pay_to = normalize_wallet_address(str(requirement.get("payTo") or ""), "payment payTo").lower()
+    payer = normalize_wallet_address(payer_wallet, "payer_wallet").lower()
+    n = _normalize_nonce(nonce)
+    # Namespaced to avoid collisions with other uses of UploadIdempotencyTable.
+    return f"lite_settle:v1:{network}:{asset}:{pay_to}:{payer}:{n}"
+
+
+def _lite_settle_request_hash(*, req: UploadRequest, requirement: dict[str, Any], payer_wallet: str, nonce: str) -> str:
+    stable = {
+        "filename": req.filename,
+        "content_type": req.content_type,
+        "tier": req.tier,
+        "size_bytes": int(req.size_bytes),
+        "payer_wallet": normalize_wallet_address(payer_wallet, "payer_wallet").lower(),
+        "nonce": _normalize_nonce(nonce),
+        "network": str(requirement.get("network") or "").strip().lower(),
+        "asset": normalize_wallet_address(str(requirement.get("asset") or ""), "payment asset").lower(),
+        "pay_to": normalize_wallet_address(str(requirement.get("payTo") or ""), "payment payTo").lower(),
+        "amount": str(requirement.get("amount") or "").strip(),
+    }
+    encoded = json.dumps(stable, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _idempotency_is_expired(item: dict[str, Any], *, now: int) -> bool:
+    expires_at = _coerce_int(item.get("expires_at"), "idempotency.expires_at")
+    return expires_at <= now
+
+
+def _idempotency_fetch(
+    table: Any, *, idempotency_key: str, request_hash: str, now: int
+) -> dict[str, Any] | None:
+    # Mirror storage-upload's approach: consistent read + best-effort cleanup of expired keys.
+    for _ in range(3):
+        resp = table.get_item(Key={"idempotency_key": idempotency_key}, ConsistentRead=True)
+        item = resp.get("Item")
+        if not item:
+            return None
+        if _idempotency_is_expired(item, now=now):
+            try:
+                table.delete_item(
+                    Key={"idempotency_key": idempotency_key},
+                    ConditionExpression="expires_at <= :now",
+                    ExpressionAttributeValues={":now": now},
+                )
+                return None
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                continue
+        stored_hash = str(item.get("request_hash") or "")
+        if stored_hash and stored_hash != request_hash:
+            raise ConflictError("Payment authorization cannot be reused with a different request payload")
+        return item
+    raise ConflictError("Idempotency state changed concurrently; please retry")
+
+
+def _idempotency_claim_or_get_existing(
+    table: Any, *, idempotency_key: str, request_hash: str, now: int
+) -> dict[str, Any] | None:
+    item = {
+        "idempotency_key": idempotency_key,
+        "status": "in_progress",
+        "request_hash": request_hash,
+        "lease_until": now + LITE_SETTLE_LEASE_SECONDS,
+        "created_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+        "updated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+        "expires_at": now + LITE_SETTLE_IDEMPOTENCY_TTL_SECONDS,
+    }
+    for _ in range(2):
+        try:
+            table.put_item(Item=item, ConditionExpression="attribute_not_exists(idempotency_key)")
+            return None
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            existing = _idempotency_fetch(table, idempotency_key=idempotency_key, request_hash=request_hash, now=now)
+            if existing:
+                return existing
+    raise ConflictError("Settlement is already in progress for this authorization; please retry")
+
+
+def _idempotency_try_acquire_lease(table: Any, *, idempotency_key: str, now: int, cooldown_seconds: int = 0) -> bool:
+    lease_until = now + (cooldown_seconds or LITE_SETTLE_LEASE_SECONDS)
+    try:
+        table.update_item(
+            Key={"idempotency_key": idempotency_key},
+            UpdateExpression="SET lease_until=:l, updated_at=:u, expires_at=:e",
+            ConditionExpression="attribute_exists(idempotency_key) AND (attribute_not_exists(lease_until) OR lease_until <= :now) AND (#s = :in_progress OR #s = :pending)",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":l": lease_until,
+                ":u": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+                ":e": now + LITE_SETTLE_IDEMPOTENCY_TTL_SECONDS,
+                ":now": now,
+                ":in_progress": "in_progress",
+                ":pending": "pending",
+            },
+        )
+        return True
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+        return False
+
+
+def _idempotency_mark_settled(table: Any, *, idempotency_key: str, now: int, response_body: dict[str, Any], tx_hash: str | None):
+    table.put_item(
+        Item={
+            "idempotency_key": idempotency_key,
+            "status": "settled",
+            "response_body": json.dumps(response_body, sort_keys=True),
+            "tx_hash": tx_hash or None,
+            "updated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+            "expires_at": now + LITE_SETTLE_IDEMPOTENCY_TTL_SECONDS,
+        }
+    )
+
+
+def _idempotency_mark_failed(table: Any, *, idempotency_key: str, now: int, error_reason: str, error_message: str, tx_hash: str | None):
+    table.put_item(
+        Item={
+            "idempotency_key": idempotency_key,
+            "status": "failed",
+            "error_reason": error_reason,
+            "error_message": (error_message or "")[:2000],
+            "tx_hash": tx_hash or None,
+            "updated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+            "expires_at": now + LITE_SETTLE_IDEMPOTENCY_TTL_SECONDS,
+        }
+    )
 
 
 def _mint_ls_web_app_url(*, payer_wallet: str, location: str) -> dict[str, str]:
@@ -1110,6 +1265,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return _error(402, "payment_invalid", str(exc))
     except BadRequestError as exc:
         return _error(400, "bad_request", str(exc))
+    except ConflictError as exc:
+        return _error(409, "conflict", str(exc))
     except UnauthorizedError as exc:
         return _error(403, "forbidden", str(exc))
     except ForbiddenError as exc:
@@ -1174,6 +1331,60 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
         if isinstance(permit2_auth, dict):
             payer_raw = str(permit2_auth.get("from") or "")
     payer_wallet = normalize_wallet_address(payer_raw, "payer_wallet")
+    nonce_raw = ""
+    if isinstance(auth, dict):
+        nonce_raw = str(auth.get("nonce") or "")
+    if not nonce_raw:
+        raise BadRequestError("payment authorization nonce is required")
+
+    idempotency_table = _upload_idempotency_table()
+    idempotency_key: str | None = None
+    request_hash: str | None = None
+    existing_idempotency: dict[str, Any] | None = None
+    now_epoch = int(time.time())
+    if idempotency_table is not None:
+        idempotency_key = _lite_settle_idempotency_key(
+            requirement=requirement,
+            payer_wallet=payer_wallet,
+            nonce=nonce_raw,
+        )
+        request_hash = _lite_settle_request_hash(req=req, requirement=requirement, payer_wallet=payer_wallet, nonce=nonce_raw)
+        existing_idempotency = _idempotency_claim_or_get_existing(
+            idempotency_table,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            now=now_epoch,
+        )
+        if existing_idempotency is not None:
+            status = str(existing_idempotency.get("status") or "").lower()
+            if status == "settled":
+                cached = str(existing_idempotency.get("response_body") or "").strip()
+                if not cached:
+                    raise ConflictError("Settlement is marked settled but missing cached response")
+                try:
+                    cached_body = json.loads(cached)
+                except Exception as exc:
+                    raise RuntimeError("Stored settled response_body is invalid") from exc
+                if not isinstance(cached_body, dict):
+                    raise RuntimeError("Stored settled response_body must be a JSON object")
+                return _response(200, cached_body)
+            if status == "failed":
+                reason = str(existing_idempotency.get("error_reason") or "payment_settle_failed")
+                msg = str(existing_idempotency.get("error_message") or "Payment settlement failed.")
+                return _response(402, {"error": reason, "message": msg, "txHash": existing_idempotency.get("tx_hash")})
+
+            lease_until = _as_int(existing_idempotency.get("lease_until")) or 0
+            if lease_until > now_epoch:
+                return _response(
+                    202,
+                    {"success": False, "error": "settlement_pending", "message": "Payment settlement pending; retry upload."},
+                )
+            # Lease expired: attempt to acquire and become the single settler.
+            if not _idempotency_try_acquire_lease(idempotency_table, idempotency_key=idempotency_key, now=now_epoch):
+                return _response(
+                    202,
+                    {"success": False, "error": "settlement_pending", "message": "Payment settlement pending; retry upload."},
+                )
 
     # Verify locally first, then settle through the CDP facilitator so Bazaar sees
     # a real settled x402 payment on the paid /upload call.
@@ -1185,11 +1396,28 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
             timeout_seconds=_cdp_settle_timeout_seconds(),
         )
     except SettlementPendingError:
+        if idempotency_table is not None and idempotency_key is not None:
+            # Cool down retries to avoid re-submitting while an in-flight tx may still land.
+            _idempotency_try_acquire_lease(
+                idempotency_table,
+                idempotency_key=idempotency_key,
+                now=now_epoch,
+                cooldown_seconds=LITE_SETTLE_TIMEOUT_COOLDOWN_SECONDS,
+            )
         return _response(
             202,
             {"success": False, "error": "settlement_pending", "message": "Payment settlement pending; retry upload."},
         )
     except PaymentInvalidError as exc:
+        if idempotency_table is not None and idempotency_key is not None:
+            _idempotency_mark_failed(
+                idempotency_table,
+                idempotency_key=idempotency_key,
+                now=now_epoch,
+                error_reason="payment_settle_failed",
+                error_message=str(exc),
+                tx_hash=None,
+            )
         return _response(402, {"error": "payment_settle_failed", "message": str(exc)})
     transaction_hash = settlement.transaction_hash
 
@@ -1276,29 +1504,35 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     }
     _uploads_table().put_item(Item=item, ConditionExpression="attribute_not_exists(upload_id)")
 
-    return _response(
-        200,
-        {
-            "success": True,
-            "data": {
-                "uploadId": upload_id,
-                "uploadUrl": upload_url,
-                "publicUrl": None,
-                "siteUrl": None,
-                "expiresAt": item["expires_at"],
-                "maxSize": max_size,
-                "curlExample": curl_example,
-                "completion_token": completion_token,
-                "list_scope_bearer": bearer,
-            },
-            "metadata": {
-                "protocol": "x402",
-                "network": _payment_config()["payment_network"],
-                "price": item["price_paid"],
-                "payment": {"success": True, "transactionHash": transaction_hash, "status": "settled"},
-            },
+    response_body = {
+        "success": True,
+        "data": {
+            "uploadId": upload_id,
+            "uploadUrl": upload_url,
+            "publicUrl": None,
+            "siteUrl": None,
+            "expiresAt": item["expires_at"],
+            "maxSize": max_size,
+            "curlExample": curl_example,
+            "completion_token": completion_token,
+            "list_scope_bearer": bearer,
         },
-    )
+        "metadata": {
+            "protocol": "x402",
+            "network": _payment_config()["payment_network"],
+            "price": item["price_paid"],
+            "payment": {"success": True, "transactionHash": transaction_hash, "status": "settled"},
+        },
+    }
+    if idempotency_table is not None and idempotency_key is not None:
+        _idempotency_mark_settled(
+            idempotency_table,
+            idempotency_key=idempotency_key,
+            now=now_epoch,
+            response_body=response_body,
+            tx_hash=transaction_hash,
+        )
+    return _response(200, response_body)
 
 
 def _handle_post_complete(event: dict[str, Any]) -> dict[str, Any]:
