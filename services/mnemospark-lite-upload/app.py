@@ -816,6 +816,46 @@ def _idempotency_mark_settled(
     )
 
 
+def _refresh_cached_upload_url(response_body: dict[str, Any]) -> dict[str, Any]:
+    data = response_body.get("data")
+    if not isinstance(data, dict):
+        return response_body
+    upload_id = str(data.get("uploadId") or "").strip()
+    if not upload_id:
+        return response_body
+
+    resp = _uploads_table().get_item(Key={"upload_id": upload_id})
+    item = resp.get("Item")
+    if not isinstance(item, dict):
+        return response_body
+
+    status = str(item.get("status") or "").strip()
+    if status and status != "pending":
+        return response_body
+
+    bucket = str(item.get("bucket") or "").strip()
+    object_key = str(item.get("object_key") or item.get("filename") or "").strip()
+    content_type = str(item.get("content_type") or "").strip()
+    filename = str(item.get("filename") or "").strip()
+    if not bucket or not object_key or not content_type:
+        return response_body
+
+    upload_url = s3.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": bucket, "Key": object_key, "ContentType": content_type},
+        ExpiresIn=DEFAULT_PRESIGN_TTL_SECONDS,
+    )
+    refreshed_data = dict(data)
+    refreshed_data["uploadUrl"] = upload_url
+    if filename:
+        refreshed_data["curlExample"] = (
+            f"curl -X PUT --data-binary @\"{filename}\" -H \"Content-Type: {content_type}\" \"{upload_url}\""
+        )
+    refreshed = dict(response_body)
+    refreshed["data"] = refreshed_data
+    return refreshed
+
+
 def _idempotency_mark_failed(
     table: Any,
     *,
@@ -1409,6 +1449,7 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
                     raise RuntimeError("Stored settled response_body is invalid") from exc
                 if not isinstance(cached_body, dict):
                     raise RuntimeError("Stored settled response_body must be a JSON object")
+                cached_body = _refresh_cached_upload_url(cached_body)
                 return _response(200, cached_body)
             if status == "failed":
                 reason = str(existing_idempotency.get("error_reason") or "payment_settle_failed")

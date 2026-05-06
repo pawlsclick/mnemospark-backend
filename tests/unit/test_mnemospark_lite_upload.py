@@ -1293,7 +1293,7 @@ class PostUploadReliabilityTests(unittest.TestCase):
             mock.patch.object(app, "_upload_idempotency_table", return_value=idem),
             mock.patch.object(app.s3, "head_bucket", return_value={}),
             mock.patch.object(app, "_ensure_bucket_lifecycle_expiration", return_value=None),
-            mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload"),
+            mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload-initial"),
             mock.patch.object(app, "_uploads_table", return_value=uploads_table),
             mock.patch.object(app, "_payment_config", return_value={"payment_network": "eip155:8453"}),
             mock.patch.object(app, "_sign_bearer", return_value="bearer"),
@@ -1305,8 +1305,11 @@ class PostUploadReliabilityTests(unittest.TestCase):
         self.assertEqual(resp1["statusCode"], 200)
         body1 = json.loads(resp1["body"])
         self.assertEqual(body1["data"]["uploadId"], "upload123")
+        self.assertEqual(body1["data"]["uploadUrl"], "https://example.com/upload-initial")
+        upload_item = uploads_table.put_item.call_args.kwargs["Item"]
+        uploads_table.get_item.return_value = {"Item": upload_item}
 
-        # Second call with same nonce should return cached body and not re-settle.
+        # Second call with same nonce should refresh the presigned URL and not re-settle.
         with (
             mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
             mock.patch.object(app, "_payment_requirements", return_value=payment_requirements),
@@ -1314,6 +1317,8 @@ class PostUploadReliabilityTests(unittest.TestCase):
             mock.patch.object(app, "_verify_payment_locally", return_value=None),
             mock.patch.object(app, "_settle_payment_via_cdp", side_effect=AssertionError("should not re-settle")),
             mock.patch.object(app, "_upload_idempotency_table", return_value=idem),
+            mock.patch.object(app, "_uploads_table", return_value=uploads_table),
+            mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload-refreshed") as presign_mock,
             mock.patch.object(app.time, "time", return_value=100),
         ):
             resp2 = app.lambda_handler(event, None)
@@ -1321,6 +1326,17 @@ class PostUploadReliabilityTests(unittest.TestCase):
         self.assertEqual(resp2["statusCode"], 200)
         body2 = json.loads(resp2["body"])
         self.assertEqual(body2["data"]["uploadId"], body1["data"]["uploadId"])
+        self.assertEqual(body2["data"]["uploadUrl"], "https://example.com/upload-refreshed")
+        self.assertIn("https://example.com/upload-refreshed", body2["data"]["curlExample"])
+        presign_mock.assert_called_once_with(
+            "put_object",
+            Params={
+                "Bucket": upload_item["bucket"],
+                "Key": "upload123/artifact.bin",
+                "ContentType": "application/octet-stream",
+            },
+            ExpiresIn=app.DEFAULT_PRESIGN_TTL_SECONDS,
+        )
 
     def test_post_upload_duplicate_nonce_returns_202_while_lease_active(self):
         class FakeIdempotencyTable:
