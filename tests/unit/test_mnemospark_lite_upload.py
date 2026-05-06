@@ -377,6 +377,85 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
         payload = args[1]
         self.assertEqual(payload["paymentPayload"]["scheme"], "exact")
 
+    def test_complete_injects_network_into_payment_payload_before_settle(self):
+        token = "completion-token"
+        upload_id = "up_missing_network"
+        item = {
+            "upload_id": upload_id,
+            "completion_token_hash": app._hash_token(token),
+            "status": "pending",
+            "bucket": "mnemospark-lite-test",
+            "object_key": "up_missing_network/artifact.bin",
+            "filename": "artifact.bin",
+            "payer_wallet": "0x" + ("1" * 40),
+            "max_size": 1000,
+            "payment_payload": {"x402Version": 2, "scheme": "exact", "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
+            "payment_requirements": {"scheme": "exact", "network": "eip155:8453", "amount": "1000"},
+        }
+        event = {"body": json.dumps({"uploadId": upload_id, "completion_token": token})}
+        table = mock.Mock()
+        table.get_item.return_value = {"Item": item}
+        table.update_item.return_value = {}
+
+        cdp_mock = mock.Mock(return_value=app.CdpResponse(body={"success": True, "transaction": "0xtx"}, headers={}))
+        with (
+            mock.patch.object(app, "_uploads_table", return_value=table),
+            mock.patch.object(app.s3, "head_object", return_value={"ContentLength": 100}),
+            mock.patch.object(app, "_cdp_post", cdp_mock),
+            mock.patch.object(app, "_mint_ls_web_app_url", return_value={"app": "https://app.mnemospark.ai/mnemospark-lite/?code=abc"}),
+        ):
+            response = app._handle_post_complete(event)
+
+        self.assertEqual(response["statusCode"], 200)
+        args, _ = cdp_mock.call_args
+        self.assertEqual(args[0], "/v2/x402/settle")
+        payload = args[1]
+        self.assertEqual(payload["paymentPayload"]["network"], "eip155:8453")
+
+    def test_complete_injects_asset_payto_amount_into_payment_payload_before_settle(self):
+        token = "completion-token"
+        upload_id = "up_missing_fields"
+        item = {
+            "upload_id": upload_id,
+            "completion_token_hash": app._hash_token(token),
+            "status": "pending",
+            "bucket": "mnemospark-lite-test",
+            "object_key": "up_missing_fields/artifact.bin",
+            "filename": "artifact.bin",
+            "payer_wallet": "0x" + ("1" * 40),
+            "max_size": 1000,
+            # Missing asset/payTo/amount fields in payment_payload; server should backfill from requirements.
+            "payment_payload": {"x402Version": 2, "scheme": "exact", "network": "eip155:8453", "payload": {"authorization": {"from": "0x" + ("1" * 40)}}},
+            "payment_requirements": {
+                "scheme": "exact",
+                "network": "eip155:8453",
+                "asset": "0x" + ("a" * 40),
+                "payTo": "0x" + ("b" * 40),
+                "amount": "1300000",
+            },
+        }
+        event = {"body": json.dumps({"uploadId": upload_id, "completion_token": token})}
+        table = mock.Mock()
+        table.get_item.return_value = {"Item": item}
+        table.update_item.return_value = {}
+
+        cdp_mock = mock.Mock(return_value=app.CdpResponse(body={"success": True, "transaction": "0xtx"}, headers={}))
+        with (
+            mock.patch.object(app, "_uploads_table", return_value=table),
+            mock.patch.object(app.s3, "head_object", return_value={"ContentLength": 100}),
+            mock.patch.object(app, "_cdp_post", cdp_mock),
+            mock.patch.object(app, "_mint_ls_web_app_url", return_value={"app": "https://app.mnemospark.ai/mnemospark-lite/?code=abc"}),
+        ):
+            response = app._handle_post_complete(event)
+
+        self.assertEqual(response["statusCode"], 200)
+        args, _ = cdp_mock.call_args
+        self.assertEqual(args[0], "/v2/x402/settle")
+        payload = args[1]
+        self.assertEqual(payload["paymentPayload"]["asset"], "0x" + ("a" * 40))
+        self.assertEqual(payload["paymentPayload"]["payTo"], "0x" + ("b" * 40))
+        self.assertEqual(payload["paymentPayload"]["amount"], "1300000")
+
 
 class LambdaHandlerErrorMappingTests(unittest.TestCase):
     def test_bearer_auth_failures_return_403(self):
