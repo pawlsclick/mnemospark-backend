@@ -135,6 +135,12 @@ def _coerce_int(value: Any, field: str) -> int:
         raise BadRequestError(f"{field} must be an integer")
     if isinstance(value, int):
         return value
+    if isinstance(value, Decimal):
+        try:
+            if value == value.to_integral_value():
+                return int(value)
+        except Exception:
+            pass
     if isinstance(value, str):
         stripped = value.strip()
         if stripped.isascii() and stripped.isdecimal():
@@ -749,22 +755,37 @@ def _idempotency_claim_or_get_existing(
     raise ConflictError("Settlement is already in progress for this authorization; please retry")
 
 
-def _idempotency_try_acquire_lease(table: Any, *, idempotency_key: str, now: int, cooldown_seconds: int = 0) -> bool:
+def _idempotency_try_acquire_lease(
+    table: Any,
+    *,
+    idempotency_key: str,
+    now: int,
+    cooldown_seconds: int = 0,
+    require_expired_lease: bool = True,
+) -> bool:
     lease_until = now + (cooldown_seconds or LITE_SETTLE_LEASE_SECONDS)
+    condition = "attribute_exists(idempotency_key) AND (#s = :in_progress OR #s = :pending)"
+    expression_values = {
+        ":l": lease_until,
+        ":u": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+        ":e": now + LITE_SETTLE_IDEMPOTENCY_TTL_SECONDS,
+        ":in_progress": "in_progress",
+        ":pending": "pending",
+    }
+    if require_expired_lease:
+        condition = (
+            "attribute_exists(idempotency_key) AND "
+            "(attribute_not_exists(lease_until) OR lease_until <= :now) AND "
+            "(#s = :in_progress OR #s = :pending)"
+        )
+        expression_values[":now"] = now
     try:
         table.update_item(
             Key={"idempotency_key": idempotency_key},
             UpdateExpression="SET lease_until=:l, updated_at=:u, expires_at=:e",
-            ConditionExpression="attribute_exists(idempotency_key) AND (attribute_not_exists(lease_until) OR lease_until <= :now) AND (#s = :in_progress OR #s = :pending)",
+            ConditionExpression=condition,
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":l": lease_until,
-                ":u": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
-                ":e": now + LITE_SETTLE_IDEMPOTENCY_TTL_SECONDS,
-                ":now": now,
-                ":in_progress": "in_progress",
-                ":pending": "pending",
-            },
+            ExpressionAttributeValues=expression_values,
         )
         return True
     except ClientError as exc:
@@ -1343,16 +1364,18 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
     payload_obj = payload_obj if isinstance(payload_obj, dict) else {}
     payer_raw = ""
     auth = payload_obj.get("authorization")
+    permit2_auth = payload_obj.get("permit2Authorization")
     if isinstance(auth, dict):
         payer_raw = str(auth.get("from") or "")
     if not payer_raw:
-        permit2_auth = payload_obj.get("permit2Authorization")
         if isinstance(permit2_auth, dict):
             payer_raw = str(permit2_auth.get("from") or "")
     payer_wallet = normalize_wallet_address(payer_raw, "payer_wallet")
     nonce_raw = ""
     if isinstance(auth, dict):
         nonce_raw = str(auth.get("nonce") or "")
+    if not nonce_raw and isinstance(permit2_auth, dict):
+        nonce_raw = str(permit2_auth.get("nonce") or "")
     if not nonce_raw:
         raise BadRequestError("payment authorization nonce is required")
 
@@ -1420,8 +1443,9 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
             _idempotency_try_acquire_lease(
                 idempotency_table,
                 idempotency_key=idempotency_key,
-                now=now_epoch,
+                now=int(time.time()),
                 cooldown_seconds=LITE_SETTLE_TIMEOUT_COOLDOWN_SECONDS,
+                require_expired_lease=False,
             )
         return _response(
             202,
