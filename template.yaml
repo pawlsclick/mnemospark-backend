@@ -724,6 +724,7 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
                   - dynamodb:DeleteItem
+                  - dynamodb:UpdateItem
                 Resource: !GetAtt UploadIdempotencyTable.Arn
         - PolicyName: upload-dynamodb-payment-ledger-read
           PolicyDocument:

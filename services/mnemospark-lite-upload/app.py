@@ -1430,7 +1430,20 @@ def _handle_post_upload(event: dict[str, Any]) -> dict[str, Any]:
 
     # Verify locally first, then settle through the CDP facilitator so Bazaar sees
     # a real settled x402 payment on the paid /upload call.
-    _verify_payment_locally(payment_payload=payment_payload, requirement=requirement)
+    try:
+        _verify_payment_locally(payment_payload=payment_payload, requirement=requirement)
+    except PaymentInvalidError as exc:
+        if idempotency_table is not None and idempotency_key is not None and request_hash is not None:
+            _idempotency_mark_failed(
+                idempotency_table,
+                idempotency_key=idempotency_key,
+                now=now_epoch,
+                error_reason="payment_invalid",
+                error_message=str(exc),
+                tx_hash=None,
+                request_hash=request_hash,
+            )
+        raise
     try:
         settlement = _settle_payment_via_cdp(
             payment_payload=payment_payload,
