@@ -1389,19 +1389,25 @@ def _cdp_post(path: str, payload: dict[str, Any], *, timeout_seconds: float = 10
         # This is critical for diagnosing facilitator schema validation errors.
         try:
             request_payload = payload.get("paymentPayload") if isinstance(payload, dict) else None
+            request_requirements = payload.get("paymentRequirements") if isinstance(payload, dict) else None
             safe_payload = (
                 _redact_payment_payload_for_logs(request_payload)
                 if isinstance(request_payload, dict)
                 else {"type": type(request_payload).__name__}
             )
+            safe_requirements = (
+                request_requirements if isinstance(request_requirements, dict) else {"type": type(request_requirements).__name__}
+            )
         except Exception:
             safe_payload = {"type": "unknown"}
+            safe_requirements = {"type": "unknown"}
         logger.warning(
-            "CDP http_error status=%s path=%s response_body=%s request_payment_payload=%s",
+            "CDP http_error status=%s path=%s response_body=%s request_payment_payload=%s request_payment_requirements=%s",
             exc.code,
             path,
             (body or "")[:4000],
             safe_payload,
+            safe_requirements,
         )
         if 400 <= exc.code < 500:
             raise BadRequestError(f"CDP facilitator error ({exc.code}): {body}") from exc
