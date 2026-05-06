@@ -447,7 +447,7 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
         args, _ = cdp_mock.call_args
         self.assertEqual(args[0], "/v2/x402/settle")
         payload = args[1]
-        self.assertEqual(payload["paymentPayload"]["scheme"], "exact")
+        self.assertEqual(payload["paymentPayload"]["accepted"]["scheme"], "exact")
 
     def test_complete_injects_network_into_payment_payload_before_settle(self):
         token = "completion-token"
@@ -487,21 +487,16 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
         args, _ = cdp_mock.call_args
         self.assertEqual(args[0], "/v2/x402/settle")
         payload = args[1]
-        self.assertEqual(payload["paymentPayload"]["network"], "base")
+        self.assertEqual(payload["paymentPayload"]["accepted"]["network"], "eip155:8453")
         self.assertEqual(payload["paymentRequirements"]["network"], "eip155:8453")
 
-    def test_settle_maps_base_sepolia_caip2_network_for_cdp(self):
+    def test_settle_preserves_caip2_network_in_accepted_for_cdp(self):
         cdp_mock = mock.Mock(return_value=app.CdpResponse(body={"success": True, "transaction": "0xtx"}, headers={}))
 
         with mock.patch.object(app, "_cdp_post_with_deadline", cdp_mock):
             app._settle_payment_via_cdp(
                 payment_payload={
                     "x402Version": 2,
-                    "scheme": "exact",
-                    "network": "eip155:84532",
-                    "asset": "0x" + ("a" * 40),
-                    "payTo": "0x" + ("b" * 40),
-                    "amount": "1000",
                     "resource": "https://api.example.com/api/mnemospark-lite/upload",
                     "payload": {"authorization": {"from": "0x" + ("1" * 40), "nonce": "n"}, "signature": "0x" + ("1" * 130)},
                 },
@@ -517,9 +512,9 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
 
         args, kwargs = cdp_mock.call_args
         self.assertEqual(args[0], "/v2/x402/settle")
-        payload = args[1]
-        self.assertEqual(payload["paymentPayload"]["network"], "base-sepolia")
-        self.assertEqual(payload["paymentRequirements"]["network"], "eip155:84532")
+        settle_body = args[1]
+        self.assertEqual(settle_body["paymentPayload"]["accepted"]["network"], "eip155:84532")
+        self.assertEqual(settle_body["paymentRequirements"]["network"], "eip155:84532")
         self.assertEqual(kwargs["timeout_seconds"], 1.5)
 
     def test_complete_injects_asset_payto_amount_into_payment_payload_before_settle(self):
@@ -568,9 +563,9 @@ class CompleteUploadTokenAndStatusTests(unittest.TestCase):
         args, _ = cdp_mock.call_args
         self.assertEqual(args[0], "/v2/x402/settle")
         payload = args[1]
-        self.assertEqual(payload["paymentPayload"]["asset"], "0x" + ("a" * 40))
-        self.assertEqual(payload["paymentPayload"]["payTo"], "0x" + ("b" * 40))
-        self.assertEqual(payload["paymentPayload"]["amount"], "1300000")
+        self.assertEqual(payload["paymentPayload"]["accepted"]["asset"], "0x" + ("a" * 40))
+        self.assertEqual(payload["paymentPayload"]["accepted"]["payTo"], "0x" + ("b" * 40))
+        self.assertEqual(payload["paymentPayload"]["accepted"]["amount"], "1300000")
 
     def test_complete_coerces_string_resource_to_object_before_settle(self):
         token = "completion-token"
