@@ -1385,6 +1385,24 @@ def _cdp_post(path: str, payload: dict[str, Any], *, timeout_seconds: float = 10
             )
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
+        # Log raw CDP error bodies (truncated). Do NOT log payment signatures.
+        # This is critical for diagnosing facilitator schema validation errors.
+        try:
+            request_payload = payload.get("paymentPayload") if isinstance(payload, dict) else None
+            safe_payload = (
+                _redact_payment_payload_for_logs(request_payload)
+                if isinstance(request_payload, dict)
+                else {"type": type(request_payload).__name__}
+            )
+        except Exception:
+            safe_payload = {"type": "unknown"}
+        logger.warning(
+            "CDP http_error status=%s path=%s response_body=%s request_payment_payload=%s",
+            exc.code,
+            path,
+            (body or "")[:4000],
+            safe_payload,
+        )
         if 400 <= exc.code < 500:
             raise BadRequestError(f"CDP facilitator error ({exc.code}): {body}") from exc
         raise RuntimeError(f"CDP facilitator error ({exc.code}): {body}") from exc
