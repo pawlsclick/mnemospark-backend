@@ -1044,13 +1044,16 @@ def _payment_requirements() -> dict[str, Any]:
     micro_usdc, usd_display = _get_cached_lite_price_for_tier(tier=DEFAULT_LITE_TIER_FOR_DISCOVERY, region=DEFAULT_REGION)
     return {
         "x402Version": 2,
-        "resource": resource,
-        "description": (
-            "mnemospark-lite paid file upload API for wallet-scoped storage. "
-            "Returns a presigned S3 upload URL, completion token, and bearer for listing "
-            "and downloading uploaded files. Files expire automatically after 30 days."
-        ),
-        "mimeType": "application/json",
+        # x402 schema expects ResourceInfo object (not a bare URL string).
+        "resource": {
+            "url": resource,
+            "mimeType": "application/json",
+            "description": (
+                "mnemospark-lite paid file upload API for wallet-scoped storage. "
+                "Returns a presigned S3 upload URL, completion token, and bearer for listing "
+                "and downloading uploaded files. Files expire automatically after 30 days."
+            ),
+        },
         "accepts": [
             {
                 "scheme": "exact",
@@ -1075,9 +1078,19 @@ def _bazaar_payment_required_body(requirements: dict[str, Any]) -> dict[str, Any
     - extensions.bazaar (for cataloging)
     See: https://raw.githubusercontent.com/x402-foundation/x402/refs/heads/main/specs/extensions/bazaar.md
     """
-    resource_url = str(requirements.get("resource") or "").strip()
-    description = str(requirements.get("description") or "").strip()
-    mime_type = str(requirements.get("mimeType") or "").strip() or "application/json"
+    resource_url = ""
+    description = ""
+    mime_type = "application/json"
+    resource = requirements.get("resource")
+    if isinstance(resource, dict):
+        resource_url = str(resource.get("url") or "").strip()
+        description = str(resource.get("description") or "").strip()
+        mime_type = str(resource.get("mimeType") or "").strip() or mime_type
+    else:
+        # Back-compat for legacy string resource payloads.
+        resource_url = str(resource or "").strip()
+        description = str(requirements.get("description") or "").strip()
+        mime_type = str(requirements.get("mimeType") or "").strip() or mime_type
     body: dict[str, Any] = {
         "x402Version": int(requirements.get("x402Version") or 2),
         "error": "Payment required",
