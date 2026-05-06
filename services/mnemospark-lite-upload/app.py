@@ -1280,6 +1280,11 @@ def _settle_payment_via_cdp(
         scheme = str(payment_requirements.get("scheme") or "").strip()
         if scheme:
             normalized_payment_payload["scheme"] = scheme
+    # Some clients omit `network` in the payment payload; CDP settlement expects it.
+    if not str(normalized_payment_payload.get("network") or "").strip():
+        network = str(payment_requirements.get("network") or "").strip()
+        if network:
+            normalized_payment_payload["network"] = network
     settle_resp = _cdp_post_with_deadline(
         "/v2/x402/settle",
         {
