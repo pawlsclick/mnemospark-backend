@@ -1216,6 +1216,20 @@ def _normalize_payment_payload_from_client(payment_payload: dict[str, Any]) -> d
         if k in src:
             out[k] = src[k]
 
+    # x402 v2 payloads include `accepted` (payment requirements) nested inside the payment payload.
+    # Preserve it (normalized) when present, but ignore non-object values.
+    accepted = src.get("accepted")
+    if isinstance(accepted, dict):
+        accepted = dict(accepted)
+        move_alias(accepted, "payTo", "pay_to")
+        move_alias(accepted, "maxTimeoutSeconds", "max_timeout_seconds")
+        allowed_accepted: dict[str, Any] = {}
+        for ak in ("scheme", "network", "asset", "amount", "payTo", "maxTimeoutSeconds", "extra"):
+            if ak in accepted:
+                allowed_accepted[ak] = accepted[ak]
+        if allowed_accepted:
+            out["accepted"] = allowed_accepted
+
     # Resource can be a string URL or a ResourceInfo object.
     resource = src.get("resource")
     if isinstance(resource, str):
@@ -1440,14 +1454,11 @@ def _cdp_post_with_deadline(path: str, payload: dict[str, Any], *, timeout_secon
 def _settle_payment_via_cdp(
     *, payment_payload: dict[str, Any], payment_requirements: dict[str, Any], timeout_seconds: float = 8.0
 ) -> SettlementResult:
+    # CDP settle expects x402 v2 structures:
+    # - paymentPayload: x402V2PaymentPayload (requires `accepted`, not top-level scheme/network/amount)
+    # - paymentRequirements: x402V2PaymentRequirements (CAIP-2 network)
     normalized_payment_payload = dict(payment_payload)
     normalized_payment_requirements = dict(payment_requirements)
-    # Some clients omit top-level payment fields; CDP settlement expects them.
-    for field in ("scheme", "network", "asset", "payTo", "amount"):
-        if not str(normalized_payment_payload.get(field) or "").strip():
-            value = str(normalized_payment_requirements.get(field) or "").strip()
-            if value:
-                normalized_payment_payload[field] = value
     # CDP expects ResourceInfo objects for `resource`, but some clients send a URL string.
     payload_resource = normalized_payment_payload.get("resource")
     if isinstance(payload_resource, str):
@@ -1459,28 +1470,45 @@ def _settle_payment_via_cdp(
         url = requirements_resource.strip()
         if url:
             normalized_payment_requirements["resource"] = {"url": url}
-    # CDP facilitator expects `paymentPayload.network` as an enum (e.g. "base"),
-    # but `paymentRequirements.network` is CAIP-2 (e.g. "eip155:8453") and is
-    # used for signature/domain validation.
-    requirements_network_caip2 = str(normalized_payment_requirements.get("network") or "").strip()
-    if not requirements_network_caip2:
+    # Ensure accepted requirements exist and are CAIP-2.
+    accepted = dict(normalized_payment_requirements)
+    accepted_network_caip2 = str(accepted.get("network") or "").strip()
+    if not accepted_network_caip2:
         raise BadRequestError("payment network is required")
-    normalized_payment_payload["network"] = _cdp_network_name(requirements_network_caip2)
+
+    # Build a canonical x402 v2 payment payload for CDP.
+    cdp_payment_payload: dict[str, Any] = {
+        "x402Version": int(normalized_payment_payload.get("x402Version") or 2),
+        "accepted": accepted,
+        "payload": normalized_payment_payload.get("payload"),
+    }
+    if "resource" in normalized_payment_payload:
+        cdp_payment_payload["resource"] = normalized_payment_payload.get("resource")
+    if "extensions" in normalized_payment_payload:
+        cdp_payment_payload["extensions"] = normalized_payment_payload.get("extensions")
+
+    # Log the network values CDP will see.
     logger.info(
-        "CDP settle network payload=%s requirements=%s",
-        str(normalized_payment_payload.get("network") or ""),
-        str(normalized_payment_requirements.get("network") or ""),
+        "CDP settle network accepted=%s",
+        str(accepted_network_caip2),
+    )
+    logger.info(
+        "CDP settle request_shape paymentPayload_keys=%s resource_type=%s payload_keys=%s",
+        sorted(list(cdp_payment_payload.keys())),
+        type(cdp_payment_payload.get("resource")).__name__,
+        (
+            sorted(list((cdp_payment_payload.get("payload") or {}).keys()))
+            if isinstance(cdp_payment_payload.get("payload"), dict)
+            else None
+        ),
     )
     # Fail fast if the payload is obviously invalid, rather than learning via CDP 4xx.
-    required_fields = ("x402Version", "scheme", "network", "asset", "payTo", "amount", "resource", "payload")
-    missing = [f for f in required_fields if not (str(normalized_payment_payload.get(f) or "").strip() if f != "payload" else True)]
-    # payload and resource are structured: validate separately.
-    if missing:
-        raise BadRequestError(f"paymentPayload is missing required fields: {', '.join(missing)}")
-    resource = normalized_payment_payload.get("resource")
-    if not (isinstance(resource, dict) and str(resource.get("url") or "").strip()):
-        raise BadRequestError("paymentPayload.resource.url is required")
-    payload_obj = normalized_payment_payload.get("payload")
+    if not isinstance(accepted, dict) or not accepted:
+        raise BadRequestError("paymentRequirements must be an object")
+    for f in ("scheme", "network", "asset", "payTo", "amount"):
+        if not str(accepted.get(f) or "").strip():
+            raise BadRequestError(f"paymentRequirements.{f} is required")
+    payload_obj = cdp_payment_payload.get("payload")
     if not isinstance(payload_obj, dict):
         raise BadRequestError("paymentPayload.payload must be an object")
     if "signature" not in payload_obj:
@@ -1492,25 +1520,14 @@ def _settle_payment_via_cdp(
         raise BadRequestError("paymentPayload.payload.authorization.from is required")
     if not str(auth_obj.get("nonce") or "").strip():
         raise BadRequestError("paymentPayload.payload.authorization.nonce is required")
-
-    logger.info(
-        "CDP settle request_shape paymentPayload_keys=%s resource_type=%s payload_keys=%s",
-        sorted(list(normalized_payment_payload.keys())),
-        type(normalized_payment_payload.get("resource")).__name__,
-        (
-            sorted(list((normalized_payment_payload.get("payload") or {}).keys()))
-            if isinstance(normalized_payment_payload.get("payload"), dict)
-            else None
-        ),
-    )
-    logger.debug("CDP settle paymentPayload_redacted=%s", _redact_payment_payload_for_logs(normalized_payment_payload))
+    logger.debug("CDP settle paymentPayload_redacted=%s", _redact_payment_payload_for_logs(cdp_payment_payload))
     try:
         settle_resp = _cdp_post_with_deadline(
             "/v2/x402/settle",
             {
-                "x402Version": int(normalized_payment_payload.get("x402Version") or 2),
-                "paymentPayload": _strip_nulls(normalized_payment_payload),
-                "paymentRequirements": normalized_payment_requirements,
+                "x402Version": int(cdp_payment_payload.get("x402Version") or 2),
+                "paymentPayload": _strip_nulls(cdp_payment_payload),
+                "paymentRequirements": accepted,
             },
             timeout_seconds=timeout_seconds,
         )
