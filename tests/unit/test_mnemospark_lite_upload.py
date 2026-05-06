@@ -1775,9 +1775,14 @@ class PaymentRequiredDiscoveryPayloadTests(unittest.TestCase):
         encoded = headers["PAYMENT-REQUIRED"]
         decoded = json.loads(app.base64.b64decode(encoded).decode("utf-8"))
         self.assertEqual(decoded["x402Version"], 2)
-        self.assertEqual(decoded["resource"], "https://api.example.com/api/mnemospark-lite/upload")
-        self.assertEqual(decoded["mimeType"], "application/json")
-        self.assertIn("description", decoded)
+        self.assertEqual(
+            decoded["resource"],
+            {
+                "url": "https://api.example.com/api/mnemospark-lite/upload",
+                "mimeType": "application/json",
+                "description": mock.ANY,
+            },
+        )
         self.assertIn("accepts", decoded)
         self.assertEqual(decoded["accepts"][0]["scheme"], "exact")
         self.assertIn("extensions", decoded)
