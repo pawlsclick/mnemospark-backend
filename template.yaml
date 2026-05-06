@@ -724,6 +724,7 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
                   - dynamodb:DeleteItem
+                  - dynamodb:UpdateItem
                 Resource: !GetAtt UploadIdempotencyTable.Arn
         - PolicyName: upload-dynamodb-payment-ledger-read
           PolicyDocument:
@@ -2101,6 +2102,7 @@ Resources:
           MNEMOSPARK_LITE_UPLOADS_TABLE_NAME: !Ref MnemosparkLiteUploadRegistryTable
           MNEMOSPARK_LITE_SHARE_LINKS_TABLE_NAME: !Ref MnemosparkLiteShareLinksTable
           MNEMOSPARK_LITE_BEARER_SECRET: !Ref MnemosparkLiteBearerSecret
+          UPLOAD_IDEMPOTENCY_TABLE_NAME: !Ref UploadIdempotencyTable
           MNEMOSPARK_LITE_PUBLIC_BASE_URL: !Ref MnemosparkLitePublicBaseUrl
           PRICE_STORAGE_MARKUP: !Ref PriceStorageMarkup
           PRICE_STORAGE_FLOOR: !Ref PriceStorageFloor

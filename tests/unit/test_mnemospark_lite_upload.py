@@ -466,6 +466,7 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
                     "payload": {
                         "authorization": {
                             "from": "0x" + ("1" * 40),
+                            "nonce": "0x" + ("1" * 64),
                         },
                         "signature": "0x" + ("2" * 130),
                     },
@@ -483,6 +484,67 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
         body = json.loads(response["body"])
         self.assertEqual(body["error"], "payment_invalid")
         self.assertIn("payment signature does not recover payer wallet", body["message"])
+
+    def test_upload_accepts_nonce_from_permit2_authorization(self):
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/upload",
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+
+        with (
+            mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
+            mock.patch.object(
+                app,
+                "_payment_requirements",
+                return_value={
+                    "accepts": [
+                        {
+                            "scheme": "exact",
+                            "network": "eip155:8453",
+                            "asset": "0x" + ("a" * 40),
+                            "payTo": "0x" + ("b" * 40),
+                            "amount": "20000",
+                            "maxTimeoutSeconds": 3600,
+                            "extra": {"name": "USD Coin", "version": "2"},
+                        }
+                    ]
+                },
+            ),
+            mock.patch.object(
+                app,
+                "_decode_payment_payload",
+                return_value={
+                    "x402Version": 2,
+                    "payload": {
+                        "permit2Authorization": {
+                            "from": "0x" + ("1" * 40),
+                            "nonce": "0x" + ("1" * 64),
+                        },
+                        "signature": "0x" + ("2" * 130),
+                    },
+                },
+            ),
+            mock.patch.object(app, "_upload_idempotency_table", return_value=None),
+            mock.patch.object(
+                app,
+                "_verify_payment_locally",
+                side_effect=app.PaymentInvalidError("permit2 local verification skipped"),
+            ),
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 402)
+        body = json.loads(response["body"])
+        self.assertEqual(body["error"], "payment_invalid")
 
     def test_paid_upload_returns_202_when_settlement_pending(self):
         event = {
@@ -523,7 +585,10 @@ class LambdaHandlerErrorMappingTests(unittest.TestCase):
                 "_decode_payment_payload",
                 return_value={
                     "x402Version": 2,
-                    "payload": {"authorization": {"from": "0x" + ("1" * 40)}, "signature": "0x" + ("2" * 130)},
+                    "payload": {
+                        "authorization": {"from": "0x" + ("1" * 40), "nonce": "0x" + ("1" * 64)},
+                        "signature": "0x" + ("2" * 130),
+                    },
                 },
             ),
             mock.patch.object(app, "_verify_payment_locally", return_value=None),
@@ -817,6 +882,101 @@ class PostUploadReliabilityTests(unittest.TestCase):
     def test_strip_nulls_removes_none_values(self):
         self.assertEqual(app._strip_nulls({"a": None, "b": {"c": None, "d": 1}}), {"b": {"d": 1}})
 
+    def test_idempotency_expiry_accepts_decimal_expires_at(self):
+        self.assertFalse(app._idempotency_is_expired({"expires_at": Decimal("1000")}, now=999))
+        self.assertTrue(app._idempotency_is_expired({"expires_at": Decimal("1000")}, now=1000))
+
+    def test_settlement_pending_extends_active_idempotency_lease(self):
+        class FakeIdempotencyTable:
+            def __init__(self):
+                self.item = None
+
+            def put_item(self, Item, ConditionExpression=None, ExpressionAttributeValues=None):
+                if self.item is not None:
+                    raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+                self.item = dict(Item)
+                return {}
+
+            def update_item(
+                self,
+                Key,
+                UpdateExpression=None,
+                ConditionExpression=None,
+                ExpressionAttributeNames=None,
+                ExpressionAttributeValues=None,
+            ):
+                if self.item is None or Key.get("idempotency_key") != self.item.get("idempotency_key"):
+                    raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+                lease_until = int(self.item.get("lease_until") or 0)
+                status = str(self.item.get("status") or "")
+                if "lease_until <= :now" in str(ConditionExpression):
+                    now = int(ExpressionAttributeValues.get(":now"))
+                    if lease_until > now:
+                        raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+                if status not in {"in_progress", "pending"}:
+                    raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+                self.item["lease_until"] = int(ExpressionAttributeValues.get(":l"))
+                self.item["updated_at"] = ExpressionAttributeValues.get(":u")
+                self.item["expires_at"] = int(ExpressionAttributeValues.get(":e"))
+                return {}
+
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/upload",
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+        idem = FakeIdempotencyTable()
+        payment_requirements = {
+            "accepts": [
+                {
+                    "scheme": "exact",
+                    "network": "eip155:8453",
+                    "asset": "0x" + ("a" * 40),
+                    "payTo": "0x" + ("b" * 40),
+                    "amount": "20000",
+                    "maxTimeoutSeconds": 3600,
+                    "extra": {"name": "USD Coin", "version": "2"},
+                }
+            ]
+        }
+        payment_payload = {
+            "x402Version": 2,
+            "payload": {
+                "authorization": {
+                    "from": "0x" + ("1" * 40),
+                    "to": "0x" + ("b" * 40),
+                    "value": "20000",
+                    "validAfter": "1716150000",
+                    "validBefore": "2716150000",
+                    "nonce": "0x" + ("1" * 64),
+                },
+                "signature": "0x" + ("2" * 130),
+            },
+        }
+
+        with (
+            mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
+            mock.patch.object(app, "_payment_requirements", return_value=payment_requirements),
+            mock.patch.object(app, "_decode_payment_payload", return_value=payment_payload),
+            mock.patch.object(app, "_verify_payment_locally", return_value=None),
+            mock.patch.object(app, "_settle_payment_via_cdp", side_effect=app.SettlementPendingError("timeout")),
+            mock.patch.object(app, "_upload_idempotency_table", return_value=idem),
+            mock.patch.object(app.time, "time", side_effect=[100, 108, 108, 108]),
+        ):
+            response = app.lambda_handler(event, None)
+
+        self.assertEqual(response["statusCode"], 202)
+        self.assertIsNotNone(idem.item)
+        self.assertEqual(idem.item["lease_until"], 108 + app.LITE_SETTLE_TIMEOUT_COOLDOWN_SECONDS)
+
     def test_post_upload_continues_when_lifecycle_ensure_fails(self):
         event = {
             "body": json.dumps(
@@ -1024,6 +1184,306 @@ class PostUploadReliabilityTests(unittest.TestCase):
         body = json.loads(response["body"])
         self.assertEqual(body["metadata"]["payment"]["transactionHash"], "0xsettled")
         self.assertEqual(body["metadata"]["payment"]["status"], "settled")
+
+    def test_post_upload_is_idempotent_for_duplicate_authorization_nonce_after_settle(self):
+        class FakeIdempotencyTable:
+            def __init__(self):
+                self.items = {}
+
+            def get_item(self, Key, ConsistentRead=False):
+                key = Key.get("idempotency_key")
+                if key in self.items:
+                    return {"Item": dict(self.items[key])}
+                return {}
+
+            def put_item(self, Item, ConditionExpression=None, ExpressionAttributeValues=None):
+                key = Item.get("idempotency_key")
+                if ConditionExpression and "attribute_not_exists" in ConditionExpression and key in self.items:
+                    raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+                self.items[key] = dict(Item)
+                return {}
+
+            def delete_item(self, Key, ConditionExpression=None, ExpressionAttributeValues=None):
+                key = Key.get("idempotency_key")
+                if ConditionExpression and key in self.items:
+                    # Only delete if expires_at <= now
+                    now = int(ExpressionAttributeValues.get(":now"))
+                    exp = int(self.items[key].get("expires_at") or 0)
+                    if exp > now:
+                        raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "DeleteItem")
+                self.items.pop(key, None)
+                return {}
+
+            def update_item(
+                self,
+                Key,
+                UpdateExpression=None,
+                ConditionExpression=None,
+                ExpressionAttributeNames=None,
+                ExpressionAttributeValues=None,
+            ):
+                key = Key.get("idempotency_key")
+                if key not in self.items:
+                    raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+                now = int(ExpressionAttributeValues.get(":now"))
+                lease_until = int(self.items[key].get("lease_until") or 0)
+                status = str(self.items[key].get("status") or "")
+                if lease_until > now or status not in {"in_progress", "pending"}:
+                    raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+                self.items[key]["lease_until"] = int(ExpressionAttributeValues.get(":l"))
+                self.items[key]["updated_at"] = ExpressionAttributeValues.get(":u")
+                self.items[key]["expires_at"] = int(ExpressionAttributeValues.get(":e"))
+                return {}
+
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/upload",
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+        uploads_table = mock.Mock()
+        idem = FakeIdempotencyTable()
+
+        payment_requirements = {
+            "accepts": [
+                {
+                    "scheme": "exact",
+                    "network": "eip155:8453",
+                    "asset": "0x" + ("a" * 40),
+                    "payTo": "0x" + ("b" * 40),
+                    "amount": "20000",
+                    "maxTimeoutSeconds": 3600,
+                    "extra": {"name": "USD Coin", "version": "2"},
+                }
+            ]
+        }
+        payment_payload = {
+            "x402Version": 2,
+            "payload": {
+                "authorization": {
+                    "from": "0x" + ("1" * 40),
+                    "to": "0x" + ("b" * 40),
+                    "value": "20000",
+                    "validAfter": "1716150000",
+                    "validBefore": "2716150000",
+                    "nonce": "0x" + ("1" * 64),
+                },
+                "signature": "0x" + ("2" * 130),
+            },
+        }
+
+        # First call settles and writes cached response.
+        with (
+            mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
+            mock.patch.object(app, "_payment_requirements", return_value=payment_requirements),
+            mock.patch.object(app, "_decode_payment_payload", return_value=payment_payload),
+            mock.patch.object(app, "_verify_payment_locally", return_value=None),
+            mock.patch.object(
+                app,
+                "_settle_payment_via_cdp",
+                return_value=app.SettlementResult(transaction_hash="0xsettled", extension_responses_raw=None, extension_responses=None),
+            ),
+            mock.patch.object(app, "_upload_idempotency_table", return_value=idem),
+            mock.patch.object(app.s3, "head_bucket", return_value={}),
+            mock.patch.object(app, "_ensure_bucket_lifecycle_expiration", return_value=None),
+            mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload-initial"),
+            mock.patch.object(app, "_uploads_table", return_value=uploads_table),
+            mock.patch.object(app, "_payment_config", return_value={"payment_network": "eip155:8453"}),
+            mock.patch.object(app, "_sign_bearer", return_value="bearer"),
+            mock.patch.object(app.secrets, "token_urlsafe", side_effect=["upload123", "completion123"]),
+            mock.patch.object(app.time, "time", return_value=100),
+        ):
+            resp1 = app.lambda_handler(event, None)
+
+        self.assertEqual(resp1["statusCode"], 200)
+        body1 = json.loads(resp1["body"])
+        self.assertEqual(body1["data"]["uploadId"], "upload123")
+        self.assertEqual(body1["data"]["uploadUrl"], "https://example.com/upload-initial")
+        upload_item = uploads_table.put_item.call_args.kwargs["Item"]
+        uploads_table.get_item.return_value = {"Item": upload_item}
+
+        # Second call with same nonce should refresh the presigned URL and not re-settle.
+        with (
+            mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
+            mock.patch.object(app, "_payment_requirements", return_value=payment_requirements),
+            mock.patch.object(app, "_decode_payment_payload", return_value=payment_payload),
+            mock.patch.object(app, "_verify_payment_locally", return_value=None),
+            mock.patch.object(app, "_settle_payment_via_cdp", side_effect=AssertionError("should not re-settle")),
+            mock.patch.object(app, "_upload_idempotency_table", return_value=idem),
+            mock.patch.object(app, "_uploads_table", return_value=uploads_table),
+            mock.patch.object(app.s3, "generate_presigned_url", return_value="https://example.com/upload-refreshed") as presign_mock,
+            mock.patch.object(app.time, "time", return_value=100),
+        ):
+            resp2 = app.lambda_handler(event, None)
+
+        self.assertEqual(resp2["statusCode"], 200)
+        body2 = json.loads(resp2["body"])
+        self.assertEqual(body2["data"]["uploadId"], body1["data"]["uploadId"])
+        self.assertEqual(body2["data"]["uploadUrl"], "https://example.com/upload-refreshed")
+        self.assertIn("https://example.com/upload-refreshed", body2["data"]["curlExample"])
+        presign_mock.assert_called_once_with(
+            "put_object",
+            Params={
+                "Bucket": upload_item["bucket"],
+                "Key": "upload123/artifact.bin",
+                "ContentType": "application/octet-stream",
+            },
+            ExpiresIn=app.DEFAULT_PRESIGN_TTL_SECONDS,
+        )
+
+    def test_post_upload_duplicate_nonce_returns_202_while_lease_active(self):
+        class FakeIdempotencyTable:
+            def __init__(self, item):
+                self.item = dict(item)
+
+            def get_item(self, Key, ConsistentRead=False):
+                if Key.get("idempotency_key") == self.item.get("idempotency_key"):
+                    return {"Item": dict(self.item)}
+                return {}
+
+            def put_item(self, Item, ConditionExpression=None, ExpressionAttributeValues=None):
+                raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/upload",
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+        payment_requirements = {
+            "accepts": [
+                {
+                    "scheme": "exact",
+                    "network": "eip155:8453",
+                    "asset": "0x" + ("a" * 40),
+                    "payTo": "0x" + ("b" * 40),
+                    "amount": "20000",
+                    "maxTimeoutSeconds": 3600,
+                    "extra": {"name": "USD Coin", "version": "2"},
+                }
+            ]
+        }
+        payment_payload = {
+            "x402Version": 2,
+            "payload": {
+                "authorization": {"from": "0x" + ("1" * 40), "nonce": "0x" + ("1" * 64)},
+                "signature": "0x" + ("2" * 130),
+            },
+        }
+        requirement = payment_requirements["accepts"][0]
+        key = app._lite_settle_idempotency_key(requirement=requirement, payer_wallet="0x" + ("1" * 40), nonce="0x" + ("1" * 64))
+        idem = FakeIdempotencyTable(
+            {
+                "idempotency_key": key,
+                "status": "in_progress",
+                # Empty request_hash disables mismatch rejection for this test.
+                "request_hash": "",
+                "lease_until": 9999,
+                "expires_at": 9999,
+            }
+        )
+
+        with (
+            mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
+            mock.patch.object(app, "_payment_requirements", return_value=payment_requirements),
+            mock.patch.object(app, "_decode_payment_payload", return_value=payment_payload),
+            mock.patch.object(app, "_verify_payment_locally", return_value=None),
+            mock.patch.object(app, "_settle_payment_via_cdp", side_effect=AssertionError("should not settle while leased")),
+            mock.patch.object(app, "_upload_idempotency_table", return_value=idem),
+            mock.patch.object(app.time, "time", return_value=100),
+        ):
+            resp = app.lambda_handler(event, None)
+        self.assertEqual(resp["statusCode"], 202)
+
+    def test_post_upload_duplicate_nonce_with_mismatched_payload_returns_409(self):
+        class FakeIdempotencyTable:
+            def __init__(self, item):
+                self.item = dict(item)
+
+            def get_item(self, Key, ConsistentRead=False):
+                if Key.get("idempotency_key") == self.item.get("idempotency_key"):
+                    return {"Item": dict(self.item)}
+                return {}
+
+            def put_item(self, Item, ConditionExpression=None, ExpressionAttributeValues=None):
+                raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+
+        event = {
+            "httpMethod": "POST",
+            "path": "/api/mnemospark-lite/upload",
+            "body": json.dumps(
+                {
+                    "filename": "artifact.bin",
+                    "contentType": "application/octet-stream",
+                    "tier": "10mb",
+                    "size_bytes": 1024,
+                }
+            ),
+            "headers": {"x-payment": "signed-payment"},
+        }
+        payment_requirements = {
+            "accepts": [
+                {
+                    "scheme": "exact",
+                    "network": "eip155:8453",
+                    "asset": "0x" + ("a" * 40),
+                    "payTo": "0x" + ("b" * 40),
+                    "amount": "20000",
+                    "maxTimeoutSeconds": 3600,
+                    "extra": {"name": "USD Coin", "version": "2"},
+                }
+            ]
+        }
+        payment_payload = {
+            "x402Version": 2,
+            "payload": {
+                "authorization": {
+                    "from": "0x" + ("1" * 40),
+                    "to": "0x" + ("b" * 40),
+                    "value": "20000",
+                    "validAfter": "1716150000",
+                    "validBefore": "2716150000",
+                    "nonce": "0x" + ("1" * 64),
+                },
+                "signature": "0x" + ("2" * 130),
+            },
+        }
+        requirement = payment_requirements["accepts"][0]
+        key = app._lite_settle_idempotency_key(requirement=requirement, payer_wallet="0x" + ("1" * 40), nonce="0x" + ("1" * 64))
+        idem = FakeIdempotencyTable(
+            {
+                "idempotency_key": key,
+                "status": "in_progress",
+                "request_hash": "different",
+                "lease_until": 0,
+                "expires_at": 9999,
+            }
+        )
+
+        with (
+            mock.patch.object(app, "_get_cached_lite_price_for_tier", return_value=(20000, "$0.02")),
+            mock.patch.object(app, "_payment_requirements", return_value=payment_requirements),
+            mock.patch.object(app, "_decode_payment_payload", return_value=payment_payload),
+            mock.patch.object(app, "_verify_payment_locally", return_value=None),
+            mock.patch.object(app, "_upload_idempotency_table", return_value=idem),
+            mock.patch.object(app.time, "time", return_value=100),
+        ):
+            resp = app.lambda_handler(event, None)
+        self.assertEqual(resp["statusCode"], 409)
 
     def test_post_upload_returns_payment_settle_failed_when_cdp_settlement_rejects(self):
         event = {
