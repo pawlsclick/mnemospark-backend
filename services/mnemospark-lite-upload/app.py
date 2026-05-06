@@ -1223,6 +1223,8 @@ def _redact_payment_payload_for_logs(payload: dict[str, Any]) -> dict[str, Any]:
     p = out.get("payload")
     if isinstance(p, dict):
         p2 = dict(p)
+        if "signature" in p2:
+            p2["signature"] = "<redacted>"
         auth = p2.get("authorization")
         if isinstance(auth, dict):
             auth2 = dict(auth)
