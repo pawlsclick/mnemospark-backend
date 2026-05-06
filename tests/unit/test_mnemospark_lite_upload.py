@@ -280,6 +280,45 @@ class DeleteUploadTests(unittest.TestCase):
         delete_mock.assert_not_called()
         uploads_table.delete_item.assert_not_called()
 
+
+class PaymentPayloadNormalizationTests(unittest.TestCase):
+    def test_snake_case_payment_aliases_are_removed_after_normalization(self):
+        payload = {
+            "x402_version": 2,
+            "pay_to": "0x" + ("b" * 40),
+            "resource": {"url": "https://example.com/upload", "mime_type": "application/json"},
+            "payload": {
+                "authorization": {
+                    "from": "0x" + ("1" * 40),
+                    "valid_after": "0",
+                    "valid_before": "9999999999",
+                },
+                "permit2Authorization": {
+                    "from": "0x" + ("1" * 40),
+                    "valid_after": "0",
+                    "valid_before": "9999999999",
+                },
+            },
+        }
+
+        normalized = app._normalize_payment_payload_from_client(payload)
+
+        self.assertEqual(normalized["x402Version"], 2)
+        self.assertEqual(normalized["payTo"], "0x" + ("b" * 40))
+        self.assertEqual(normalized["resource"]["mimeType"], "application/json")
+        self.assertEqual(normalized["payload"]["authorization"]["validAfter"], "0")
+        self.assertEqual(normalized["payload"]["authorization"]["validBefore"], "9999999999")
+        self.assertEqual(normalized["payload"]["permit2Authorization"]["validAfter"], "0")
+        self.assertEqual(normalized["payload"]["permit2Authorization"]["validBefore"], "9999999999")
+        self.assertNotIn("x402_version", normalized)
+        self.assertNotIn("pay_to", normalized)
+        self.assertNotIn("mime_type", normalized["resource"])
+        self.assertNotIn("valid_after", normalized["payload"]["authorization"])
+        self.assertNotIn("valid_before", normalized["payload"]["authorization"])
+        self.assertNotIn("valid_after", normalized["payload"]["permit2Authorization"])
+        self.assertNotIn("valid_before", normalized["payload"]["permit2Authorization"])
+
+
 class CompleteUploadTokenAndStatusTests(unittest.TestCase):
     def test_complete_retry_returns_409_when_upload_already_completed(self):
         token = "completion-token"

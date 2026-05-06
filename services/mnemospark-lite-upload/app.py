@@ -1181,33 +1181,39 @@ def _normalize_payment_payload_from_client(payment_payload: dict[str, Any]) -> d
     Some clients use snake_case keys (e.g. pay_to, x402_version, valid_after).
     CDP expects the canonical x402 JSON shape (camelCase).
     """
+    def move_alias(obj: dict[str, Any], canonical_key: str, alias_key: str) -> None:
+        if alias_key not in obj:
+            return
+        value = obj.pop(alias_key)
+        if canonical_key not in obj:
+            obj[canonical_key] = value
+
     out = dict(payment_payload)
-    if "x402Version" not in out and "x402_version" in out:
-        out["x402Version"] = out.get("x402_version")
-    if "payTo" not in out and "pay_to" in out:
-        out["payTo"] = out.get("pay_to")
+    move_alias(out, "x402Version", "x402_version")
+    move_alias(out, "payTo", "pay_to")
 
     resource = out.get("resource")
     if isinstance(resource, dict):
+        resource = dict(resource)
         # Common alias.
-        if "mimeType" not in resource and "mime_type" in resource:
-            resource["mimeType"] = resource.get("mime_type")
+        move_alias(resource, "mimeType", "mime_type")
         out["resource"] = resource
 
     payload_obj = out.get("payload")
     if isinstance(payload_obj, dict):
+        payload_obj = dict(payload_obj)
         auth = payload_obj.get("authorization")
         if isinstance(auth, dict):
-            if "validAfter" not in auth and "valid_after" in auth:
-                auth["validAfter"] = auth.get("valid_after")
-            if "validBefore" not in auth and "valid_before" in auth:
-                auth["validBefore"] = auth.get("valid_before")
+            auth = dict(auth)
+            move_alias(auth, "validAfter", "valid_after")
+            move_alias(auth, "validBefore", "valid_before")
+            payload_obj["authorization"] = auth
         p2 = payload_obj.get("permit2Authorization")
         if isinstance(p2, dict):
-            if "validAfter" not in p2 and "valid_after" in p2:
-                p2["validAfter"] = p2.get("valid_after")
-            if "validBefore" not in p2 and "valid_before" in p2:
-                p2["validBefore"] = p2.get("valid_before")
+            p2 = dict(p2)
+            move_alias(p2, "validAfter", "valid_after")
+            move_alias(p2, "validBefore", "valid_before")
+            payload_obj["permit2Authorization"] = p2
         out["payload"] = payload_obj
     return out
 
