@@ -319,6 +319,17 @@ class PaymentPayloadNormalizationTests(unittest.TestCase):
         self.assertNotIn("valid_after", normalized["payload"]["permit2Authorization"])
         self.assertNotIn("valid_before", normalized["payload"]["permit2Authorization"])
 
+    def test_accepted_key_is_removed_after_normalization(self):
+        payload = {
+            "x402Version": 2,
+            "accepted": True,
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "payload": {"authorization": {"from": "0x" + ("1" * 40), "nonce": "n"}},
+        }
+        normalized = app._normalize_payment_payload_from_client(payload)
+        self.assertNotIn("accepted", normalized)
+
 
 class CompleteUploadTokenAndStatusTests(unittest.TestCase):
     def test_complete_retry_returns_409_when_upload_already_completed(self):

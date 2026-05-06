@@ -1189,6 +1189,8 @@ def _normalize_payment_payload_from_client(payment_payload: dict[str, Any]) -> d
             obj[canonical_key] = value
 
     out = dict(payment_payload)
+    # Some clients include extra keys (e.g. `accepted`) that CDP's schema rejects.
+    out.pop("accepted", None)
     move_alias(out, "x402Version", "x402_version")
     move_alias(out, "payTo", "pay_to")
 
