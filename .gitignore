@@ -8,5 +8,7 @@ __pycache__/
 coverage/
 env.json
 .DS_Store
-# IDE / editor
-.cursor/
+# IDE / editor — ignore Cursor local state; commit shared rules under .cursor/rules/
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**

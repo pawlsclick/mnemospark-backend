@@ -1,0 +1,14 @@
+---
+description: Use SSH for all GitHub git operations (clone, submodule, remote)
+alwaysApply: true
+---
+
+# GitHub: use SSH
+
+For this project, **always use SSH URLs** for GitHub, not HTTPS.
+
+- **Clone:** `git clone git@github.com:org/repo.git`
+- **Submodule add:** `git submodule add git@github.com:org/repo.git path`
+- **Remote add / documentation:** Prefer `git@github.com:org/repo.git` in any instructions or commands you suggest.
+
+Do not suggest `https://github.com/org/repo.git` for git operations. The system is configured for SSH access.
