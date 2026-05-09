@@ -1,0 +1,15 @@
+---
+description: Never update main; always use a new branch in mnemospark-backend
+alwaysApply: true
+---
+
+# Branch policy: do not commit to main
+
+In this repo (**mnemospark-backend**), **do not make commits or apply changes directly on `main`**.
+
+- **Always** create a new branch for any code or config change (e.g. `fix/description`, `feat/description`).
+- Check out the new branch before editing (e.g. `git checkout -b fix/my-fix`).
+- Commit and push the branch, then open a PR for review and merge.
+- Leave `main` unchanged locally; only merge via PR (or equivalent) after review.
+
+This keeps `main` stable and ensures all changes are reviewed before they reach the default branch.

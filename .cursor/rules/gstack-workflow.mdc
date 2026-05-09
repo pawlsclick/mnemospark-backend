@@ -1,0 +1,37 @@
+---
+description: Use gstack skills and map ship/deploy to GitHub Actions
+alwaysApply: true
+---
+
+# Cursor + gstack workflow (backend)
+
+gstack skills are installed globally under `~/.cursor/skills/gstack-*`.
+
+## Branch + commit rules (enforced)
+
+- **Never commit to `main`** (see `no-commit-to-main.mdc`)
+- **Use Conventional Commits** (see `conventional-commits.mdc`)
+
+## Shipping workflow
+
+- **Plan**: `gstack-office-hours` → `gstack-autoplan` (or `gstack-plan-eng-review` for backend-only work)
+- **Security**: `gstack-cso` on auth/secrets/uploads/payment/infra changes
+- **PR**: use `gstack-ship` to open a PR when ready
+
+## Deploy mapping (GitHub Actions → AWS)
+
+This repo deploys from **GitHub Actions**, not from a laptop.
+
+- **Staging deploy**: merge PR → push to `main` triggers **Deploy Staging** (`.github/workflows/deploy-staging.yml`)
+- **Security checks**: **Security Post Deploy** runs after staging deploy (`.github/workflows/security-post-deploy.yml`)
+- **Production deploy**: manual promotion only via **Promote to Production** (`.github/workflows/promote-prod.yml`, `workflow_dispatch` with `sha`)
+
+### land-and-deploy behavior (mnemospark convention)
+
+If using `gstack-land-and-deploy`, it should:
+
+- squash-merge the PR
+- wait for `Deploy Staging` to succeed for the merge SHA
+- optionally confirm `Security Post Deploy` succeeded
+- **stop there** (prod promotion stays manual)
+
