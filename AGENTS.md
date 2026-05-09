@@ -46,3 +46,19 @@ build directories (`.aws-sam/build/`) which can include third-party code.
 - Lambda functions require real AWS credentials for integration testing (STS, BCM, S3, Secrets Manager, DynamoDB). Without credentials, `sam local invoke` returns 500 with `InvalidClientTokenId` — this is expected.
 - The `requests` library bundled with `aws-sam-cli` triggers a `RequestsDependencyWarning` about urllib3/chardet versions — safe to ignore.
 - `.gitignore` excludes `.aws-sam/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `env.json`.
+
+## Workflow: branches, commits, gstack
+
+- **Branching**: never commit to `main`. Always create a branch from `main` before editing. (See `.cursor/rules/no-commit-to-main.mdc`.)
+- **Commit messages**: use **Conventional Commits** for every commit. (See `.cursor/rules/conventional-commits.mdc`.)
+- **gstack**: skills are available in Cursor via `~/.cursor/skills/gstack-*`. Prefer:
+  - `gstack-autoplan` for non-trivial work
+  - `gstack-review` before opening/merging a PR
+  - `gstack-cso` for security-sensitive changes (auth/secrets/uploads/payments/infra)
+  - `gstack-ship` to open PRs
+
+## Deploy (GitHub Actions → AWS)
+
+- **Staging**: merge PR → push to `main` triggers `Deploy Staging` (`.github/workflows/deploy-staging.yml`)
+- **Post-deploy security**: `Security Post Deploy` runs after staging deploy (`.github/workflows/security-post-deploy.yml`)
+- **Production**: manual promotion only via `Promote to Production` (`.github/workflows/promote-prod.yml`, requires commit SHA)

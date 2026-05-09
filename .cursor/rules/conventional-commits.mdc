@@ -1,0 +1,29 @@
+---
+description: Use Conventional Commits for all commits
+alwaysApply: true
+---
+
+# Commit policy: Conventional Commits
+
+In this repo (**mnemospark-backend**), use **Conventional Commits** for every commit.
+
+## Format
+
+`<type>(<scope>): <subject>`
+
+- **type**: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `build`, `ci`, `perf`, `style`, `revert`
+- **scope**: optional but preferred (service/module/infra)
+- **subject**: imperative, present tense, no trailing period
+
+## Examples
+
+- `feat(upload): add staging bearer auth`
+- `fix(deploy): validate env vars before SAM deploy`
+- `ci(security): add post-deploy ZAP baseline`
+
+## Breaking changes
+
+Use `!` in the header and describe in body:
+
+- `feat(api)!: change pricing response schema`
+
