@@ -2547,6 +2547,19 @@ Resources:
               StringEquals:
                 s3:x-amz-acl: bucket-owner-full-control
                 aws:SourceArn: !Sub "arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${AWS::StackName}-cloudtrail"
+          - !If
+            - IsBrowserAppStage
+            - Sid: Allow-RunReveal-Read
+              Effect: Allow
+              Principal:
+                AWS: arn:aws:iam::253602268883:root
+              Action:
+                - s3:GetObject
+                - s3:ListBucket
+              Resource:
+                - !Sub "${CloudTrailLogBucket.Arn}/*"
+                - !GetAtt CloudTrailLogBucket.Arn
+            - !Ref AWS::NoValue
 
   MnemosparkCloudTrail:
     Type: AWS::CloudTrail::Trail
