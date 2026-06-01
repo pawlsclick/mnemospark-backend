@@ -69,6 +69,11 @@ For an incident involving one API request:
    - `${StackName}-upload-transaction-log` (object/payment linkage)
 5. Use CloudTrail (`${StackName}-cloudtrail`) for account-level timeline and
    API management events around the same time window.
+6. On **staging** and **prod** stacks, structured application logs are also
+   exported from CloudWatch to S3 (`${StackName}-app-logs`) via Firehose for
+   RunReveal (generic ingest). Query by `event`, `request_id`, `wallet_address`,
+   etc. after configuring the RunReveal custom/generic source for that bucket.
+   See `docs/runreveal-application-logs-plan.md`.
 
 Note: the current template enables CloudTrail management events. If DynamoDB or
 S3 data-event correlation is required for a deeper audit trail, enable data
