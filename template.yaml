@@ -2533,6 +2533,7 @@ Resources:
           - Id: ExpireAppLogs
             Status: Enabled
             ExpirationInDays: !Ref ObservabilityLogRetentionDays
+            NoncurrentVersionExpirationInDays: 1
       NotificationConfiguration:
         TopicConfigurations:
           - Event: s3:ObjectCreated:*
