@@ -21,6 +21,12 @@ Parameters:
     Type: Number
     Default: 30
     Description: Retention in days for API Gateway and Lambda log groups
+  RunRevealGenericIngestSnsTopicArn:
+    Type: String
+    Default: arn:aws:sns:us-east-1:253602268883:runreveal_generic
+    Description: >-
+      RunReveal SNS topic for generic log ingest (S3 ObjectCreated notifications).
+      Used when IsBrowserAppStage is true (staging and prod stacks only).
   PriceStorageMarkup:
     Type: String
     Default: "0"
@@ -2503,6 +2509,287 @@ Resources:
         - Key: Project
           Value: mnemospark
 
+  # --- Application logs → S3 → RunReveal (phase 1: security-critical log groups) ---
+  # See docs/runreveal-application-logs-plan.md
+
+  ObservabilityAppLogsBucket:
+    Type: AWS::S3::Bucket
+    Condition: IsBrowserAppStage
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-app-logs"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAppLogs
+            Status: Enabled
+            ExpirationInDays: !Ref ObservabilityLogRetentionDays
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Topic: !Ref RunRevealGenericIngestSnsTopicArn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: cloudwatch-logs/
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  ObservabilityAppLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: IsBrowserAppStage
+    Properties:
+      Bucket: !Ref ObservabilityAppLogsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt ObservabilityAppLogsBucket.Arn
+              - !Sub "${ObservabilityAppLogsBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+          - Sid: Allow-RunReveal-Read
+            Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::253602268883:root
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Sub "${ObservabilityAppLogsBucket.Arn}/*"
+              - !GetAtt ObservabilityAppLogsBucket.Arn
+
+  ObservabilityAppLogsFirehoseLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: IsBrowserAppStage
+    Properties:
+      LogGroupName: !Sub "/aws/kinesisfirehose/${AWS::StackName}-app-logs"
+      RetentionInDays: !Ref ObservabilityLogRetentionDays
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  ObservabilityAppLogsFirehoseLogStream:
+    Type: AWS::Logs::LogStream
+    Condition: IsBrowserAppStage
+    Properties:
+      LogGroupName: !Ref ObservabilityAppLogsFirehoseLogGroup
+      LogStreamName: S3Delivery
+
+  ObservabilityAppLogsFirehoseRole:
+    Type: AWS::IAM::Role
+    Condition: IsBrowserAppStage
+    DependsOn:
+      - ObservabilityAppLogsFirehoseLogGroup
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FirehoseS3Delivery
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: S3Delivery
+                Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  - !GetAtt ObservabilityAppLogsBucket.Arn
+                  - !Sub "${ObservabilityAppLogsBucket.Arn}/*"
+              - Sid: FirehoseDeliveryLogs
+                Effect: Allow
+                Action:
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ObservabilityAppLogsFirehoseLogGroup}:*"
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  ObservabilityCloudWatchLogsToFirehoseRole:
+    Type: AWS::IAM::Role
+    Condition: IsBrowserAppStage
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: logs.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
+      Policies:
+        - PolicyName: CloudWatchLogsToFirehose
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: PutRecordsToFirehose
+                Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecordBatch
+                Resource: !Sub "arn:${AWS::Partition}:firehose:${AWS::Region}:${AWS::AccountId}:deliverystream/${AWS::StackName}-app-logs-firehose"
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  ObservabilityAppLogsFirehose:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Condition: IsBrowserAppStage
+    DependsOn:
+      - ObservabilityAppLogsBucketPolicy
+      - ObservabilityAppLogsFirehoseLogStream
+    Properties:
+      DeliveryStreamName: !Sub "${AWS::StackName}-app-logs-firehose"
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt ObservabilityAppLogsBucket.Arn
+        RoleARN: !GetAtt ObservabilityAppLogsFirehoseRole.Arn
+        Prefix: cloudwatch-logs/
+        ErrorOutputPrefix: errors/
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 5
+        CompressionFormat: GZIP
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref ObservabilityAppLogsFirehoseLogGroup
+          LogStreamName: S3Delivery
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
+  ApiGatewayAccessLogsFirehoseSubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    Condition: IsBrowserAppStage
+    DependsOn:
+      - ObservabilityAppLogsFirehose
+      - ObservabilityCloudWatchLogsToFirehoseRole
+    Properties:
+      FilterName: !Sub "${AWS::StackName}-api-gw-access-firehose"
+      LogGroupName: !Ref ApiGatewayAccessLogsLogGroup
+      FilterPattern: ""
+      DestinationArn: !GetAtt ObservabilityAppLogsFirehose.Arn
+      RoleArn: !GetAtt ObservabilityCloudWatchLogsToFirehoseRole.Arn
+
+  WalletAuthorizerFirehoseSubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    Condition: IsBrowserAppStage
+    DependsOn:
+      - ObservabilityAppLogsFirehose
+      - ObservabilityCloudWatchLogsToFirehoseRole
+    Properties:
+      FilterName: !Sub "${AWS::StackName}-wallet-authorizer-firehose"
+      LogGroupName: !Ref WalletAuthorizerFunctionLogGroup
+      FilterPattern: ""
+      DestinationArn: !GetAtt ObservabilityAppLogsFirehose.Arn
+      RoleArn: !GetAtt ObservabilityCloudWatchLogsToFirehoseRole.Arn
+
+  PaymentSettleFirehoseSubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    Condition: IsBrowserAppStage
+    DependsOn:
+      - ObservabilityAppLogsFirehose
+      - ObservabilityCloudWatchLogsToFirehoseRole
+    Properties:
+      FilterName: !Sub "${AWS::StackName}-payment-settle-firehose"
+      LogGroupName: !Ref PaymentSettleFunctionLogGroup
+      FilterPattern: ""
+      DestinationArn: !GetAtt ObservabilityAppLogsFirehose.Arn
+      RoleArn: !GetAtt ObservabilityCloudWatchLogsToFirehoseRole.Arn
+
+  StorageUploadFirehoseSubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    Condition: IsBrowserAppStage
+    DependsOn:
+      - ObservabilityAppLogsFirehose
+      - ObservabilityCloudWatchLogsToFirehoseRole
+    Properties:
+      FilterName: !Sub "${AWS::StackName}-storage-upload-firehose"
+      LogGroupName: !Ref StorageUploadFunctionLogGroup
+      FilterPattern: ""
+      DestinationArn: !GetAtt ObservabilityAppLogsFirehose.Arn
+      RoleArn: !GetAtt ObservabilityCloudWatchLogsToFirehoseRole.Arn
+
+  StorageDownloadFirehoseSubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    Condition: IsBrowserAppStage
+    DependsOn:
+      - ObservabilityAppLogsFirehose
+      - ObservabilityCloudWatchLogsToFirehoseRole
+    Properties:
+      FilterName: !Sub "${AWS::StackName}-storage-download-firehose"
+      LogGroupName: !Ref StorageDownloadFunctionLogGroup
+      FilterPattern: ""
+      DestinationArn: !GetAtt ObservabilityAppLogsFirehose.Arn
+      RoleArn: !GetAtt ObservabilityCloudWatchLogsToFirehoseRole.Arn
+
+  StorageDeleteFirehoseSubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    Condition: IsBrowserAppStage
+    DependsOn:
+      - ObservabilityAppLogsFirehose
+      - ObservabilityCloudWatchLogsToFirehoseRole
+    Properties:
+      FilterName: !Sub "${AWS::StackName}-storage-delete-firehose"
+      LogGroupName: !Ref StorageDeleteFunctionLogGroup
+      FilterPattern: ""
+      DestinationArn: !GetAtt ObservabilityAppLogsFirehose.Arn
+      RoleArn: !GetAtt ObservabilityCloudWatchLogsToFirehoseRole.Arn
+
+  ObservabilityAppLogsFirehoseDeliveryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsBrowserAppStage
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-${StageName}-app-logs-firehose-s3-delivery"
+      AlarmDescription: >-
+        Alert when Kinesis Firehose fails to deliver application log batches to S3
+        (RunReveal ingest path). Check Firehose CloudWatch logs and S3 bucket policy.
+      Namespace: AWS/Firehose
+      MetricName: DeliveryToS3.Success
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: DeliveryStreamName
+          Value: !Ref ObservabilityAppLogsFirehose
+      Tags:
+        - Key: Project
+          Value: mnemospark
+
   CloudTrailLogBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -2674,6 +2961,14 @@ Outputs:
   CloudTrailLogBucketName:
     Description: S3 bucket name storing CloudTrail logs
     Value: !Ref CloudTrailLogBucket
+  ObservabilityAppLogsBucketName:
+    Condition: IsBrowserAppStage
+    Description: S3 bucket for application logs exported via Firehose (RunReveal ingest)
+    Value: !Ref ObservabilityAppLogsBucket
+  ObservabilityAppLogsFirehoseArn:
+    Condition: IsBrowserAppStage
+    Description: Kinesis Firehose delivery stream ARN for application log export
+    Value: !GetAtt ObservabilityAppLogsFirehose.Arn
   PriceStorageFunctionArn:
     Description: Lambda function ARN for /price-storage
     Value: !GetAtt PriceStorageFunction.Arn
