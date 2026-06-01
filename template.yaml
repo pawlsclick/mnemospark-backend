@@ -2681,6 +2681,13 @@ Resources:
           IntervalInSeconds: 60
           SizeInMBs: 5
         CompressionFormat: GZIP
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            - Type: Decompression
+              Parameters:
+                - ParameterName: CompressionFormat
+                  ParameterValue: GZIP
         CloudWatchLoggingOptions:
           Enabled: true
           LogGroupName: !Ref ObservabilityAppLogsFirehoseLogGroup
