@@ -6,6 +6,8 @@ Routine deploys use **GitHub Actions** on push to `main` (see `.github/workflows
 
 The workflow assumes an IAM role via `aws-actions/configure-aws-credentials` using `secrets.AWS_ROLE_ARN_STAGING`. For emergency or debug deploys from a workstation, use a dedicated deploy role documented in your ops runbook (`arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>`); do not commit account-specific ARNs in this repository. Prefer short-lived credentials and least privilege; do not commit long-lived access keys.
 
+When stack updates add new AWS services (for example **Kinesis Data Firehose**, **CloudWatch Logs subscription filters**, or **S3 lifecycle / bucket notifications** for RunReveal app log export), merge the matching statements from [`docs/iam-mnemospark-deploy-policy.json`](iam-mnemospark-deploy-policy.json) into the **staging** and **production** deploy role policies in IAM, then re-run **Deploy Staging**. A common failure is `ObservabilityAppLogsBucket` **CREATE_FAILED** with `s3:PutLifecycleConfiguration` **AccessDenied** on the CloudFormation execution role.
+
 ## Stack and region
 
 Staging stack name is **`mnemospark-staging`** (see `samconfig.staging.toml`). Region is set by the GitHub variable `AWS_REGION` (for example `us-east-1`).
