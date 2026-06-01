@@ -2688,6 +2688,7 @@ Resources:
               Parameters:
                 - ParameterName: CompressionFormat
                   ParameterValue: GZIP
+            - Type: AppendDelimiterToRecord
         CloudWatchLoggingOptions:
           Enabled: true
           LogGroupName: !Ref ObservabilityAppLogsFirehoseLogGroup
