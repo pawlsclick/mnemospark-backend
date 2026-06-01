@@ -118,7 +118,13 @@
                 "logs:CreateLogGroup",
                 "logs:DeleteLogGroup",
                 "logs:DescribeLogGroups",
+                "logs:CreateLogStream",
+                "logs:DeleteLogStream",
+                "logs:DescribeLogStreams",
                 "logs:PutRetentionPolicy",
+                "logs:PutSubscriptionFilter",
+                "logs:DeleteSubscriptionFilter",
+                "logs:DescribeSubscriptionFilters",
                 "logs:TagLogGroup",
                 "logs:UntagLogGroup",
                 "logs:ListTagsForResource",
@@ -127,6 +133,20 @@
                 "logs:PutResourcePolicy",
                 "logs:DeleteResourcePolicy",
                 "logs:DescribeResourcePolicies"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "KinesisFirehose",
+            "Effect": "Allow",
+            "Action": [
+                "firehose:CreateDeliveryStream",
+                "firehose:DeleteDeliveryStream",
+                "firehose:DescribeDeliveryStream",
+                "firehose:UpdateDestination",
+                "firehose:TagDeliveryStream",
+                "firehose:UntagDeliveryStream",
+                "firehose:ListTagsForDeliveryStream"
             ],
             "Resource": "*"
         },
@@ -182,7 +202,12 @@
                 "s3:GetBucketTagging",
                 "s3:PutBucketTagging",
                 "s3:GetBucketAcl",
-                "s3:PutBucketAcl"
+                "s3:PutBucketAcl",
+                "s3:PutLifecycleConfiguration",
+                "s3:GetLifecycleConfiguration",
+                "s3:DeleteLifecycleConfiguration",
+                "s3:PutBucketNotification",
+                "s3:GetBucketNotification"
             ],
             "Resource": "*"
         },

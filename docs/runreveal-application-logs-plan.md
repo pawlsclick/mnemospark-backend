@@ -1,6 +1,6 @@
 # Application logs → RunReveal (Option A)
 
-**Status:** Phase 1 implemented in SAM (`template.yaml`, branch `feat/runreveal-app-logs-phase1`). Deploy staging first, then configure RunReveal source.  
+**Status:** Phase 1 merged to `main` (PR #170). Staging deploy failed until the GitHub OIDC deploy role includes **S3 lifecycle/notification**, **Firehose**, and **Logs subscription filter** actions from [`iam-mnemospark-deploy-policy.json`](iam-mnemospark-deploy-policy.json) — see [deploy-staging.md](deploy-staging.md). After IAM update, re-run **Deploy Staging**, then configure RunReveal source.  
 **Chosen approach:** CloudWatch Logs → Kinesis Data Firehose → S3 → RunReveal (Generic / Custom S3).  
 **Rollout:** Phased — security-critical log groups first (per eng review D1 = B).  
 **Account:** `929837999468` · **Region:** `us-east-1`  
