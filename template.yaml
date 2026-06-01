@@ -2688,6 +2688,10 @@ Resources:
               Parameters:
                 - ParameterName: CompressionFormat
                   ParameterValue: GZIP
+            - Type: CloudWatchLogProcessing
+              Parameters:
+                - ParameterName: DataMessageExtraction
+                  ParameterValue: "true"
             - Type: AppendDelimiterToRecord
         CloudWatchLoggingOptions:
           Enabled: true
